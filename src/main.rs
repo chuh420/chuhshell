@@ -69,7 +69,7 @@ struct Workspace {
     active_window_id: Option<u64>,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 struct KeyboardLayouts {
     names: Vec<String>,
     current_idx: usize,
@@ -261,11 +261,82 @@ fn query_niri_snapshot() -> Option<(Vec<Workspace>, KeyboardLayouts)> {
     Some((workspaces, layouts))
 }
 
-fn spawn_niri_poller(sender: SyncSender<(Vec<Workspace>, KeyboardLayouts)>) {
+fn apply_niri_event(
+    event: &serde_json::Value,
+    workspaces: &mut Vec<Workspace>,
+    layouts: &mut KeyboardLayouts,
+) -> bool {
+    let mut changed = false;
+    if let Some(value) = event
+        .get("WorkspacesChanged")
+        .and_then(|value| value.get("workspaces"))
+        .cloned()
+        && let Ok(next) = serde_json::from_value::<Vec<Workspace>>(value)
+    {
+        *workspaces = next;
+        changed = true;
+    }
+    if let Some(value) = event
+        .get("KeyboardLayoutsChanged")
+        .and_then(|value| value.get("keyboard_layouts"))
+        .cloned()
+        && let Ok(next) = serde_json::from_value::<KeyboardLayouts>(value)
+    {
+        *layouts = next;
+        changed = true;
+    }
+    changed
+}
+
+fn spawn_niri_poller(sender: mpsc::Sender<(Vec<Workspace>, KeyboardLayouts)>) {
     thread::spawn(move || {
         loop {
-            if let Some(snapshot) = query_niri_snapshot() {
-                let _ = sender.try_send(snapshot);
+            let Some((mut workspaces, mut layouts)) = query_niri_snapshot() else {
+                thread::sleep(Duration::from_secs(1));
+                continue;
+            };
+            let Some(socket_path) = std::env::var_os("NIRI_SOCKET") else {
+                thread::sleep(Duration::from_secs(1));
+                continue;
+            };
+            let Ok(mut stream) = UnixStream::connect(socket_path) else {
+                thread::sleep(Duration::from_secs(1));
+                continue;
+            };
+            if stream.write_all(b"\"EventStream\"\n").is_err() {
+                continue;
+            }
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            let Ok(_) = reader.read_line(&mut line) else {
+                continue;
+            };
+            if line.is_empty()
+                || serde_json::from_str::<serde_json::Value>(&line)
+                    .ok()
+                    .and_then(|value| value.get("Ok").cloned())
+                    .is_none()
+            {
+                continue;
+            }
+            if sender.send((workspaces.clone(), layouts.clone())).is_err() {
+                return;
+            }
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
+                            continue;
+                        };
+                        if apply_niri_event(&event, &mut workspaces, &mut layouts)
+                            && sender.send((workspaces.clone(), layouts.clone())).is_err()
+                        {
+                            return;
+                        }
+                    }
+                }
             }
             thread::sleep(Duration::from_millis(250));
         }
@@ -339,7 +410,7 @@ fn spawn_brightness_poller(sender: SyncSender<Option<(u8, &'static str)>>) {
                 (percent, icon)
             });
             let _ = sender.try_send(value);
-            thread::sleep(Duration::from_millis(150));
+            thread::sleep(Duration::from_millis(50));
         }
     });
 }
@@ -724,9 +795,9 @@ fn create_bar(app: &gtk::Application, state: &Rc<AppState>) {
     });
     temperature.add_controller(temp_click);
 
-    let (niri_tx, niri_rx) = mpsc::sync_channel(1);
+    let (niri_tx, niri_rx) = mpsc::channel();
     spawn_niri_poller(niri_tx);
-    glib::timeout_add_local(Duration::from_millis(50), {
+    glib::timeout_add_local(Duration::from_millis(16), {
         let state = Rc::clone(state);
         let workspaces = left.clone();
         let layout_label = language.clone();
@@ -799,7 +870,7 @@ fn create_bar(app: &gtk::Application, state: &Rc<AppState>) {
     });
     update_modules(&refs);
     let refs_update = Rc::clone(&refs);
-    glib::timeout_add_local(Duration::from_millis(100), move || {
+    glib::timeout_add_local(Duration::from_millis(50), move || {
         update_modules(&refs_update);
         glib::ControlFlow::Continue
     });
@@ -883,7 +954,7 @@ fn create_launcher(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherM
     let outer = gtk::Box::new(gtk::Orientation::Vertical, 8);
     outer.add_css_class("launcher-box");
     let search = gtk::SearchEntry::new();
-    search.set_placeholder_text(Some("найти приложение…"));
+    search.set_placeholder_text(Some("search applications…"));
     search.add_css_class("search");
     outer.append(&search);
     let scrolled = gtk::ScrolledWindow::builder()
@@ -904,7 +975,12 @@ fn create_launcher(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherM
         list.select_row(Some(&first));
     }
     update_selected_row_styles(&list);
-    list.connect_selected_rows_changed(update_selected_row_styles);
+    scroll_selected_row_into_view(&list, &scrolled);
+    let scrolled_for_selection = scrolled.clone();
+    list.connect_selected_rows_changed(move |list| {
+        update_selected_row_styles(list);
+        scroll_selected_row_into_view(list, &scrolled_for_selection);
+    });
 
     let list_filter = list.clone();
     search.connect_search_changed(move |entry| {
@@ -1047,6 +1123,31 @@ fn update_selected_row_styles(list: &gtk::ListBox) {
             row.remove_css_class("selected-row");
         }
     }
+}
+
+fn scroll_selected_row_into_view(list: &gtk::ListBox, scrolled: &gtk::ScrolledWindow) {
+    let Some(row) = list.selected_row() else {
+        return;
+    };
+    let Some(bounds) = row.compute_bounds(list) else {
+        return;
+    };
+    let adjustment = scrolled.vadjustment();
+    let current = adjustment.value();
+    let page_size = adjustment.page_size();
+    let top = f64::from(bounds.y());
+    let bottom = top + f64::from(bounds.height());
+    let next = if top < current {
+        top
+    } else if bottom > current + page_size {
+        bottom - page_size
+    } else {
+        return;
+    };
+    adjustment.set_value(next.clamp(
+        adjustment.lower(),
+        (adjustment.upper() - page_size).max(adjustment.lower()),
+    ));
 }
 
 fn append_app_row(list: &gtk::ListBox, entry: &AppEntry, mode: LauncherMode) {
@@ -1220,6 +1321,26 @@ mod tests {
         .expect("valid keyboard-layout payload");
 
         assert_eq!(layouts.names, ["English (US)", "Russian"]);
+        assert_eq!(layouts.current_idx, 1);
+    }
+
+    #[test]
+    fn niri_event_updates_keyboard_layout_immediately() {
+        let mut workspaces = Vec::new();
+        let mut layouts = KeyboardLayouts {
+            names: vec!["English (US)".to_owned(), "Russian".to_owned()],
+            current_idx: 0,
+        };
+        let event = serde_json::json!({
+            "KeyboardLayoutsChanged": {
+                "keyboard_layouts": {
+                    "names": ["English (US)", "Russian"],
+                    "current_idx": 1
+                }
+            }
+        });
+
+        assert!(apply_niri_event(&event, &mut workspaces, &mut layouts));
         assert_eq!(layouts.current_idx, 1);
     }
 
