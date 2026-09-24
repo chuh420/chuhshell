@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::process::Command;
 use std::rc::Rc;
 
@@ -12,17 +11,18 @@ use crate::fuzzy;
 use crate::ui::set_layer_window;
 
 pub fn show(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode) {
-    state
-        .launcher_focus_window
-        .set(Some(state.focused_window_id()));
     create(app, state, mode);
 }
 
 fn create(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode) {
-    if let Some(old) = state.launcher.borrow_mut().take() {
+    let old = state.launcher.borrow_mut().take();
+    if let Some(old) = old {
         old.close();
     }
     state.launcher_mode.set(Some(mode));
+    state
+        .launcher_focus_window
+        .set(Some(state.focused_window_id()));
     *state.launcher_apps.borrow_mut() = apps::load_apps();
 
     let window = gtk::ApplicationWindow::builder()
@@ -89,27 +89,19 @@ fn create(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode) {
             return;
         };
         if mode == LauncherMode::Manage {
-            {
-                let mut apps = state_for_activate.launcher_apps.borrow_mut();
-                if let Some(entry) = apps.iter_mut().find(|entry| entry.id == id) {
-                    entry.hidden = !entry.hidden;
-                }
-                let known: HashSet<&str> = apps.iter().map(|entry| entry.id.as_str()).collect();
-                let mut hidden: HashSet<String> = apps
-                    .iter()
-                    .filter(|entry| entry.hidden)
-                    .map(|entry| entry.id.clone())
-                    .collect();
-                hidden.extend(
-                    apps::read_hidden()
-                        .into_iter()
-                        .filter(|id| !known.contains(id.as_str())),
-                );
-                if apps::write_hidden(&hidden).is_err() {
-                    return;
-                }
-            }
             let apps = state_for_activate.launcher_apps.borrow();
+            let Some(hidden) = apps::toggled_hidden(&apps, &id, apps::read_hidden()) else {
+                return;
+            };
+            if let Err(error) = apps::write_hidden(&hidden) {
+                eprintln!("chuhshell: failed to save hidden apps: {error}");
+                return;
+            }
+            drop(apps);
+            let mut apps = state_for_activate.launcher_apps.borrow_mut();
+            if let Some(entry) = apps.iter_mut().find(|entry| entry.id == id) {
+                entry.hidden = !entry.hidden;
+            }
             let selected = row.index();
             populate_launcher_list(list, &apps[..], mode, &search_for_activate.text());
             let last = list.observe_children().n_items().saturating_sub(1) as i32;
@@ -175,16 +167,19 @@ fn create(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode) {
     window.add_controller(key);
 
     let was_active = std::cell::Cell::new(false);
+    let closing = Rc::new(std::cell::Cell::new(false));
+    let closing_notify = Rc::clone(&closing);
     window.connect_is_active_notify(move |window| {
         if window.is_active() {
             was_active.set(true);
-        } else if was_active.replace(false) {
+        } else if !closing_notify.get() && was_active.replace(false) {
             window.close();
         }
     });
     window.connect_close_request({
         let state = Rc::clone(state);
         move |_| {
+            closing.set(true);
             let _ = state.launcher.borrow_mut().take();
             state.launcher_focus_window.set(None);
             state.launcher_mode.set(None);

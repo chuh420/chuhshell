@@ -96,16 +96,41 @@ pub fn wifi_interface() -> Option<String> {
     names.into_iter().next()
 }
 
+fn remaining_charge(now: u64, full: Option<u64>, charging: bool) -> Option<u64> {
+    if charging {
+        full.map(|full| full.saturating_sub(now))
+    } else {
+        Some(now)
+    }
+}
+
+fn format_estimate(remaining_charge: u64, power: u64) -> Option<String> {
+    if power == 0 {
+        return None;
+    }
+    let minutes = u128::from(remaining_charge) * 60 / u128::from(power);
+    Some(format!("{}h {:02}m", minutes / 60, minutes % 60))
+}
+
 fn battery_estimate(battery: &Path, status: &str) -> String {
-    for (now_key, power_key) in [("energy_now", "power_now"), ("charge_now", "current_now")] {
-        let now = read_trim(&battery.join(now_key)).and_then(|value| value.parse::<u64>().ok());
-        let power = read_trim(&battery.join(power_key))
-            .and_then(|value| value.parse::<u64>().ok())
-            .filter(|value| *value > 0);
-        if let (Some(now), Some(power)) = (now, power) {
-            let hours = now / power;
-            let minutes = (now % power) * 60 / power;
-            return format!("{hours}h {minutes:02}m");
+    let charging = status.eq_ignore_ascii_case("charging");
+    for (now_key, full_key, power_key) in [
+        ("energy_now", "energy_full", "power_now"),
+        ("charge_now", "charge_full", "current_now"),
+    ] {
+        let read =
+            |name: &str| read_trim(&battery.join(name)).and_then(|value| value.parse::<u64>().ok());
+        let Some(now) = read(now_key) else {
+            continue;
+        };
+        let Some(power) = read(power_key).filter(|value| *value > 0) else {
+            continue;
+        };
+        let Some(remaining) = remaining_charge(now, read(full_key), charging) else {
+            continue;
+        };
+        if let Some(estimate) = format_estimate(remaining, power) {
+            return estimate;
         }
     }
     status.to_lowercase()
@@ -350,5 +375,39 @@ mod tests {
     fn maps_signal_strength_to_icon() {
         assert_eq!(signal_icon(0), "󰤟");
         assert_eq!(signal_icon(100), "󰤨");
+    }
+
+    #[test]
+    fn discharging_estimate_uses_current_charge() {
+        assert_eq!(remaining_charge(5_000, Some(10_000), false), Some(5_000));
+    }
+
+    #[test]
+    fn charging_estimate_uses_charge_until_full() {
+        assert_eq!(remaining_charge(3_000, Some(10_000), true), Some(7_000));
+    }
+
+    #[test]
+    fn charging_estimate_without_full_capacity_is_unknown() {
+        assert_eq!(remaining_charge(3_000, None, true), None);
+    }
+
+    #[test]
+    fn formats_estimate_with_zero_padded_minutes() {
+        assert_eq!(format_estimate(7_200, 1_000).as_deref(), Some("7h 12m"));
+        assert_eq!(format_estimate(3_600, 1_000).as_deref(), Some("3h 36m"));
+        assert_eq!(format_estimate(90, 60).as_deref(), Some("1h 30m"));
+        assert_eq!(format_estimate(59, 60).as_deref(), Some("0h 59m"));
+        assert_eq!(format_estimate(1_000, 0), None);
+    }
+
+    #[test]
+    fn estimate_does_not_overflow_on_large_values() {
+        let minutes = u128::from(u64::MAX) * 60;
+        let expected = format!("{}h {:02}m", minutes / 60, minutes % 60);
+        assert_eq!(
+            format_estimate(u64::MAX, 1).as_deref(),
+            Some(expected.as_str())
+        );
     }
 }

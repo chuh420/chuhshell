@@ -28,6 +28,20 @@ struct ModuleRefs {
     brightness_rx: Receiver<Option<(u8, &'static str)>>,
 }
 
+fn brightness_text(value: Option<(u8, &'static str)>) -> String {
+    value.map_or_else(
+        || "--".to_owned(),
+        |(percent, icon)| format!("{icon} {percent}%"),
+    )
+}
+
+fn temperature_text(value: Option<i64>) -> String {
+    value.map_or_else(
+        || "󰔏 --°C".to_owned(),
+        |temp| format!("󰔏 {}°C", temp / 1000),
+    )
+}
+
 enum ScrollAction {
     Volume,
     Brightness { device: Option<String> },
@@ -140,16 +154,37 @@ fn update_modules(refs: &ModuleRefs) {
         refs.audio.set_text(" --");
     }
 
-    if let Some((percent, icon)) = refs.brightness_rx.try_iter().last().flatten() {
-        refs.brightness.set_text(&format!("{icon} {percent}%"));
-        refs.brightness.set_visible(true);
+    if let Some(value) = refs.brightness_rx.try_iter().last() {
+        match value {
+            Some((percent, icon)) => {
+                refs.brightness
+                    .set_text(&brightness_text(Some((percent, icon))));
+                refs.brightness
+                    .set_tooltip_text(Some("screen brightness — scroll to adjust"));
+                refs.brightness.set_visible(true);
+            }
+            None => {
+                refs.brightness.set_text(&brightness_text(None));
+                refs.brightness
+                    .set_tooltip_text(Some("screen brightness unavailable"));
+            }
+        }
     }
 
-    if let Some(temp) = refs.cpu_rx.try_iter().last().flatten() {
-        refs.temperature.set_text(&format!("󰔏 {}°C", temp / 1000));
-        refs.temperature
-            .set_tooltip_text(Some(&format!("cpu temperature: {}°c", temp / 1000)));
-        refs.temperature.set_visible(true);
+    if let Some(value) = refs.cpu_rx.try_iter().last() {
+        match value {
+            Some(temp) => {
+                refs.temperature.set_text(&temperature_text(Some(temp)));
+                refs.temperature
+                    .set_tooltip_text(Some(&format!("cpu temperature: {}°c", temp / 1000)));
+                refs.temperature.set_visible(true);
+            }
+            None => {
+                refs.temperature.set_text(&temperature_text(None));
+                refs.temperature
+                    .set_tooltip_text(Some("cpu temperature unavailable"));
+            }
+        }
     }
 
     if let Some(info) = refs.network_rx.try_iter().last() {
@@ -297,23 +332,24 @@ pub fn create(app: &gtk::Application, state: &Rc<AppState>) {
         let workspaces = left.clone();
         let layout_label = language.clone();
         move || {
-            if let Some((workspaces_now, layouts_now)) = niri_rx.try_iter().last() {
-                if *state.workspaces.borrow() != workspaces_now {
-                    *state.workspaces.borrow_mut() = workspaces_now;
+            if let Some(snapshot) = niri_rx.try_iter().last() {
+                if *state.workspaces.borrow() != snapshot.workspaces {
+                    *state.workspaces.borrow_mut() = snapshot.workspaces;
                     update_workspaces(&state, &workspaces);
                 }
-                if *state.layout_names.borrow() != layouts_now.names
-                    || state.current_layout.get() != layouts_now.current_idx
+                if *state.layout_names.borrow() != snapshot.layouts.names
+                    || state.current_layout.get() != snapshot.layouts.current_idx
                 {
-                    *state.layout_names.borrow_mut() = layouts_now.names;
-                    state.current_layout.set(layouts_now.current_idx);
+                    *state.layout_names.borrow_mut() = snapshot.layouts.names;
+                    state.current_layout.set(snapshot.layouts.current_idx);
                     update_layout(&state, &layout_label);
                 }
                 if let Some(initial_window) = state.launcher_focus_window.get() {
-                    if state.focused_window_id() != initial_window
-                        && let Some(launcher) = state.launcher.borrow().clone()
-                    {
-                        launcher.close();
+                    if state.focused_window_id() != initial_window {
+                        let launcher = state.launcher.borrow().clone();
+                        if let Some(launcher) = launcher {
+                            launcher.close();
+                        }
                     }
                 } else if let Some(current_window) = state.focused_window_id() {
                     state.launcher_focus_window.set(Some(Some(current_window)));
@@ -375,4 +411,21 @@ pub fn create(app: &gtk::Application, state: &Rc<AppState>) {
 
     window.present();
     *state.bar.borrow_mut() = Some(window.upcast());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn brightness_state_never_keeps_a_stale_reading() {
+        assert_eq!(brightness_text(Some((42, "󰃝"))), "󰃝 42%");
+        assert_eq!(brightness_text(None), "--");
+    }
+
+    #[test]
+    fn temperature_state_never_keeps_a_stale_reading() {
+        assert_eq!(temperature_text(Some(52_000)), "󰔏 52°C");
+        assert_eq!(temperature_text(None), "󰔏 --°C");
+    }
 }

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -18,6 +18,32 @@ fn config_path() -> PathBuf {
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
         .unwrap_or_else(|| PathBuf::from("."));
     config_home.join("chuhshell/hidden-apps")
+}
+
+pub fn toggled_hidden(
+    apps: &[AppEntry],
+    id: &str,
+    persisted: HashSet<String>,
+) -> Option<HashSet<String>> {
+    let target = apps.iter().find(|app| app.id == id)?;
+    let known: HashSet<&str> = apps.iter().map(|app| app.id.as_str()).collect();
+    let mut hidden: HashSet<String> = apps
+        .iter()
+        .filter(|app| {
+            if app.id == id {
+                !target.hidden
+            } else {
+                app.hidden
+            }
+        })
+        .map(|app| app.id.clone())
+        .collect();
+    hidden.extend(
+        persisted
+            .into_iter()
+            .filter(|id| !known.contains(id.as_str())),
+    );
+    Some(hidden)
 }
 
 pub fn read_hidden() -> HashSet<String> {
@@ -46,55 +72,45 @@ pub fn write_hidden(hidden: &HashSet<String>) -> std::io::Result<()> {
     fs::rename(temp, path)
 }
 
-fn desktop_value(section: &str, key: &str) -> Option<String> {
-    let exact = format!("{key}=");
-    let localized = format!("{key}[");
-    let mut fallback = None;
-    for line in section.lines() {
-        if let Some(value) = line.strip_prefix(&exact)
-            && !value.starts_with('[')
-        {
-            return Some(value.to_owned());
-        }
-        if fallback.is_none()
-            && let Some(rest) = line.strip_prefix(&localized)
-            && let Some((_, value)) = rest.split_once('=')
-        {
-            fallback = Some(value.to_owned());
-        }
-    }
-    fallback
-}
-
-fn strip_field_codes(exec: &str) -> String {
-    exec.split_whitespace()
-        .filter(|argument| !argument.starts_with('%'))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 pub fn parse_entry(id: &str, contents: &str, hidden: bool) -> Option<AppEntry> {
-    let section = contents.split("[Desktop Entry]").nth(1)?;
-    let section = section.split("\n[").next().unwrap_or(section);
-    if desktop_value(section, "Type")
+    parse_entry_for_locale(id, contents, hidden, None)
+}
+
+fn parse_entry_for_locale(
+    id: &str,
+    contents: &str,
+    hidden: bool,
+    locale: Option<&str>,
+) -> Option<AppEntry> {
+    let key_file = glib::KeyFile::new();
+    key_file
+        .load_from_data(contents, glib::KeyFileFlags::KEEP_TRANSLATIONS)
+        .ok()?;
+    if !key_file.has_group("Desktop Entry") {
+        return None;
+    }
+    let get_string = |key: &str| {
+        key_file
+            .locale_string("Desktop Entry", key, locale)
+            .ok()
+            .map(|value| value.to_string())
+    };
+    if get_string("Type")
         .as_deref()
         .is_some_and(|kind| kind != "Application")
+        || ["Hidden", "NoDisplay"]
+            .iter()
+            .any(|key| key_file.boolean("Desktop Entry", key).unwrap_or(false))
     {
         return None;
     }
-    if ["Hidden", "NoDisplay"].iter().any(|key| {
-        desktop_value(section, key).is_some_and(|value| value.eq_ignore_ascii_case("true"))
-    }) {
-        return None;
-    }
-    let name = desktop_value(section, "Name")
-        .unwrap_or_else(|| id.trim_end_matches(".desktop").to_owned());
+    let name = get_string("Name").unwrap_or_else(|| id.trim_end_matches(".desktop").to_owned());
     Some(AppEntry {
         id: id.to_owned(),
         name,
-        icon: desktop_value(section, "Icon").unwrap_or_default(),
-        comment: desktop_value(section, "Comment").unwrap_or_default(),
-        exec: strip_field_codes(&desktop_value(section, "Exec").unwrap_or_default()),
+        icon: get_string("Icon").unwrap_or_default(),
+        comment: get_string("Comment").unwrap_or_default(),
+        exec: get_string("Exec").unwrap_or_default(),
         hidden,
     })
 }
@@ -118,34 +134,49 @@ fn search_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-pub fn load_apps() -> Vec<AppEntry> {
-    let hidden = read_hidden();
-    let mut entries: HashMap<String, AppEntry> = HashMap::new();
+fn collect_entries(
+    entries: impl IntoIterator<Item = (String, String)>,
+    hidden: &HashSet<String>,
+) -> Vec<AppEntry> {
+    let mut seen = HashSet::new();
+    let mut apps = Vec::new();
+    for (id, contents) in entries {
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        if let Some(app) = parse_entry(&id, &contents, hidden.contains(&id)) {
+            apps.push(app);
+        }
+    }
+    apps
+}
+
+fn load_entry_files() -> Vec<(String, String)> {
+    let mut entries = Vec::new();
     for dir in search_dirs() {
         let Ok(files) = fs::read_dir(dir) else {
             continue;
         };
-        let mut files: Vec<_> = files.flatten().map(|entry| entry.path()).collect();
-        files.sort();
-        for file in files {
+        let mut paths: Vec<_> = files.flatten().map(|entry| entry.path()).collect();
+        paths.sort();
+        for file in paths {
             if file.extension().is_none_or(|ext| ext != "desktop") {
                 continue;
             }
             let Some(id) = file.file_name().and_then(|name| name.to_str()) else {
                 continue;
             };
-            if entries.contains_key(id) {
-                continue;
-            }
             let Ok(contents) = fs::read_to_string(&file) else {
                 continue;
             };
-            if let Some(app) = parse_entry(id, &contents, hidden.contains(id)) {
-                entries.insert(id.to_owned(), app);
-            }
+            entries.push((id.to_owned(), contents));
         }
     }
-    let mut apps: Vec<_> = entries.into_values().collect();
+    entries
+}
+
+pub fn load_apps() -> Vec<AppEntry> {
+    let mut apps = collect_entries(load_entry_files(), &read_hidden());
     apps.sort_by_cached_key(|app| app.name.to_lowercase());
     apps
 }
@@ -169,7 +200,7 @@ Exec=/usr/bin/firefox %u
         let app = parse_entry("firefox.desktop", FIREFOX, false).expect("valid entry");
         assert_eq!(app.name, "Firefox");
         assert_eq!(app.icon, "firefox");
-        assert_eq!(app.exec, "/usr/bin/firefox");
+        assert_eq!(app.exec, "/usr/bin/firefox %u");
         assert!(!app.hidden);
     }
 
@@ -187,8 +218,14 @@ Exec=/usr/bin/firefox %u
 
     #[test]
     fn falls_back_to_localized_name_and_default_id() {
-        let localized = "[Desktop Entry]\nType=Application\nName[ru]=Терминал\n";
-        let app = parse_entry("org.example.Terminal.desktop", localized, false).expect("entry");
+        let localized = "[Desktop Entry]\nType=Application\nName[ru_RU]=Терминал\n";
+        let app = parse_entry_for_locale(
+            "org.example.Terminal.desktop",
+            localized,
+            false,
+            Some("ru_RU.UTF-8"),
+        )
+        .expect("entry");
         assert_eq!(app.name, "Терминал");
 
         let unnamed = "[Desktop Entry]\nType=Application\n";
@@ -197,20 +234,114 @@ Exec=/usr/bin/firefox %u
     }
 
     #[test]
-    fn prefers_unlocalized_value_over_localized() {
-        assert_eq!(desktop_value(FIREFOX, "Name").as_deref(), Some("Firefox"));
-        assert_eq!(
-            desktop_value(FIREFOX, "Comment").as_deref(),
-            Some("Browse the web")
-        );
+    fn locale_uses_unlocalized_name_as_fallback() {
+        let app =
+            parse_entry_for_locale("firefox.desktop", FIREFOX, false, Some("fr")).expect("entry");
+        assert_eq!(app.name, "Firefox");
+        assert_eq!(app.comment, "Browse the web");
     }
 
     #[test]
-    fn strips_exec_field_codes() {
-        assert_eq!(
-            strip_field_codes("/usr/bin/firefox %u %F"),
-            "/usr/bin/firefox"
+    fn key_file_unescapes_desktop_values_and_preserves_exec_codes() {
+        let desktop =
+            "[Desktop Entry]\nType=Application\nName=Line\\nBreak\nExec=/usr/bin/app %F\n";
+        let app = parse_entry("example.desktop", desktop, false).expect("entry");
+
+        assert_eq!(app.name, "Line\nBreak");
+        assert_eq!(app.exec, "/usr/bin/app %F");
+    }
+
+    #[test]
+    fn higher_priority_entry_masks_lower_priority_duplicate() {
+        let entries = vec![
+            ("app.desktop".to_owned(), FIREFOX.to_owned()),
+            (
+                "app.desktop".to_owned(),
+                "[Desktop Entry]\nType=Application\nName=Shadowed\n".to_owned(),
+            ),
+        ];
+        let apps = collect_entries(entries, &HashSet::new());
+
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].name, "Firefox");
+    }
+
+    #[test]
+    fn higher_priority_hidden_entry_masks_lower_priority_visible_one() {
+        let entries = vec![
+            (
+                "app.desktop".to_owned(),
+                "[Desktop Entry]\nType=Application\nName=Hidden One\nHidden=true\n".to_owned(),
+            ),
+            ("app.desktop".to_owned(), FIREFOX.to_owned()),
+        ];
+        let apps = collect_entries(entries, &HashSet::new());
+
+        assert!(apps.is_empty());
+    }
+
+    #[test]
+    fn non_application_entry_also_masks_lower_priority_duplicate() {
+        let entries = vec![
+            (
+                "app.desktop".to_owned(),
+                "[Desktop Entry]\nType=Link\nName=Link\n".to_owned(),
+            ),
+            ("app.desktop".to_owned(), FIREFOX.to_owned()),
+        ];
+        let apps = collect_entries(entries, &HashSet::new());
+
+        assert!(apps.is_empty());
+    }
+
+    #[test]
+    fn hidden_list_marks_matching_entry() {
+        let hidden: HashSet<String> = ["firefox.desktop".to_owned()].into_iter().collect();
+        let apps = collect_entries(
+            vec![("firefox.desktop".to_owned(), FIREFOX.to_owned())],
+            &hidden,
         );
-        assert_eq!(strip_field_codes(""), "");
+
+        assert_eq!(apps.len(), 1);
+        assert!(apps[0].hidden);
+    }
+
+    #[test]
+    fn toggled_hidden_adds_and_removes_the_id() {
+        let mut firefox = parse_entry("firefox.desktop", FIREFOX, false).expect("entry");
+        let apps = vec![firefox.clone()];
+
+        let hidden = toggled_hidden(&apps, "firefox.desktop", HashSet::new()).expect("toggle");
+        assert!(hidden.contains("firefox.desktop"));
+
+        firefox.hidden = true;
+        let apps = vec![firefox];
+        let hidden = toggled_hidden(
+            &apps,
+            "firefox.desktop",
+            ["firefox.desktop".to_owned()].into_iter().collect(),
+        )
+        .expect("toggle");
+        assert!(!hidden.contains("firefox.desktop"));
+    }
+
+    #[test]
+    fn toggled_hidden_preserves_unknown_persisted_ids() {
+        let firefox = parse_entry("firefox.desktop", FIREFOX, false).expect("entry");
+        let apps = vec![firefox];
+        let persisted: HashSet<String> = ["removed-app.desktop".to_owned()].into_iter().collect();
+
+        let hidden = toggled_hidden(&apps, "firefox.desktop", persisted).expect("toggle");
+
+        assert!(hidden.contains("removed-app.desktop"));
+        assert!(hidden.contains("firefox.desktop"));
+    }
+
+    #[test]
+    fn toggled_hidden_rejects_unknown_id() {
+        let firefox = parse_entry("firefox.desktop", FIREFOX, false).expect("entry");
+        let apps = vec![firefox];
+
+        assert!(toggled_hidden(&apps, "missing.desktop", HashSet::new()).is_none());
     }
 }
