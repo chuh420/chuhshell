@@ -13,10 +13,11 @@ pub struct AppEntry {
 }
 
 fn config_path() -> PathBuf {
-    std::env::var_os("HOME")
+    let config_home = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".config/fuzzel/hidden-apps")
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .unwrap_or_else(|| PathBuf::from("."));
+    config_home.join("chuhshell/hidden-apps")
 }
 
 pub fn read_hidden() -> HashSet<String> {
