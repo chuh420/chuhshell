@@ -84,6 +84,14 @@ fn apply_event(
         *layouts = next;
         changed = true;
     }
+    if let Some(idx) = event
+        .get("KeyboardLayoutSwitched")
+        .and_then(|value| value.get("idx"))
+        .and_then(serde_json::Value::as_u64)
+    {
+        layouts.current_idx = idx as usize;
+        changed = true;
+    }
     changed
 }
 
@@ -183,6 +191,19 @@ mod tests {
                 }
             }
         });
+
+        assert!(apply_event(&event, &mut workspaces, &mut layouts));
+        assert_eq!(layouts.current_idx, 1);
+    }
+
+    #[test]
+    fn layout_switch_event_updates_current_index() {
+        let mut workspaces = Vec::new();
+        let mut layouts = KeyboardLayouts {
+            names: vec!["English (US)".to_owned(), "Russian".to_owned()],
+            current_idx: 0,
+        };
+        let event = serde_json::json!({ "KeyboardLayoutSwitched": { "idx": 1 } });
 
         assert!(apply_event(&event, &mut workspaces, &mut layouts));
         assert_eq!(layouts.current_idx, 1);
