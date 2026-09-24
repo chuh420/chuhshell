@@ -116,9 +116,8 @@ fn create(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode) {
     let key = gtk::EventControllerKey::new();
     key.set_propagation_phase(gtk::PropagationPhase::Capture);
     let list_keys = list.clone();
-    let search_keys = search.clone();
     let window_keys = window.clone();
-    key.connect_key_pressed(move |_, key, _, modifiers| match key {
+    key.connect_key_pressed(move |_, key, _, _| match key {
         gdk::Key::Escape => {
             window_keys.close();
             glib::Propagation::Stop
@@ -140,16 +139,6 @@ fn create(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode) {
         gdk::Key::Return | gdk::Key::KP_Enter => {
             if let Some(row) = list_keys.selected_row() {
                 list_keys.emit_by_name::<()>("row-activated", &[&row]);
-            }
-            glib::Propagation::Stop
-        }
-        key if modifiers.contains(gdk::ModifierType::CONTROL_MASK)
-            && (key == gdk::Key::b || key == gdk::Key::f) =>
-        {
-            if key == gdk::Key::b {
-                list_keys.grab_focus();
-            } else {
-                search_keys.grab_focus();
             }
             glib::Propagation::Stop
         }

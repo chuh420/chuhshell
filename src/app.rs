@@ -13,6 +13,9 @@ pub enum LauncherMode {
 pub struct AppState {
     pub bar: RefCell<Option<gtk::Window>>,
     pub launcher: RefCell<Option<gtk::Window>>,
+    pub osd: RefCell<Option<gtk::Window>>,
+    pub osd_timeout: RefCell<Option<glib::SourceId>>,
+    pub osd_generation: Cell<u64>,
     pub workspaces: RefCell<Vec<Workspace>>,
     pub layout_names: RefCell<Vec<String>>,
     pub current_layout: Cell<usize>,

@@ -11,6 +11,7 @@ use gtk4_layer_shell as layer_shell;
 use crate::app::AppState;
 use crate::modules::{self, BatteryStatus, NetworkInfo};
 use crate::niri;
+use crate::notifications::{self, ConnectionNotice, Notice, NoticeKind, PowerNotice};
 use crate::ui::set_layer_window;
 
 struct ModuleRefs {
@@ -26,7 +27,10 @@ struct ModuleRefs {
     cpu_rx: Receiver<Option<i64>>,
     battery_rx: Receiver<BatteryStatus>,
     brightness_rx: Receiver<Option<(u8, &'static str)>>,
+    peripheral_rx: Receiver<(bool, String)>,
 }
+
+type NetworkState = Option<(bool, Option<String>)>;
 
 fn brightness_text(value: Option<(u8, &'static str)>) -> String {
     value.map_or_else(
@@ -44,7 +48,7 @@ fn temperature_text(value: Option<i64>) -> String {
 
 enum ScrollAction {
     Volume,
-    Brightness { device: Option<String> },
+    Brightness,
 }
 
 fn module(text: &str, class: &str, tooltip: &str) -> gtk::Label {
@@ -124,7 +128,12 @@ fn update_layout(state: &Rc<AppState>, label: &gtk::Label) {
     label.set_tooltip_text(Some(&name.to_lowercase()));
 }
 
-fn update_modules(refs: &ModuleRefs) {
+fn update_modules(
+    refs: &ModuleRefs,
+    state: &Rc<AppState>,
+    last_network: &mut NetworkState,
+    last_power: &mut Option<(bool, bool)>,
+) {
     if let Some(text) = refs.audio_rx.try_iter().last().flatten() {
         *refs.audio_text.borrow_mut() = Some(text);
     }
@@ -188,6 +197,23 @@ fn update_modules(refs: &ModuleRefs) {
     }
 
     if let Some(info) = refs.network_rx.try_iter().last() {
+        let connected = info.status == "connected";
+        match notifications::network_transition(
+            last_network.as_ref(),
+            connected,
+            info.ssid.as_deref(),
+        ) {
+            Some(ConnectionNotice::Connected(ssid)) => notifications::show(
+                state,
+                Notice::transient(NoticeKind::Network, "wi-fi connected").with_detail(ssid),
+            ),
+            Some(ConnectionNotice::Disconnected) => notifications::show(
+                state,
+                Notice::transient(NoticeKind::Network, "wi-fi disconnected"),
+            ),
+            None => {}
+        }
+        *last_network = Some((connected, info.ssid.clone()));
         refs.network.set_text(&info.text);
         refs.network.set_tooltip_text(Some(&info.tooltip));
         refs.network.remove_css_class("disconnected");
@@ -197,6 +223,22 @@ fn update_modules(refs: &ModuleRefs) {
     }
 
     if let Some(battery) = refs.battery_rx.try_iter().last() {
+        let transition =
+            notifications::power_transition(*last_power, battery.plugged, battery.charging);
+        *last_power = Some((battery.plugged, battery.charging));
+        if let Some(transition) = transition {
+            let title = match transition {
+                PowerNotice::Connected => "power connected",
+                PowerNotice::Disconnected => "power disconnected",
+                PowerNotice::ChargingStarted => "charging started",
+                PowerNotice::ChargingComplete => "charging complete",
+            };
+            notifications::show(
+                state,
+                Notice::transient(NoticeKind::Power, title)
+                    .with_detail(format!("{} · {}", battery.text, battery.tooltip)),
+            );
+        }
         refs.battery.set_text(&battery.text);
         refs.battery.set_tooltip_text(Some(&battery.tooltip));
         refs.battery.remove_css_class("warning");
@@ -208,26 +250,34 @@ fn update_modules(refs: &ModuleRefs) {
     }
 }
 
-fn add_scroll_controller(widget: &impl IsA<gtk::Widget>, action: ScrollAction) {
+fn add_scroll_controller(
+    widget: &impl IsA<gtk::Widget>,
+    action: ScrollAction,
+    state: Rc<AppState>,
+) {
     let controller = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
     controller.connect_scroll(move |_, _, y| {
         let direction = if y < 0.0 { "+" } else { "-" };
         match &action {
             ScrollAction::Volume => {
-                let _ = Command::new("wpctl")
-                    .args([
-                        "set-volume",
-                        "@DEFAULT_AUDIO_SINK@",
-                        &format!("5%{direction}"),
-                    ])
-                    .spawn();
+                notifications::handle_command(
+                    &state,
+                    if direction == "+" {
+                        "volume-up"
+                    } else {
+                        "volume-down"
+                    },
+                );
             }
-            ScrollAction::Brightness { device } => {
-                let mut command = Command::new("brightnessctl");
-                if let Some(device) = device {
-                    command.args(["-d", device.as_str()]);
-                }
-                let _ = command.args(["set", &format!("5%{direction}")]).spawn();
+            ScrollAction::Brightness => {
+                notifications::handle_command(
+                    &state,
+                    if direction == "+" {
+                        "brightness-scroll-up"
+                    } else {
+                        "brightness-scroll-down"
+                    },
+                );
             }
         }
         glib::Propagation::Stop
@@ -299,19 +349,15 @@ pub fn create(app: &gtk::Application, state: &Rc<AppState>) {
     window.set_child(Some(&overlay));
 
     let audio_click = gtk::GestureClick::new();
-    audio_click.connect_released(move |_, _, _, _| {
-        let _ = Command::new("wpctl")
-            .args(["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"])
-            .spawn();
+    audio_click.connect_released({
+        let state = Rc::clone(state);
+        move |_, _, _, _| {
+            notifications::handle_command(&state, "volume-mute");
+        }
     });
     audio.add_controller(audio_click);
-    add_scroll_controller(&audio, ScrollAction::Volume);
-    add_scroll_controller(
-        &brightness,
-        ScrollAction::Brightness {
-            device: modules::backlight_device(),
-        },
-    );
+    add_scroll_controller(&audio, ScrollAction::Volume, Rc::clone(state));
+    add_scroll_controller(&brightness, ScrollAction::Brightness, Rc::clone(state));
 
     let network_click = gtk::GestureClick::new();
     network_click.connect_released(move |_, _, _, _| {
@@ -327,10 +373,12 @@ pub fn create(app: &gtk::Application, state: &Rc<AppState>) {
 
     let (niri_tx, niri_rx) = std::sync::mpsc::channel();
     niri::spawn_poller(niri_tx);
+    let last_layout = Rc::new(Cell::new(None));
     glib::timeout_add_local(Duration::from_millis(16), {
         let state = Rc::clone(state);
         let workspaces = left.clone();
         let layout_label = language.clone();
+        let last_layout = Rc::clone(&last_layout);
         move || {
             if let Some(snapshot) = niri_rx.try_iter().last() {
                 if *state.workspaces.borrow() != snapshot.workspaces {
@@ -343,6 +391,21 @@ pub fn create(app: &gtk::Application, state: &Rc<AppState>) {
                     *state.layout_names.borrow_mut() = snapshot.layouts.names;
                     state.current_layout.set(snapshot.layouts.current_idx);
                     update_layout(&state, &layout_label);
+                    if let Some(previous) = last_layout.replace(Some(snapshot.layouts.current_idx))
+                        && previous != snapshot.layouts.current_idx
+                        && let Some(name) = state
+                            .layout_names
+                            .borrow()
+                            .get(snapshot.layouts.current_idx)
+                    {
+                        notifications::show(
+                            &state,
+                            Notice::transient(
+                                NoticeKind::Keyboard,
+                                notifications::layout_label(name),
+                            ),
+                        );
+                    }
                 }
                 if let Some(initial_window) = state.launcher_focus_window.get() {
                     if state.focused_window_id() != initial_window {
@@ -367,6 +430,8 @@ pub fn create(app: &gtk::Application, state: &Rc<AppState>) {
     modules::spawn_temperature_poller(cpu_tx);
     let (battery_tx, battery_rx) = std::sync::mpsc::sync_channel(1);
     modules::spawn_battery_poller(battery_tx);
+    let (peripheral_tx, peripheral_rx) = std::sync::mpsc::sync_channel(16);
+    modules::spawn_peripheral_monitor(peripheral_tx);
     let (brightness_tx, brightness_rx) = std::sync::mpsc::sync_channel(1);
     modules::spawn_brightness_poller(brightness_tx);
 
@@ -383,11 +448,35 @@ pub fn create(app: &gtk::Application, state: &Rc<AppState>) {
         cpu_rx,
         battery_rx,
         brightness_rx,
+        peripheral_rx,
     });
-    update_modules(&refs);
+    let mut last_network = None;
+    let mut last_power = None;
+    update_modules(&refs, state, &mut last_network, &mut last_power);
     let refs_update = Rc::clone(&refs);
+    let state_for_notifications = Rc::clone(state);
+    let state_for_modules = Rc::clone(state);
     glib::timeout_add_local(Duration::from_millis(50), move || {
-        update_modules(&refs_update);
+        for (connected, name) in refs_update.peripheral_rx.try_iter() {
+            notifications::show(
+                &state_for_notifications,
+                Notice::transient(
+                    NoticeKind::Peripheral,
+                    if connected {
+                        "device connected"
+                    } else {
+                        "device disconnected"
+                    },
+                )
+                .with_detail(name),
+            );
+        }
+        update_modules(
+            &refs_update,
+            &state_for_modules,
+            &mut last_network,
+            &mut last_power,
+        );
         glib::ControlFlow::Continue
     });
 

@@ -39,6 +39,13 @@ window#launcher listbox row.selected-row .app-row { background-color: #26233a; }
 .app-row.hidden-app { color: #908caa; }
 .app-icon { margin-right: 12px; }
 .app-meta { color: #6e6a86; font-size: 10px; }
+window#notification { background: transparent; }
+.notification-content { background: #1f1d2e; border: 1px solid #403d52; border-radius: 12px; padding: 14px 18px; color: #e0def4; }
+.notification-icon { color: #9ccfd8; font-size: 24px; min-width: 32px; }
+.notification-title { font-size: 13pt; font-weight: 600; }
+.notification-detail { color: #908caa; font-size: 10pt; }
+.notification-progress trough { background: #403d52; border-radius: 6px; min-height: 6px; }
+.notification-progress progress { background: #9ccfd8; border-radius: 6px; min-height: 6px; }
 "#;
 
 pub fn install() {

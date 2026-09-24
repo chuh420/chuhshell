@@ -15,6 +15,7 @@ pub struct NetworkInfo {
     pub text: String,
     pub tooltip: String,
     pub status: String,
+    pub ssid: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -22,6 +23,8 @@ pub struct BatteryStatus {
     pub text: String,
     pub level: String,
     pub tooltip: String,
+    pub plugged: bool,
+    pub charging: bool,
 }
 
 pub fn child_process(program: &str, args: &[&str]) -> Option<String> {
@@ -172,6 +175,8 @@ pub fn battery_status() -> BatteryStatus {
         text: format!("{icon} {capacity}%"),
         level: level.to_owned(),
         tooltip: format!("{capacity}% • {}", battery_estimate(&battery, &status)),
+        plugged: online,
+        charging: status.eq_ignore_ascii_case("charging"),
     }
 }
 
@@ -223,11 +228,13 @@ pub fn network_info() -> NetworkInfo {
             text: "󰖪".to_owned(),
             tooltip: "wi-fi: disconnected".to_owned(),
             status: "disconnected".to_owned(),
+            ssid: None,
         };
     };
-    let name = fields
-        .get(1)
-        .map(|value| value.to_lowercase())
+    let ssid = fields.get(1).cloned().filter(|value| !value.is_empty());
+    let name = ssid
+        .as_deref()
+        .map(str::to_lowercase)
         .unwrap_or_else(|| "wi-fi".to_owned());
     let signal: u8 = fields
         .get(2)
@@ -256,10 +263,11 @@ pub fn network_info() -> NetworkInfo {
         text: signal_icon(signal).to_owned(),
         tooltip: format!("{name}\n{signal}% • {ip}"),
         status: "connected".to_owned(),
+        ssid,
     }
 }
 
-fn brightness_level(device: &str) -> Option<(u8, &'static str)> {
+pub fn brightness_level(device: &str) -> Option<(u8, &'static str)> {
     let base = Path::new(BACKLIGHT_ROOT).join(device);
     let max =
         read_trim(&base.join("max_brightness")).and_then(|value| value.parse::<u64>().ok())?;
@@ -352,9 +360,65 @@ pub fn spawn_battery_poller(sender: SyncSender<BatteryStatus>) {
     thread::spawn(move || {
         loop {
             let _ = sender.try_send(battery_status());
-            thread::sleep(Duration::from_secs(30));
+            thread::sleep(Duration::from_secs(1));
         }
     });
+}
+
+pub fn spawn_peripheral_monitor(sender: SyncSender<(bool, String)>) {
+    thread::spawn(move || {
+        loop {
+            let Ok(mut child) = Command::new("udevadm")
+                .args(["monitor", "--udev", "--property", "--subsystem-match=usb"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+            else {
+                thread::sleep(Duration::from_secs(2));
+                continue;
+            };
+            if let Some(stdout) = child.stdout.take() {
+                let mut properties = Vec::new();
+                for line in BufReader::new(stdout).lines() {
+                    let Ok(line) = line else { break };
+                    if line.is_empty() {
+                        if let Some(event) = parse_udev_usb_event(&properties) {
+                            let _ = sender.try_send(event);
+                        }
+                        properties.clear();
+                    } else if let Some((key, value)) = line.split_once('=') {
+                        properties.push((key.to_owned(), value.to_owned()));
+                    }
+                }
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            thread::sleep(Duration::from_secs(2));
+        }
+    });
+}
+
+fn parse_udev_usb_event(properties: &[(String, String)]) -> Option<(bool, String)> {
+    let get = |key: &str| {
+        properties
+            .iter()
+            .find(|(property, _)| property == key)
+            .map(|(_, value)| value.as_str())
+    };
+    if get("SUBSYSTEM") != Some("usb") || get("DEVTYPE") != Some("usb_device") {
+        return None;
+    }
+    let connected = match get("ACTION")? {
+        "add" => true,
+        "remove" => false,
+        _ => return None,
+    };
+    let name = get("ID_MODEL_FROM_DATABASE")
+        .or_else(|| get("ID_MODEL"))
+        .or_else(|| get("PRODUCT"))
+        .unwrap_or("USB device")
+        .replace('_', " ");
+    Some((connected, name))
 }
 
 #[cfg(test)]
@@ -409,5 +473,49 @@ mod tests {
             format_estimate(u64::MAX, 1).as_deref(),
             Some(expected.as_str())
         );
+    }
+
+    #[test]
+    fn parses_usb_add_and_remove_events_only_for_usb_devices() {
+        let add = vec![
+            ("ACTION".to_owned(), "add".to_owned()),
+            ("SUBSYSTEM".to_owned(), "usb".to_owned()),
+            ("DEVTYPE".to_owned(), "usb_device".to_owned()),
+            ("ID_MODEL".to_owned(), "USB_Keyboard".to_owned()),
+        ];
+        assert_eq!(
+            parse_udev_usb_event(&add),
+            Some((true, "USB Keyboard".to_owned()))
+        );
+
+        let remove = vec![
+            ("ACTION".to_owned(), "remove".to_owned()),
+            ("SUBSYSTEM".to_owned(), "usb".to_owned()),
+            ("DEVTYPE".to_owned(), "usb_device".to_owned()),
+            (
+                "ID_MODEL_FROM_DATABASE".to_owned(),
+                "USB Keyboard".to_owned(),
+            ),
+        ];
+        assert_eq!(
+            parse_udev_usb_event(&remove),
+            Some((false, "USB Keyboard".to_owned()))
+        );
+    }
+
+    #[test]
+    fn ignores_usb_interface_and_non_usb_events() {
+        let interface = vec![
+            ("ACTION".to_owned(), "add".to_owned()),
+            ("SUBSYSTEM".to_owned(), "usb".to_owned()),
+            ("DEVTYPE".to_owned(), "usb_interface".to_owned()),
+        ];
+        assert_eq!(parse_udev_usb_event(&interface), None);
+        let input = vec![
+            ("ACTION".to_owned(), "add".to_owned()),
+            ("SUBSYSTEM".to_owned(), "input".to_owned()),
+            ("DEVTYPE".to_owned(), "usb_device".to_owned()),
+        ];
+        assert_eq!(parse_udev_usb_event(&input), None);
     }
 }

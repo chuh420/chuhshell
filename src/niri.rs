@@ -88,7 +88,7 @@ fn activate_workspace(workspaces: &mut [Workspace], id: u64, focused: bool) -> b
     changed
 }
 
-fn apply_event(event: &serde_json::Value, snapshot: &mut Snapshot) -> bool {
+pub fn apply_event(event: &serde_json::Value, snapshot: &mut Snapshot) -> bool {
     if let Some(value) = event
         .get("WorkspacesChanged")
         .and_then(|value| value.get("workspaces"))
