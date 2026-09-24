@@ -6,6 +6,8 @@ it contains a panel and an application launcher for niri, written in rust with
 gtk4 and gtk4-layer-shell. the project is mainly for personal use and may
 change to suit my needs.
 
+![bar](assets/bar.png)
+
 ## features
 
 the bar is a 36px layer-shell panel on top of every output, styled after the
@@ -20,6 +22,8 @@ react to scrolling, and most modules open a matching tool on click.
 the launcher is a fuzzy application launcher with two modes. the normal mode
 lists visible applications, filters them as you type and launches the selected
 one. the manage mode toggles applications between visible and hidden.
+
+![launcher](assets/launcher.png)
 
 ## controls
 
