@@ -1,14 +1,12 @@
 use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use glib::variant::ToVariant;
 use gtk::prelude::*;
 use gtk4_layer_shell as layer_shell;
 use gtk4_layer_shell::LayerShell;
-
-use crate::notifications::{Notice, NoticeKind};
 
 const BUS_NAME: &str = "org.freedesktop.Notifications";
 const OBJECT_PATH: &str = "/org/freedesktop/Notifications";
@@ -48,8 +46,6 @@ struct Notification {
     active: bool,
     popup: Option<gtk::Window>,
     timer: Option<glib::SourceId>,
-    internal_kind: Option<NoticeKind>,
-    updated: Instant,
 }
 
 pub struct NotificationCenter {
@@ -57,7 +53,7 @@ pub struct NotificationCenter {
     connection: RefCell<Option<gio::DBusConnection>>,
     notifications: RefCell<Vec<Notification>>,
     next_id: Cell<u32>,
-    button: RefCell<Option<gtk::Button>>,
+    label: RefCell<Option<gtk::Label>>,
     drawer: RefCell<Option<gtk::Window>>,
     list: RefCell<Option<gtk::Box>>,
 }
@@ -69,7 +65,7 @@ impl NotificationCenter {
             connection: RefCell::new(None),
             notifications: RefCell::new(Vec::new()),
             next_id: Cell::new(1),
-            button: RefCell::new(None),
+            label: RefCell::new(None),
             drawer: RefCell::new(None),
             list: RefCell::new(None),
         })
@@ -209,8 +205,6 @@ impl NotificationCenter {
                 active: true,
                 popup: None,
                 timer: None,
-                internal_kind: None,
-                updated: Instant::now(),
             });
             id
         };
@@ -442,48 +436,15 @@ impl NotificationCenter {
         }
     }
 
-    pub fn attach_button(&self, button: &gtk::Button) {
-        *self.button.borrow_mut() = Some(button.clone());
-        self.refresh_button();
+    pub fn attach_label(&self, label: &gtk::Label) {
+        *self.label.borrow_mut() = Some(label.clone());
+        self.refresh_label();
     }
 
-    pub fn push_internal(self: &Rc<Self>, notice: &Notice) {
-        let mut entries = self.notifications.borrow_mut();
-        let last = entries.last_mut();
-        if let Some(entry) = last
-            && entry.internal_kind == Some(notice.kind)
-            && entry.updated.elapsed() < Duration::from_secs(2)
-        {
-            entry.view.summary = notice.title.clone();
-            entry.view.body = notice.detail.clone().unwrap_or_default();
-            entry.updated = Instant::now();
-        } else {
-            let id = self.next_id.get();
-            self.next_id.set(id.wrapping_add(1).max(1));
-            entries.push(Notification {
-                view: NotificationView {
-                    id,
-                    app: "System".to_owned(),
-                    icon: "dialog-information-symbolic".to_owned(),
-                    summary: notice.title.clone(),
-                    body: notice.detail.clone().unwrap_or_default(),
-                    actions: Vec::new(),
-                },
-                active: false,
-                popup: None,
-                timer: None,
-                internal_kind: Some(notice.kind),
-                updated: Instant::now(),
-            });
-        }
-        drop(entries);
-        self.refresh();
-    }
-
-    fn refresh_button(&self) {
-        if let Some(button) = self.button.borrow().as_ref() {
+    fn refresh_label(&self) {
+        if let Some(label) = self.label.borrow().as_ref() {
             let count = self.notifications.borrow().len();
-            button.set_label(&if count == 0 {
+            label.set_text(&if count == 0 {
                 "󰂚".to_owned()
             } else {
                 format!("󰂚 {count}")
@@ -543,7 +504,7 @@ impl NotificationCenter {
     }
 
     fn refresh(self: &Rc<Self>) {
-        self.refresh_button();
+        self.refresh_label();
         let Some(list) = self.list.borrow().clone() else {
             return;
         };

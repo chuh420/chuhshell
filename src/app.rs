@@ -1,8 +1,9 @@
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 use crate::apps::AppEntry;
+use crate::background_apps::BackgroundManager;
 use crate::niri::Workspace;
-use crate::notification_center::NotificationCenter;
 use crate::notifications::OsdWidgets;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -14,12 +15,12 @@ pub enum LauncherMode {
 #[derive(Default)]
 pub struct AppState {
     pub bar: RefCell<Option<gtk::Window>>,
+    pub background_manager: RefCell<Option<Rc<BackgroundManager>>>,
     pub launcher: RefCell<Option<gtk::Window>>,
     pub osd: RefCell<Option<gtk::Window>>,
     pub osd_widgets: RefCell<Option<OsdWidgets>>,
     pub osd_timeout: RefCell<Option<glib::SourceId>>,
     pub osd_generation: Cell<u64>,
-    pub notification_center: RefCell<Option<std::rc::Weak<NotificationCenter>>>,
     pub workspaces: RefCell<Vec<Workspace>>,
     pub layout_names: RefCell<Vec<String>>,
     pub current_layout: Cell<usize>,

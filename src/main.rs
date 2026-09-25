@@ -1,5 +1,6 @@
 mod app;
 mod apps;
+mod background_apps;
 mod bar;
 mod css;
 mod fuzzy;
@@ -28,7 +29,6 @@ fn main() -> glib::ExitCode {
     app.connect_startup(move |_| startup_center.start());
 
     let state = Rc::new(AppState::default());
-    *state.notification_center.borrow_mut() = Some(Rc::downgrade(&center));
     let state_cli = Rc::clone(&state);
     let center_cli = Rc::clone(&center);
     app.connect_command_line(move |app, command_line| {
@@ -47,6 +47,15 @@ fn main() -> glib::ExitCode {
                 bar::create(app, &state_cli, &center_cli);
             }
             center_cli.toggle_drawer();
+            return glib::ExitCode::SUCCESS;
+        }
+        if command.as_deref() == Some("background-apps") {
+            if state_cli.bar.borrow().is_none() {
+                bar::create(app, &state_cli, &center_cli);
+            }
+            if let Some(manager) = state_cli.background_manager.borrow().as_ref() {
+                manager.toggle();
+            }
             return glib::ExitCode::SUCCESS;
         }
         let mode = arguments.iter().skip(1).find_map(|argument| {

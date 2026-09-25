@@ -8,6 +8,7 @@ use gtk::prelude::*;
 use gtk4_layer_shell as layer_shell;
 
 use crate::app::AppState;
+use crate::background_apps::BackgroundManager;
 use crate::modules::{self, DeviceEvent, NetworkInfo};
 use crate::niri;
 use crate::notification_center::NotificationCenter;
@@ -310,7 +311,6 @@ pub fn create(app: &gtk::Application, state: &Rc<AppState>, center: &Rc<Notifica
     clock.add_controller(gesture);
     clock.set_halign(gtk::Align::Center);
     clock.set_valign(gtk::Align::Center);
-    overlay.add_overlay(&clock);
 
     let audio = module("--", "audio", "audio volume");
     let brightness = module("--", "brightness", "screen brightness — scroll to adjust");
@@ -320,22 +320,41 @@ pub fn create(app: &gtk::Application, state: &Rc<AppState>, center: &Rc<Notifica
     let temperature = module("", "temperature", "cpu temperature");
     let network = module("󰖪", "network", "wi-fi status");
     let battery = module("", "battery", "battery level");
-    let notification_button = gtk::Button::with_label("󰂚");
-    notification_button.add_css_class("module");
-    notification_button.add_css_class("notification-toggle");
-    notification_button.set_tooltip_text(Some("Notifications"));
-    center.attach_button(&notification_button);
-    notification_button.connect_clicked({
+    let notification_label = module("󰂚", "notification-toggle", "Notifications");
+    center.attach_label(&notification_label);
+    let notification_click = gtk::GestureClick::new();
+    notification_click.connect_released({
         let center = Rc::clone(center);
-        move |_| center.toggle_drawer()
+        move |_, _, _, _| center.toggle_drawer()
     });
+    notification_label.add_controller(notification_click);
+    let background_manager = BackgroundManager::new(app);
+    *state.background_manager.borrow_mut() = Some(Rc::clone(&background_manager));
+    let background_label = module("󰀻", "background-apps-toggle", "Background apps");
+    background_manager.attach_label(&background_label);
+    let background_click = gtk::GestureClick::new();
+    background_click.connect_released({
+        let manager = Rc::clone(&background_manager);
+        move |_, _, _, _| manager.toggle()
+    });
+    background_label.add_controller(background_click);
+    let center_modules = gtk::Grid::new();
+    center_modules.set_column_homogeneous(true);
+    center_modules.set_column_spacing(6);
+    center_modules.set_halign(gtk::Align::Center);
+    center_modules.set_valign(gtk::Align::Center);
+    background_label.set_halign(gtk::Align::End);
+    notification_label.set_halign(gtk::Align::Start);
+    center_modules.attach(&background_label, 0, 0, 1, 1);
+    center_modules.attach(&clock, 1, 0, 1, 1);
+    center_modules.attach(&notification_label, 2, 0, 1, 1);
+    overlay.add_overlay(&center_modules);
     right.append(&audio);
     right.append(&brightness);
     right.append(&language);
     right.append(&temperature);
     right.append(&network);
     right.append(&battery);
-    right.append(&notification_button);
     root.append(&left);
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     spacer.set_hexpand(true);

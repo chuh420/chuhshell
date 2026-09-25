@@ -163,14 +163,6 @@ impl Notice {
 }
 
 pub fn show(state: &Rc<AppState>, notice: Notice) {
-    if let Some(center) = state
-        .notification_center
-        .borrow()
-        .as_ref()
-        .and_then(std::rc::Weak::upgrade)
-    {
-        center.push_internal(&notice);
-    }
     let generation = state.osd_generation.get().wrapping_add(1);
     state.osd_generation.set(generation);
     if let Some(timeout) = state.osd_timeout.borrow_mut().take() {

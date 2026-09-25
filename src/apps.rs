@@ -9,6 +9,7 @@ pub struct AppEntry {
     pub icon: String,
     pub comment: String,
     pub exec: String,
+    pub terminal: bool,
     pub hidden: bool,
 }
 
@@ -146,6 +147,9 @@ fn parse_entry_for_locale(
         icon: get_string("Icon").unwrap_or_default(),
         comment: get_string("Comment").unwrap_or_default(),
         exec: get_string("Exec").unwrap_or_default(),
+        terminal: key_file
+            .boolean("Desktop Entry", "Terminal")
+            .unwrap_or(false),
         hidden,
     })
 }

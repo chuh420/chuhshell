@@ -34,6 +34,12 @@ pub struct Snapshot {
     pub layouts: KeyboardLayouts,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct WindowProcess {
+    pub pid: Option<u32>,
+    pub app_id: Option<String>,
+}
+
 fn request(request: &str) -> Option<serde_json::Value> {
     let socket_path = std::env::var_os("NIRI_SOCKET")?;
     let mut stream = UnixStream::connect(socket_path).ok()?;
@@ -56,6 +62,10 @@ fn response(response: &str) -> Option<serde_json::Value> {
 
 pub fn command(request: &str) -> bool {
     self::request(request).is_some()
+}
+
+pub fn window_processes() -> Option<Vec<WindowProcess>> {
+    serde_json::from_value(request("\"Windows\"")?.get("Windows")?.clone()).ok()
 }
 
 fn activate_workspace(workspaces: &mut [Workspace], id: u64, focused: bool) -> bool {

@@ -12,10 +12,16 @@ the bar is a 36px layer-shell panel on top of every output, styled after the
 rosé pine palette. it shows workspaces with their empty, active, focused and
 urgent states, and clicking one focuses it. next to them is a clock that
 toggles between the time and the date on click, with the full date in its
-tooltip. the remaining modules are audio with volume and mute state, screen
-brightness, the current keyboard layout, the cpu package temperature, wi-fi
-signal and ip, and the battery with a time estimate. audio and brightness
-react to scrolling, and most modules open a matching tool on click.
+tooltip. the background apps and notifications modules sit beside the clock;
+`chuhshell background-apps` opens the background apps list. the remaining
+modules are audio with volume and mute state, screen brightness, the current
+keyboard layout, the cpu package temperature, wi-fi signal and ip, and the
+battery with a time estimate. audio and brightness react to scrolling, and
+most modules open a matching tool on click.
+the center modules list background desktop applications without open niri
+windows, such as tray-resident apps. `Open` launches an app again and `Quit`
+sends `SIGTERM` to its background processes. `Alt+F4` closes the focused
+window normally and leaves any background process running.
 
 the launcher is a fuzzy application launcher with two modes. the normal mode
 lists visible applications by launch frequency, filters them as you type and
@@ -27,7 +33,9 @@ brightness and keyboard layout changes. it also reports wi-fi connections and
 network names, power and charging changes, and usb device connections. repeated
 updates refresh the current notification instead of flashing a new window.
 it owns `org.freedesktop.Notifications` on the session bus to show notifications
-from other applications. the notification button in the top bar opens a
+from other applications. system OSD events such as volume, brightness, keyboard
+layout and device changes stay in their original popup and are not saved in the
+notification list. the notification button in the top bar opens a
 scrollable list; `Clear notifications` removes its contents. notification
 actions and standard close signals are supported. notification history lasts
 for the current chuhshell session. `chuhshell notifications` also toggles the
@@ -81,8 +89,10 @@ a separate notification daemon.
 ## structure
 
 the code is split by feature. `main.rs` is the entry point and routes
-commands. `app.rs` holds the shared state. `bar.rs` and `launcher.rs` build the
-two windows, `niri.rs` talks to niri over its ipc and event stream, and
+commands. `app.rs` holds the shared state. `bar.rs` assembles the panel,
+`background_apps.rs` finds and manages running desktop applications without
+Niri windows, and `launcher.rs` builds the launcher. `niri.rs` talks to niri
+over its ipc and event stream, and
 `modules.rs` runs the system pollers and usb event monitor. `notifications.rs`
 builds the on-screen notifications, and `notification_center.rs` handles the
 D-Bus service and notification drawer. `apps.rs` reads desktop entries and the

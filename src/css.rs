@@ -48,6 +48,14 @@ window#notification { background: transparent; }
 .notification-progress trough { background: #403d52; border-radius: 6px; min-height: 6px; }
 .notification-progress progress { background: #9ccfd8; border-radius: 6px; min-height: 6px; }
 .notification-toggle { color: #c4a7e7; }
+.background-apps-toggle { color: #9ccfd8; }
+window#background-apps-drawer { background: transparent; }
+.background-apps-content { background: #1f1d2e; color: #e0def4; border: 1px solid #403d52; border-radius: 12px; padding: 14px; }
+.background-apps-heading { font-size: 14px; font-weight: 600; }
+.background-apps-empty { color: #908caa; padding: 18px; }
+.background-app-row { background: #26233a; border-radius: 8px; padding: 8px; }
+.background-app-action { background: #403d52; color: #e0def4; border-radius: 8px; padding: 5px 8px; }
+.background-app-action:hover { background: #524f67; }
 window#app-notification, window#notification-drawer { background: transparent; }
 .app-notification-content, .notification-drawer-content { background: #1f1d2e; color: #e0def4; border: 1px solid #403d52; border-radius: 12px; padding: 14px; }
 .app-notification-app { color: #9ccfd8; font-size: 10px; }
