@@ -18,8 +18,9 @@ signal and ip, and the battery with a time estimate. audio and brightness
 react to scrolling, and most modules open a matching tool on click.
 
 the launcher is a fuzzy application launcher with two modes. the normal mode
-lists visible applications, filters them as you type and launches the selected
-one. the manage mode toggles applications between visible and hidden.
+lists visible applications by launch frequency, filters them as you type and
+launches the selected one. search match quality takes priority over frequency.
+the manage mode toggles applications between visible and hidden.
 
 chuhshell displays its own on-screen notifications for volume, microphone,
 brightness and keyboard layout changes. it also reports wi-fi connections and
@@ -41,7 +42,9 @@ hidden applications are read from and written to
 `~/.config/chuhshell/hidden-apps`, one desktop-file id per line, with lines
 starting with `#` ignored. the bar detects the battery, ac adapter, backlight,
 wireless interface and cpu thermal sensor at runtime, so it is not tied to
-specific device names. usb connection events are read from udev.
+specific device names. launch counts are stored in
+`~/.local/state/chuhshell/launch-counts.json` (or under `XDG_STATE_HOME`). usb
+connection events are read from udev.
 
 ## building and running
 

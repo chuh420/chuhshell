@@ -1,9 +1,14 @@
+#[cfg(test)]
 pub fn score(candidate: &str, query: &str) -> Option<i64> {
     let query = query.trim().to_lowercase();
+    let candidate = candidate.to_lowercase();
+    score_lowercase(&candidate, &query)
+}
+
+pub fn score_lowercase(candidate: &str, query: &str) -> Option<i64> {
     if query.is_empty() {
         return Some(0);
     }
-    let candidate = candidate.to_lowercase();
     let chars: Vec<char> = candidate.chars().collect();
     let mut score = 0i64;
     let mut cursor = 0usize;

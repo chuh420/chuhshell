@@ -39,6 +39,7 @@ window#launcher listbox row.selected-row .app-row { background-color: #26233a; }
 .app-row.hidden-app { color: #908caa; }
 .app-icon { margin-right: 12px; }
 .app-meta { color: #6e6a86; font-size: 10px; }
+.app-empty { color: #908caa; padding: 20px; }
 window#notification { background: transparent; }
 .notification-content { background: #1f1d2e; border: 1px solid #403d52; border-radius: 12px; padding: 14px 18px; color: #e0def4; }
 .notification-icon { color: #9ccfd8; font-size: 24px; min-width: 32px; }

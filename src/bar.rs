@@ -1,5 +1,4 @@
 use std::cell::{Cell, RefCell};
-use std::process::Command;
 use std::rc::Rc;
 use std::sync::mpsc::Receiver;
 use std::thread;
@@ -9,7 +8,7 @@ use gtk::prelude::*;
 use gtk4_layer_shell as layer_shell;
 
 use crate::app::AppState;
-use crate::modules::{self, BatteryStatus, NetworkInfo};
+use crate::modules::{self, DeviceEvent, NetworkInfo};
 use crate::niri;
 use crate::notifications::{self, ConnectionNotice, Notice, NoticeKind, PowerNotice};
 use crate::ui::set_layer_window;
@@ -25,9 +24,7 @@ struct ModuleRefs {
     audio_rx: Receiver<Option<String>>,
     network_rx: Receiver<NetworkInfo>,
     cpu_rx: Receiver<Option<i64>>,
-    battery_rx: Receiver<BatteryStatus>,
-    brightness_rx: Receiver<Option<(u8, &'static str)>>,
-    peripheral_rx: Receiver<(bool, String)>,
+    device_rx: Receiver<DeviceEvent>,
 }
 
 type NetworkState = Option<(bool, Option<String>)>;
@@ -128,16 +125,11 @@ fn update_layout(state: &Rc<AppState>, label: &gtk::Label) {
     label.set_tooltip_text(Some(&name.to_lowercase()));
 }
 
-fn update_modules(
-    refs: &ModuleRefs,
-    state: &Rc<AppState>,
-    last_network: &mut NetworkState,
-    last_power: &mut Option<(bool, bool)>,
-) {
-    if let Some(text) = refs.audio_rx.try_iter().last().flatten() {
-        *refs.audio_text.borrow_mut() = Some(text);
-    }
-    if let Some(text) = refs.audio_text.borrow().as_ref() {
+fn update_modules(refs: &ModuleRefs, state: &Rc<AppState>, last_network: &mut NetworkState) {
+    if let Some(text) = refs.audio_rx.try_iter().last().flatten()
+        && refs.audio_text.borrow().as_ref() != Some(&text)
+    {
+        *refs.audio_text.borrow_mut() = Some(text.clone());
         let muted = text.contains("MUTED");
         let volume = text
             .split_whitespace()
@@ -158,25 +150,6 @@ fn update_modules(
         refs.audio.remove_css_class("muted");
         if muted {
             refs.audio.add_css_class("muted");
-        }
-    } else {
-        refs.audio.set_text(" --");
-    }
-
-    if let Some(value) = refs.brightness_rx.try_iter().last() {
-        match value {
-            Some((percent, icon)) => {
-                refs.brightness
-                    .set_text(&brightness_text(Some((percent, icon))));
-                refs.brightness
-                    .set_tooltip_text(Some("screen brightness — scroll to adjust"));
-                refs.brightness.set_visible(true);
-            }
-            None => {
-                refs.brightness.set_text(&brightness_text(None));
-                refs.brightness
-                    .set_tooltip_text(Some("screen brightness unavailable"));
-            }
         }
     }
 
@@ -214,15 +187,26 @@ fn update_modules(
             None => {}
         }
         *last_network = Some((connected, info.ssid.clone()));
-        refs.network.set_text(&info.text);
-        refs.network.set_tooltip_text(Some(&info.tooltip));
-        refs.network.remove_css_class("disconnected");
-        if info.status == "disconnected" {
-            refs.network.add_css_class("disconnected");
+        if refs.network.text() != info.text
+            || refs.network.tooltip_text().as_deref() != Some(&info.tooltip)
+        {
+            refs.network.set_text(&info.text);
+            refs.network.set_tooltip_text(Some(&info.tooltip));
+            if connected {
+                refs.network.remove_css_class("disconnected");
+            } else {
+                refs.network.add_css_class("disconnected");
+            }
         }
     }
+}
 
-    if let Some(battery) = refs.battery_rx.try_iter().last() {
+fn update_battery(refs: &ModuleRefs, state: &Rc<AppState>, last_power: &mut Option<(bool, bool)>) {
+    let battery = modules::battery_status();
+    if refs.battery.text() != battery.text
+        || refs.battery.tooltip_text().as_deref() != Some(&battery.tooltip)
+        || *last_power != Some((battery.plugged, battery.charging))
+    {
         let transition =
             notifications::power_transition(*last_power, battery.plugged, battery.charging);
         *last_power = Some((battery.plugged, battery.charging));
@@ -361,20 +345,20 @@ pub fn create(app: &gtk::Application, state: &Rc<AppState>) {
 
     let network_click = gtk::GestureClick::new();
     network_click.connect_released(move |_, _, _, _| {
-        let _ = Command::new("foot").args(["-e", "nmtui"]).spawn();
+        modules::spawn_detached("foot", &["-e", "nmtui"]);
     });
     network.add_controller(network_click);
 
     let temp_click = gtk::GestureClick::new();
     temp_click.connect_released(move |_, _, _, _| {
-        let _ = Command::new("foot").args(["-e", "btop"]).spawn();
+        modules::spawn_detached("foot", &["-e", "btop"]);
     });
     temperature.add_controller(temp_click);
 
     let (niri_tx, niri_rx) = std::sync::mpsc::channel();
     niri::spawn_poller(niri_tx);
     let last_layout = Rc::new(Cell::new(None));
-    glib::timeout_add_local(Duration::from_millis(16), {
+    glib::timeout_add_local(Duration::from_millis(32), {
         let state = Rc::clone(state);
         let workspaces = left.clone();
         let layout_label = language.clone();
@@ -428,12 +412,8 @@ pub fn create(app: &gtk::Application, state: &Rc<AppState>) {
     modules::spawn_network_poller(network_tx);
     let (cpu_tx, cpu_rx) = std::sync::mpsc::sync_channel(1);
     modules::spawn_temperature_poller(cpu_tx);
-    let (battery_tx, battery_rx) = std::sync::mpsc::sync_channel(1);
-    modules::spawn_battery_poller(battery_tx);
-    let (peripheral_tx, peripheral_rx) = std::sync::mpsc::sync_channel(16);
-    modules::spawn_peripheral_monitor(peripheral_tx);
-    let (brightness_tx, brightness_rx) = std::sync::mpsc::sync_channel(1);
-    modules::spawn_brightness_poller(brightness_tx);
+    let (device_tx, device_rx) = std::sync::mpsc::sync_channel(32);
+    modules::spawn_device_monitor(device_tx);
 
     let refs = Rc::new(ModuleRefs {
         audio,
@@ -446,41 +426,84 @@ pub fn create(app: &gtk::Application, state: &Rc<AppState>) {
         audio_rx,
         network_rx,
         cpu_rx,
-        battery_rx,
-        brightness_rx,
-        peripheral_rx,
+        device_rx,
     });
     let mut last_network = None;
     let mut last_power = None;
-    update_modules(&refs, state, &mut last_network, &mut last_power);
+    update_modules(&refs, state, &mut last_network);
+    update_battery(&refs, state, &mut last_power);
     let refs_update = Rc::clone(&refs);
     let state_for_notifications = Rc::clone(state);
     let state_for_modules = Rc::clone(state);
-    glib::timeout_add_local(Duration::from_millis(50), move || {
-        for (connected, name) in refs_update.peripheral_rx.try_iter() {
-            notifications::show(
-                &state_for_notifications,
-                Notice::transient(
-                    NoticeKind::Peripheral,
-                    if connected {
-                        "device connected"
-                    } else {
-                        "device disconnected"
-                    },
-                )
-                .with_detail(name),
-            );
+    let mut backlight = modules::backlight_device();
+    let mut last_brightness = backlight.as_deref().and_then(modules::brightness_level);
+    refs.brightness.set_text(&brightness_text(last_brightness));
+    if last_brightness.is_none() {
+        refs.brightness
+            .set_tooltip_text(Some("screen brightness unavailable"));
+    }
+    let mut brightness_check = std::time::Instant::now();
+    let mut battery_check = std::time::Instant::now();
+    glib::timeout_add_local(Duration::from_millis(100), move || {
+        let mut brightness_changed = false;
+        let mut battery_changed = false;
+        for event in refs_update.device_rx.try_iter() {
+            match event {
+                DeviceEvent::Peripheral(connected, name) => notifications::show(
+                    &state_for_notifications,
+                    Notice::transient(
+                        NoticeKind::Peripheral,
+                        if connected {
+                            "device connected"
+                        } else {
+                            "device disconnected"
+                        },
+                    )
+                    .with_detail(name),
+                ),
+                DeviceEvent::Brightness => brightness_changed = true,
+                DeviceEvent::Power => battery_changed = true,
+            }
         }
-        update_modules(
-            &refs_update,
-            &state_for_modules,
-            &mut last_network,
-            &mut last_power,
-        );
+        if battery_check.elapsed() >= Duration::from_secs(30) {
+            battery_changed = true;
+        }
+        if battery_changed {
+            battery_check = std::time::Instant::now();
+            update_battery(&refs_update, &state_for_modules, &mut last_power);
+        }
+        if brightness_check.elapsed() >= Duration::from_secs(15) {
+            brightness_check = std::time::Instant::now();
+            brightness_changed = true;
+        }
+        if brightness_changed {
+            if backlight.is_none() {
+                backlight = modules::backlight_device();
+            }
+            let mut value = backlight.as_deref().and_then(modules::brightness_level);
+            if value.is_none() {
+                backlight = modules::backlight_device();
+                value = backlight.as_deref().and_then(modules::brightness_level);
+            }
+            if value != last_brightness {
+                refs_update.brightness.set_text(&brightness_text(value));
+                refs_update
+                    .brightness
+                    .set_tooltip_text(Some(if value.is_some() {
+                        "screen brightness — scroll to adjust"
+                    } else {
+                        "screen brightness unavailable"
+                    }));
+                last_brightness = value;
+            }
+        }
+        update_modules(&refs_update, &state_for_modules, &mut last_network);
         glib::ControlFlow::Continue
     });
 
     let clock = refs.clock.clone();
+    let mut last_clock = String::new();
+    let mut last_day = String::new();
     glib::timeout_add_local(Duration::from_secs(1), move || {
         if let Ok(now) = glib::DateTime::now_local() {
             let format = if clock_alt.get() { "%a %d.%m" } else { "%H:%M" };
@@ -492,8 +515,14 @@ pub fn create(app: &gtk::Application, state: &Rc<AppState>) {
                 .format("%A, %d %B %Y")
                 .map(|text| text.to_string())
                 .unwrap_or_default();
-            clock.set_text(&format!("󰥔 {time}"));
-            clock.set_tooltip_text(Some(&weekday.to_lowercase()));
+            if time != last_clock {
+                clock.set_text(&format!("󰥔 {time}"));
+                last_clock = time;
+            }
+            if weekday != last_day {
+                clock.set_tooltip_text(Some(&weekday.to_lowercase()));
+                last_day = weekday;
+            }
         }
         glib::ControlFlow::Continue
     });

@@ -27,6 +27,12 @@ pub struct BatteryStatus {
     pub charging: bool,
 }
 
+pub enum DeviceEvent {
+    Peripheral(bool, String),
+    Brightness,
+    Power,
+}
+
 pub fn child_process(program: &str, args: &[&str]) -> Option<String> {
     let output = Command::new(program)
         .args(args)
@@ -37,6 +43,16 @@ pub fn child_process(program: &str, args: &[&str]) -> Option<String> {
         .status
         .success()
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+pub fn spawn_detached(program: &str, args: &[&str]) -> bool {
+    let Ok(mut child) = Command::new(program).args(args).spawn() else {
+        return false;
+    };
+    thread::spawn(move || {
+        let _ = child.wait();
+    });
+    true
 }
 
 fn read_trim(path: &Path) -> Option<String> {
@@ -316,20 +332,6 @@ pub fn spawn_audio_poller(sender: SyncSender<Option<String>>) {
     });
 }
 
-pub fn spawn_brightness_poller(sender: SyncSender<Option<(u8, &'static str)>>) {
-    thread::spawn(move || {
-        let mut device = backlight_device();
-        loop {
-            if device.is_none() {
-                device = backlight_device();
-            }
-            let level = device.as_deref().and_then(brightness_level);
-            let _ = sender.try_send(level);
-            thread::sleep(Duration::from_millis(50));
-        }
-    });
-}
-
 pub fn spawn_temperature_poller(sender: SyncSender<Option<i64>>) {
     thread::spawn(move || {
         let mut sensor = thermal_sensor_path();
@@ -356,20 +358,18 @@ pub fn spawn_network_poller(sender: SyncSender<NetworkInfo>) {
     });
 }
 
-pub fn spawn_battery_poller(sender: SyncSender<BatteryStatus>) {
-    thread::spawn(move || {
-        loop {
-            let _ = sender.try_send(battery_status());
-            thread::sleep(Duration::from_secs(1));
-        }
-    });
-}
-
-pub fn spawn_peripheral_monitor(sender: SyncSender<(bool, String)>) {
+pub fn spawn_device_monitor(sender: SyncSender<DeviceEvent>) {
     thread::spawn(move || {
         loop {
             let Ok(mut child) = Command::new("udevadm")
-                .args(["monitor", "--udev", "--property", "--subsystem-match=usb"])
+                .args([
+                    "monitor",
+                    "--udev",
+                    "--property",
+                    "--subsystem-match=usb",
+                    "--subsystem-match=backlight",
+                    "--subsystem-match=power_supply",
+                ])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
                 .spawn()
@@ -382,7 +382,7 @@ pub fn spawn_peripheral_monitor(sender: SyncSender<(bool, String)>) {
                 for line in BufReader::new(stdout).lines() {
                     let Ok(line) = line else { break };
                     if line.is_empty() {
-                        if let Some(event) = parse_udev_usb_event(&properties) {
+                        if let Some(event) = parse_device_event(&properties) {
                             let _ = sender.try_send(event);
                         }
                         properties.clear();
@@ -396,6 +396,26 @@ pub fn spawn_peripheral_monitor(sender: SyncSender<(bool, String)>) {
             thread::sleep(Duration::from_secs(2));
         }
     });
+}
+
+fn parse_device_event(properties: &[(String, String)]) -> Option<DeviceEvent> {
+    if properties
+        .iter()
+        .any(|(key, value)| key == "SUBSYSTEM" && value == "power_supply")
+    {
+        return Some(DeviceEvent::Power);
+    }
+    if properties
+        .iter()
+        .any(|(key, value)| key == "SUBSYSTEM" && value == "backlight")
+        && properties
+            .iter()
+            .any(|(key, value)| key == "ACTION" && value == "change")
+    {
+        return Some(DeviceEvent::Brightness);
+    }
+    parse_udev_usb_event(properties)
+        .map(|(connected, name)| DeviceEvent::Peripheral(connected, name))
 }
 
 fn parse_udev_usb_event(properties: &[(String, String)]) -> Option<(bool, String)> {
@@ -517,5 +537,22 @@ mod tests {
             ("DEVTYPE".to_owned(), "usb_device".to_owned()),
         ];
         assert_eq!(parse_udev_usb_event(&input), None);
+    }
+
+    #[test]
+    fn device_monitor_distinguishes_brightness_and_power_events() {
+        let brightness = vec![
+            ("SUBSYSTEM".to_owned(), "backlight".to_owned()),
+            ("ACTION".to_owned(), "change".to_owned()),
+        ];
+        assert!(matches!(
+            parse_device_event(&brightness),
+            Some(DeviceEvent::Brightness)
+        ));
+        let power = vec![("SUBSYSTEM".to_owned(), "power_supply".to_owned())];
+        assert!(matches!(
+            parse_device_event(&power),
+            Some(DeviceEvent::Power)
+        ));
     }
 }

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -18,6 +18,41 @@ fn config_path() -> PathBuf {
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
         .unwrap_or_else(|| PathBuf::from("."));
     config_home.join("chuhshell/hidden-apps")
+}
+
+fn launch_counts_path() -> PathBuf {
+    let state_home = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
+        .unwrap_or_else(|| PathBuf::from("."));
+    state_home.join("chuhshell/launch-counts.json")
+}
+
+pub fn read_launch_counts() -> HashMap<String, u64> {
+    fs::read_to_string(launch_counts_path())
+        .ok()
+        .and_then(|contents| serde_json::from_str(&contents).ok())
+        .unwrap_or_default()
+}
+
+pub fn record_launch(counts: &mut HashMap<String, u64>, id: &str) -> std::io::Result<()> {
+    record_launch_at(&launch_counts_path(), counts, id)
+}
+
+fn record_launch_at(
+    path: &Path,
+    counts: &mut HashMap<String, u64>,
+    id: &str,
+) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let count = counts.entry(id.to_owned()).or_default();
+    *count = count.saturating_add(1);
+    let contents = serde_json::to_vec(counts)?;
+    let temp = path.with_extension("tmp");
+    fs::write(&temp, contents)?;
+    fs::rename(temp, path)
 }
 
 pub fn toggled_hidden(
@@ -343,5 +378,22 @@ Exec=/usr/bin/firefox %u
         let apps = vec![firefox];
 
         assert!(toggled_hidden(&apps, "missing.desktop", HashSet::new()).is_none());
+    }
+
+    #[test]
+    fn launch_counts_survive_writes_and_saturate() {
+        let path = std::env::temp_dir().join(format!(
+            "chuhshell-launch-counts-{}.json",
+            std::process::id()
+        ));
+        let mut counts = HashMap::from([("firefox.desktop".to_owned(), u64::MAX - 1)]);
+        record_launch_at(&path, &mut counts, "firefox.desktop").expect("save launch count");
+        record_launch_at(&path, &mut counts, "firefox.desktop").expect("save saturated count");
+        record_launch_at(&path, &mut counts, "foot.desktop").expect("save another app");
+        let saved: HashMap<String, u64> =
+            serde_json::from_slice(&fs::read(&path).expect("read counts")).expect("parse counts");
+        assert_eq!(saved.get("firefox.desktop"), Some(&u64::MAX));
+        assert_eq!(saved.get("foot.desktop"), Some(&1));
+        fs::remove_file(path).expect("remove test counts");
     }
 }

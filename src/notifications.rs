@@ -48,6 +48,28 @@ pub struct Notice {
     pub progress: Option<u8>,
 }
 
+pub struct OsdWidgets {
+    icon: gtk::Label,
+    title: gtk::Label,
+    detail: gtk::Label,
+    progress: gtk::ProgressBar,
+}
+
+impl OsdWidgets {
+    fn update(&self, notice: &Notice) {
+        self.icon.set_text(notice.kind.icon());
+        self.title.set_text(&notice.title);
+        self.detail.set_visible(notice.detail.is_some());
+        if let Some(detail) = &notice.detail {
+            self.detail.set_text(detail);
+        }
+        self.progress.set_visible(notice.progress.is_some());
+        if let Some(progress) = notice.progress {
+            self.progress.set_fraction(f64::from(progress) / 100.0);
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConnectionNotice {
     Connected(String),
@@ -167,10 +189,13 @@ pub fn show(state: &Rc<AppState>, notice: Notice) {
         window.set_exclusive_zone(0);
         window.set_keyboard_mode(layer_shell::KeyboardMode::None);
 
+        *state.osd_widgets.borrow_mut() = Some(build_content(&window));
+
         let state_weak = Rc::downgrade(state);
         window.connect_close_request(move |_| {
             if let Some(state) = state_weak.upgrade() {
                 state.osd.borrow_mut().take();
+                state.osd_widgets.borrow_mut().take();
                 if let Some(timeout) = state.osd_timeout.borrow_mut().take() {
                     timeout.remove();
                 }
@@ -181,7 +206,9 @@ pub fn show(state: &Rc<AppState>, notice: Notice) {
         window
     };
 
-    build_content(&window, &notice);
+    if let Some(widgets) = state.osd_widgets.borrow().as_ref() {
+        widgets.update(&notice);
+    }
     window.present();
 
     let expected = generation;
@@ -200,34 +227,35 @@ pub fn show(state: &Rc<AppState>, notice: Notice) {
     *state.osd_timeout.borrow_mut() = Some(timeout);
 }
 
-fn build_content(window: &impl IsA<gtk::Window>, notice: &Notice) {
+fn build_content(window: &impl IsA<gtk::Window>) -> OsdWidgets {
     let content = gtk::Box::new(gtk::Orientation::Horizontal, 14);
     content.add_css_class("notification-content");
-    let icon = gtk::Label::new(Some(notice.kind.icon()));
+    let icon = gtk::Label::new(None);
     icon.add_css_class("notification-icon");
     content.append(&icon);
 
     let text = gtk::Box::new(gtk::Orientation::Vertical, 5);
     text.set_valign(gtk::Align::Center);
-    let title = gtk::Label::new(Some(&notice.title));
+    let title = gtk::Label::new(None);
     title.set_xalign(0.0);
     title.add_css_class("notification-title");
     text.append(&title);
-    if let Some(detail) = notice.detail.as_deref() {
-        let detail = gtk::Label::new(Some(detail));
-        detail.set_xalign(0.0);
-        detail.set_wrap(true);
-        detail.add_css_class("notification-detail");
-        text.append(&detail);
-    }
-    if let Some(progress) = notice.progress {
-        let bar = gtk::ProgressBar::new();
-        bar.set_fraction(f64::from(progress) / 100.0);
-        bar.add_css_class("notification-progress");
-        text.append(&bar);
-    }
+    let detail = gtk::Label::new(None);
+    detail.set_xalign(0.0);
+    detail.set_wrap(true);
+    detail.add_css_class("notification-detail");
+    text.append(&detail);
+    let progress = gtk::ProgressBar::new();
+    progress.add_css_class("notification-progress");
+    text.append(&progress);
     content.append(&text);
     window.set_child(Some(&content));
+    OsdWidgets {
+        icon,
+        title,
+        detail,
+        progress,
+    }
 }
 
 pub fn handle_command(state: &Rc<AppState>, command: &str) -> bool {

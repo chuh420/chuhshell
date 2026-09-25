@@ -1,4 +1,6 @@
-use std::process::Command;
+use std::cell::RefCell;
+use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use gtk::gdk;
@@ -8,10 +10,45 @@ use gtk4_layer_shell as layer_shell;
 use crate::app::{AppState, LauncherMode};
 use crate::apps::{self, AppEntry};
 use crate::fuzzy;
+use crate::modules;
 use crate::ui::set_layer_window;
 
 pub fn show(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode) {
     create(app, state, mode);
+}
+
+fn compare_apps(
+    a_id: &str,
+    b_id: &str,
+    scores: &HashMap<String, i64>,
+    names: &HashMap<String, (String, String)>,
+    counts: &HashMap<String, u64>,
+    mode: LauncherMode,
+    searching: bool,
+) -> Ordering {
+    let score_order = if searching {
+        scores.get(b_id).cmp(&scores.get(a_id))
+    } else {
+        Ordering::Equal
+    };
+    let count_order = if mode == LauncherMode::Normal {
+        counts
+            .get(b_id)
+            .copied()
+            .unwrap_or(0)
+            .cmp(&counts.get(a_id).copied().unwrap_or(0))
+    } else {
+        Ordering::Equal
+    };
+    score_order
+        .then(count_order)
+        .then_with(|| {
+            names
+                .get(a_id)
+                .map(|(name, _)| name)
+                .cmp(&names.get(b_id).map(|(name, _)| name))
+        })
+        .then_with(|| a_id.cmp(b_id))
 }
 
 fn create(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode) {
@@ -55,36 +92,116 @@ fn create(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode) {
     let list = gtk::ListBox::new();
     list.set_selection_mode(gtk::SelectionMode::Single);
     list.add_css_class("app-list");
+    let empty = gtk::Label::new(Some("no applications found"));
+    empty.add_css_class("app-empty");
+    list.set_placeholder(Some(&empty));
     scrolled.set_child(Some(&list));
     outer.append(&scrolled);
     window.set_child(Some(&outer));
 
-    populate_launcher_list(&list, &state.launcher_apps.borrow()[..], mode, "");
+    let scores = Rc::new(RefCell::new(HashMap::new()));
+    let counts = Rc::new(RefCell::new(apps::read_launch_counts()));
+    let searching = Rc::new(std::cell::Cell::new(false));
+    let names: HashMap<String, (String, String)> = state
+        .launcher_apps
+        .borrow()
+        .iter()
+        .filter(|entry| mode == LauncherMode::Manage || !entry.hidden)
+        .map(|app| {
+            (
+                app.id.clone(),
+                (app.name.to_lowercase(), app.id.to_lowercase()),
+            )
+        })
+        .collect();
+    let names = Rc::new(names);
+    for entry in state.launcher_apps.borrow().iter() {
+        if mode == LauncherMode::Manage || !entry.hidden {
+            append_app_row(&list, entry, mode);
+            scores.borrow_mut().insert(entry.id.clone(), 0_i64);
+        }
+    }
+    list.set_filter_func({
+        let scores = Rc::clone(&scores);
+        move |row| {
+            scores.borrow().contains_key(
+                row.widget_name()
+                    .as_str()
+                    .strip_prefix("app-")
+                    .unwrap_or(""),
+            )
+        }
+    });
+    list.set_sort_func({
+        let scores = Rc::clone(&scores);
+        let names = Rc::clone(&names);
+        let counts = Rc::clone(&counts);
+        let searching = Rc::clone(&searching);
+        move |a, b| {
+            let a_id = a.widget_name();
+            let b_id = b.widget_name();
+            let a_id = a_id.as_str().strip_prefix("app-").unwrap_or("");
+            let b_id = b_id.as_str().strip_prefix("app-").unwrap_or("");
+            compare_apps(
+                a_id,
+                b_id,
+                &scores.borrow(),
+                &names,
+                &counts.borrow(),
+                mode,
+                searching.get(),
+            )
+            .into()
+        }
+    });
     if let Some(first) = list.row_at_index(0) {
         list.select_row(Some(&first));
     }
     update_selected_row_styles(&list);
     scroll_selected_row_into_view(&list, &scrolled);
-    let scrolled_for_selection = scrolled.clone();
+    let scrolled_for_selection = scrolled.downgrade();
     list.connect_selected_rows_changed(move |list| {
         update_selected_row_styles(list);
-        scroll_selected_row_into_view(list, &scrolled_for_selection);
-    });
-
-    search.connect_search_changed({
-        let state = Rc::clone(state);
-        let list = list.clone();
-        move |entry| {
-            let query = entry.text().to_string();
-            let apps = state.launcher_apps.borrow();
-            populate_launcher_list(&list, &apps[..], mode, &query);
+        if let Some(scrolled) = scrolled_for_selection.upgrade() {
+            scroll_selected_row_into_view(list, &scrolled);
         }
     });
 
-    let state_for_activate = Rc::clone(state);
-    let window_for_activate = window.clone();
-    let search_for_activate = search.clone();
-    list.connect_row_activated(move |list, row| {
+    search.connect_search_changed({
+        let list = list.downgrade();
+        let scores = Rc::clone(&scores);
+        let searching = Rc::clone(&searching);
+        move |entry| {
+            let Some(list) = list.upgrade() else {
+                return;
+            };
+            let query = entry.text().trim().to_lowercase();
+            searching.set(!query.is_empty());
+            let mut next = scores.borrow_mut();
+            next.clear();
+            for (id, (name, lower_id)) in names.iter() {
+                if let Some(score) = fuzzy::score_lowercase(name, &query)
+                    .or_else(|| fuzzy::score_lowercase(lower_id, &query))
+                {
+                    next.insert(id.clone(), score);
+                }
+            }
+            drop(next);
+            list.invalidate_filter();
+            list.invalidate_sort();
+            if let Some(first) = list.row_at_index(0) {
+                list.select_row(Some(&first));
+            }
+        }
+    });
+
+    let state_for_activate = Rc::downgrade(state);
+    let window_for_activate = window.downgrade();
+    let counts_for_activate = Rc::clone(&counts);
+    list.connect_row_activated(move |_, row| {
+        let Some(state_for_activate) = state_for_activate.upgrade() else {
+            return;
+        };
         let Some(id) = row.widget_name().strip_prefix("app-").map(str::to_owned) else {
             return;
         };
@@ -102,56 +219,86 @@ fn create(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode) {
             if let Some(entry) = apps.iter_mut().find(|entry| entry.id == id) {
                 entry.hidden = !entry.hidden;
             }
-            let selected = row.index();
-            populate_launcher_list(list, &apps[..], mode, &search_for_activate.text());
-            let last = list.observe_children().n_items().saturating_sub(1) as i32;
-            if let Some(row) = list.row_at_index(selected.min(last)) {
-                list.select_row(Some(&row));
+            if let Some(content) = row.child().and_downcast::<gtk::Box>() {
+                if let Some(icon) = content.first_child().and_downcast::<gtk::Label>() {
+                    icon.set_text(
+                        if apps
+                            .iter()
+                            .find(|entry| entry.id == id)
+                            .is_some_and(|entry| entry.hidden)
+                        {
+                            "󰈉"
+                        } else {
+                            "󰈈"
+                        },
+                    );
+                }
+                if apps
+                    .iter()
+                    .find(|entry| entry.id == id)
+                    .is_some_and(|entry| entry.hidden)
+                {
+                    content.add_css_class("hidden-app");
+                } else {
+                    content.remove_css_class("hidden-app");
+                }
             }
-        } else if Command::new("gtk-launch").arg(&id).spawn().is_ok() {
-            window_for_activate.close();
+        } else if modules::spawn_detached("gtk-launch", &[&id]) {
+            if let Err(error) = apps::record_launch(&mut counts_for_activate.borrow_mut(), &id) {
+                eprintln!("chuhshell: failed to save launch counts: {error}");
+            }
+            if let Some(window) = window_for_activate.upgrade() {
+                window.close();
+            }
         }
     });
 
     let key = gtk::EventControllerKey::new();
     key.set_propagation_phase(gtk::PropagationPhase::Capture);
-    let list_keys = list.clone();
-    let window_keys = window.clone();
-    key.connect_key_pressed(move |_, key, _, _| match key {
-        gdk::Key::Escape => {
-            window_keys.close();
-            glib::Propagation::Stop
-        }
-        gdk::Key::Down => {
-            let index = list_keys.selected_row().map_or(0, |row| row.index() + 1);
-            if let Some(row) = list_keys.row_at_index(index) {
-                list_keys.select_row(Some(&row));
+    let list_keys = list.downgrade();
+    let window_keys = window.downgrade();
+    key.connect_key_pressed(move |_, key, _, _| {
+        let Some(list_keys) = list_keys.upgrade() else {
+            return glib::Propagation::Proceed;
+        };
+        match key {
+            gdk::Key::Escape => {
+                if let Some(window) = window_keys.upgrade() {
+                    window.close();
+                }
+                glib::Propagation::Stop
             }
-            glib::Propagation::Stop
-        }
-        gdk::Key::Up => {
-            let index = list_keys.selected_row().map_or(0, |row| row.index() - 1);
-            if let Some(row) = list_keys.row_at_index(index.max(0)) {
-                list_keys.select_row(Some(&row));
+            gdk::Key::Down => {
+                let index = list_keys.selected_row().map_or(0, |row| row.index() + 1);
+                if let Some(row) = list_keys.row_at_index(index) {
+                    list_keys.select_row(Some(&row));
+                }
+                glib::Propagation::Stop
             }
-            glib::Propagation::Stop
-        }
-        gdk::Key::Return | gdk::Key::KP_Enter => {
-            if let Some(row) = list_keys.selected_row() {
-                list_keys.emit_by_name::<()>("row-activated", &[&row]);
+            gdk::Key::Up => {
+                let index = list_keys.selected_row().map_or(0, |row| row.index() - 1);
+                if let Some(row) = list_keys.row_at_index(index.max(0)) {
+                    list_keys.select_row(Some(&row));
+                }
+                glib::Propagation::Stop
             }
-            glib::Propagation::Stop
-        }
-        gdk::Key::Page_Down | gdk::Key::Page_Up => {
-            let direction = if key == gdk::Key::Page_Down { 1 } else { -1 };
-            let current = list_keys.selected_row().map_or(0, |row| row.index());
-            let max = list_keys.observe_children().n_items().saturating_sub(1) as i32;
-            if let Some(row) = list_keys.row_at_index((current + direction * 5).clamp(0, max)) {
-                list_keys.select_row(Some(&row));
+            gdk::Key::Return | gdk::Key::KP_Enter => {
+                if let Some(row) = list_keys.selected_row() {
+                    list_keys.emit_by_name::<()>("row-activated", &[&row]);
+                }
+                glib::Propagation::Stop
             }
-            glib::Propagation::Stop
+            gdk::Key::Page_Down | gdk::Key::Page_Up => {
+                let direction = if key == gdk::Key::Page_Down { 1 } else { -1 };
+                let current = list_keys.selected_row().map_or(0, |row| row.index());
+                let max = list_keys.observe_children().n_items().saturating_sub(1) as i32;
+                if let Some(row) = list_keys.row_at_index((current + direction * 5).clamp(0, max)) {
+                    list_keys.select_row(Some(&row));
+                }
+                glib::Propagation::Stop
+            }
+            _ => glib::Propagation::Proceed,
         }
-        _ => glib::Propagation::Proceed,
     });
     window.add_controller(key);
 
@@ -166,12 +313,15 @@ fn create(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode) {
         }
     });
     window.connect_close_request({
-        let state = Rc::clone(state);
+        let state = Rc::downgrade(state);
         move |_| {
             closing.set(true);
-            let _ = state.launcher.borrow_mut().take();
-            state.launcher_focus_window.set(None);
-            state.launcher_mode.set(None);
+            if let Some(state) = state.upgrade() {
+                let _ = state.launcher.borrow_mut().take();
+                state.launcher_focus_window.set(None);
+                state.launcher_mode.set(None);
+                state.launcher_apps.borrow_mut().clear();
+            }
             glib::Propagation::Proceed
         }
     });
@@ -249,13 +399,17 @@ fn append_app_row(list: &gtk::ListBox, entry: &AppEntry, mode: LauncherMode) {
     }
     let details = gtk::Box::new(gtk::Orientation::Vertical, 2);
     details.set_valign(gtk::Align::Center);
+    details.set_hexpand(true);
     let name = gtk::Label::new(Some(&entry.name.to_lowercase()));
     name.set_xalign(0.0);
+    name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    name.set_max_width_chars(40);
     details.append(&name);
     if !entry.comment.is_empty() {
         let comment = gtk::Label::new(Some(&entry.comment.to_lowercase()));
         comment.set_xalign(0.0);
         comment.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        comment.set_max_width_chars(52);
         comment.add_css_class("app-meta");
         details.append(&comment);
     }
@@ -265,29 +419,62 @@ fn append_app_row(list: &gtk::ListBox, entry: &AppEntry, mode: LauncherMode) {
     list.append(&row);
 }
 
-fn populate_launcher_list(list: &gtk::ListBox, apps: &[AppEntry], mode: LauncherMode, query: &str) {
-    let mut matches: Vec<(i64, &AppEntry)> = apps
-        .iter()
-        .filter(|app| mode == LauncherMode::Manage || !app.hidden)
-        .filter_map(|app| {
-            fuzzy::score(&app.name.to_lowercase(), query)
-                .or_else(|| fuzzy::score(&app.id, query))
-                .map(|score| (score, app))
-        })
-        .collect();
-    matches.sort_by(|(score_a, app_a), (score_b, app_b)| {
-        score_b
-            .cmp(score_a)
-            .then_with(|| app_a.name.to_lowercase().cmp(&app_b.name.to_lowercase()))
-    });
-    while let Some(child) = list.first_child() {
-        list.remove(&child);
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn launch_frequency_orders_normal_mode_and_search_scores_stay_primary() {
+        let names = HashMap::from([
+            (
+                "alpha.desktop".to_owned(),
+                ("alpha".to_owned(), String::new()),
+            ),
+            (
+                "beta.desktop".to_owned(),
+                ("beta".to_owned(), String::new()),
+            ),
+        ]);
+        let counts = HashMap::from([("beta.desktop".to_owned(), 9)]);
+        let scores = HashMap::from([
+            ("alpha.desktop".to_owned(), 20),
+            ("beta.desktop".to_owned(), 10),
+        ]);
+        assert_eq!(
+            compare_apps(
+                "beta.desktop",
+                "alpha.desktop",
+                &scores,
+                &names,
+                &counts,
+                LauncherMode::Normal,
+                false
+            ),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_apps(
+                "alpha.desktop",
+                "beta.desktop",
+                &scores,
+                &names,
+                &counts,
+                LauncherMode::Normal,
+                true
+            ),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_apps(
+                "alpha.desktop",
+                "beta.desktop",
+                &scores,
+                &names,
+                &counts,
+                LauncherMode::Manage,
+                false
+            ),
+            Ordering::Less
+        );
     }
-    for (_, app) in matches {
-        append_app_row(list, app, mode);
-    }
-    if let Some(first) = list.row_at_index(0) {
-        list.select_row(Some(&first));
-    }
-    update_selected_row_styles(list);
 }
