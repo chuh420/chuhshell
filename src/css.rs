@@ -47,6 +47,16 @@ window#notification { background: transparent; }
 .notification-detail { color: #908caa; font-size: 10pt; }
 .notification-progress trough { background: #403d52; border-radius: 6px; min-height: 6px; }
 .notification-progress progress { background: #9ccfd8; border-radius: 6px; min-height: 6px; }
+.notification-toggle { color: #c4a7e7; }
+window#app-notification, window#notification-drawer { background: transparent; }
+.app-notification-content, .notification-drawer-content { background: #1f1d2e; color: #e0def4; border: 1px solid #403d52; border-radius: 12px; padding: 14px; }
+.app-notification-app { color: #9ccfd8; font-size: 10px; }
+.app-notification-summary { color: #e0def4; font-weight: 600; font-size: 13px; }
+.app-notification-body { color: #908caa; }
+.notification-action, .notification-clear { background: #26233a; color: #e0def4; border-radius: 8px; padding: 6px 10px; }
+.notification-action:hover, .notification-clear:hover { background: #403d52; }
+.notification-drawer-heading { font-size: 14px; font-weight: 600; }
+.notification-empty { color: #908caa; padding: 18px; }
 "#;
 
 pub fn install() {

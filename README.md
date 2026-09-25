@@ -26,6 +26,14 @@ chuhshell displays its own on-screen notifications for volume, microphone,
 brightness and keyboard layout changes. it also reports wi-fi connections and
 network names, power and charging changes, and usb device connections. repeated
 updates refresh the current notification instead of flashing a new window.
+it owns `org.freedesktop.Notifications` on the session bus to show notifications
+from other applications. the notification button in the top bar opens a
+scrollable list; `Clear notifications` removes its contents. notification
+actions and standard close signals are supported. notification history lasts
+for the current chuhshell session. `chuhshell notifications` also toggles the
+list.
+after installing the binary, run `scripts/install-notification-service.sh` to
+make chuhshell the D-Bus activatable notification service.
 
 ## controls
 
@@ -57,12 +65,18 @@ key bindings can call `chuhshell volume-up`, `chuhshell volume-down`,
 `chuhshell volume-mute`, `chuhshell microphone-mute`, `chuhshell brightness-key-up`
 and `chuhshell brightness-key-down`.
 
+to log in automatically on tty1 and start niri as the main session, run
+`scripts/setup-autologin.sh` from this repository as the account that should be
+logged in. It installs a systemd getty drop-in and adds a tty1-only
+`niri --session` startup to `~/.zprofile`. The setup does not store or use the
+account password. Reboot to activate the configuration.
+
 the bar expects `nmcli` for wi-fi information, `wpctl` and `pactl` for audio,
 `brightnessctl` for brightness controls, `udevadm` for usb events, `foot` and
 `nmtui` for the network menu, and `btop` for the temperature module action. the
 configured `InputSans Nerd Font` font should be installed for the intended
 appearance. on-screen notifications are drawn by chuhshell and do not require
-a separate osd daemon.
+a separate notification daemon.
 
 ## structure
 
@@ -70,6 +84,7 @@ the code is split by feature. `main.rs` is the entry point and routes
 commands. `app.rs` holds the shared state. `bar.rs` and `launcher.rs` build the
 two windows, `niri.rs` talks to niri over its ipc and event stream, and
 `modules.rs` runs the system pollers and usb event monitor. `notifications.rs`
-builds the on-screen notifications. `apps.rs` reads desktop entries and the
+builds the on-screen notifications, and `notification_center.rs` handles the
+D-Bus service and notification drawer. `apps.rs` reads desktop entries and the
 hidden list, `fuzzy.rs` does the matching, and `css.rs` and `ui.rs` hold the
 stylesheet and layer-shell helpers.

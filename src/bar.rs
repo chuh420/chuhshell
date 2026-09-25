@@ -10,6 +10,7 @@ use gtk4_layer_shell as layer_shell;
 use crate::app::AppState;
 use crate::modules::{self, DeviceEvent, NetworkInfo};
 use crate::niri;
+use crate::notification_center::NotificationCenter;
 use crate::notifications::{self, ConnectionNotice, Notice, NoticeKind, PowerNotice};
 use crate::ui::set_layer_window;
 
@@ -269,7 +270,7 @@ fn add_scroll_controller(
     widget.add_controller(controller);
 }
 
-pub fn create(app: &gtk::Application, state: &Rc<AppState>) {
+pub fn create(app: &gtk::Application, state: &Rc<AppState>, center: &Rc<NotificationCenter>) {
     let window = gtk::ApplicationWindow::builder()
         .application(app)
         .title("chuhshell")
@@ -319,12 +320,22 @@ pub fn create(app: &gtk::Application, state: &Rc<AppState>) {
     let temperature = module("", "temperature", "cpu temperature");
     let network = module("󰖪", "network", "wi-fi status");
     let battery = module("", "battery", "battery level");
+    let notification_button = gtk::Button::with_label("󰂚");
+    notification_button.add_css_class("module");
+    notification_button.add_css_class("notification-toggle");
+    notification_button.set_tooltip_text(Some("Notifications"));
+    center.attach_button(&notification_button);
+    notification_button.connect_clicked({
+        let center = Rc::clone(center);
+        move |_| center.toggle_drawer()
+    });
     right.append(&audio);
     right.append(&brightness);
     right.append(&language);
     right.append(&temperature);
     right.append(&network);
     right.append(&battery);
+    right.append(&notification_button);
     root.append(&left);
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     spacer.set_hexpand(true);

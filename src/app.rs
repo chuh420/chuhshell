@@ -2,6 +2,7 @@ use std::cell::{Cell, RefCell};
 
 use crate::apps::AppEntry;
 use crate::niri::Workspace;
+use crate::notification_center::NotificationCenter;
 use crate::notifications::OsdWidgets;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -18,6 +19,7 @@ pub struct AppState {
     pub osd_widgets: RefCell<Option<OsdWidgets>>,
     pub osd_timeout: RefCell<Option<glib::SourceId>>,
     pub osd_generation: Cell<u64>,
+    pub notification_center: RefCell<Option<std::rc::Weak<NotificationCenter>>>,
     pub workspaces: RefCell<Vec<Workspace>>,
     pub layout_names: RefCell<Vec<String>>,
     pub current_layout: Cell<usize>,
