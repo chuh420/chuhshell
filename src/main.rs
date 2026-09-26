@@ -7,6 +7,7 @@ mod css;
 mod fuzzy;
 mod launcher;
 mod modules;
+mod network;
 mod niri;
 mod notification_center;
 mod notifications;

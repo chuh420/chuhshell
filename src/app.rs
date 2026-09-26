@@ -17,6 +17,7 @@ pub struct AppState {
     pub bars: RefCell<Vec<(gtk::gdk::Monitor, gtk::Window)>>,
     pub services: RefCell<Option<Rc<crate::services::Services>>>,
     pub commands: RefCell<Option<async_channel::Sender<crate::notifications::CommandRequest>>>,
+    pub network_menu: RefCell<Option<Rc<crate::network::NetworkMenu>>>,
     pub background_manager: RefCell<Option<Rc<BackgroundManager>>>,
     pub launcher: RefCell<Option<gtk::Window>>,
     pub osd: RefCell<Option<gtk::Window>>,

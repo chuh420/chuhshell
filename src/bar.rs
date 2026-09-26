@@ -35,6 +35,7 @@ pub fn create(app: &gtk::Application, state: &Rc<AppState>, center: &Rc<Notifica
     }
     *state.services.borrow_mut() = Some(Services::new(state));
     *state.background_manager.borrow_mut() = Some(BackgroundManager::new(app));
+    *state.network_menu.borrow_mut() = Some(crate::network::NetworkMenu::new());
     let Some(display) = gtk::gdk::Display::default() else {
         return;
     };
@@ -193,8 +194,9 @@ fn build(
         "brightness-scroll-up",
         "brightness-scroll-down",
     );
-    network.connect_clicked(|_| {
-        modules::spawn_detached("foot", &["-e", "nmtui"]);
+    network.connect_clicked({
+        let menu = state.network_menu.borrow().as_ref().unwrap().clone();
+        move |button| menu.toggle(button)
     });
     temperature.connect_clicked(|_| {
         modules::spawn_detached("foot", &["-e", "btop"]);

@@ -67,6 +67,29 @@ window#app-notification, window#notification-drawer { background: transparent; }
 .notification-action:hover, .notification-clear:hover { background: #403d52; }
 .notification-drawer-heading { font-size: 14px; font-weight: 600; }
 .notification-empty { color: #908caa; padding: 18px; }
+
+.network-content { background: #1f1d2e; color: #e0def4; border: 1px solid #403d52; border-radius: 12px; padding: 14px; }
+.network-heading { font-size: 14px; font-weight: 600; }
+.network-section { color: #908caa; font-size: 10px; margin: 8px 2px 3px; }
+.network-action { background: #26233a; color: #e0def4; border: 0; box-shadow: none; border-radius: 8px; padding: 7px 10px; }
+.network-action:hover { background: #403d52; }
+.network-action.primary, .network-action.enabled { background: #31748f; color: #e0def4; }
+.network-action.primary:hover, .network-action.enabled:hover { background: #4086a0; }
+.network-action.danger { color: #eb6f92; }
+.network-content button:focus-visible { outline: 1px solid #c4a7e7; outline-offset: -2px; }
+.network-content button:disabled { opacity: 0.5; }
+.network-row { background: #26233a; color: #e0def4; border: 0; box-shadow: none; border-radius: 8px; padding: 10px; }
+.network-row:hover { background: #403d52; }
+.network-row.connected { background: #243541; }
+.network-icon { color: #9ccfd8; font-size: 20px; min-width: 24px; }
+.network-name { font-weight: 600; }
+.network-meta, .network-status { color: #908caa; font-size: 11px; }
+.network-signal { color: #9ccfd8; font-size: 11px; }
+.network-empty { color: #908caa; padding: 18px 8px; }
+.network-status.error { color: #eb6f92; }
+.network-search, .network-password { background: #191724; color: #e0def4; border: 1px solid #403d52; border-radius: 8px; padding: 7px 10px; }
+.network-search:focus-within, .network-password:focus-within { border-color: #c4a7e7; outline: none; box-shadow: none; }
+.network-content dropdown > button { background: #26233a; color: #e0def4; border: 0; box-shadow: none; border-radius: 8px; }
 "#;
 
 pub fn install() {

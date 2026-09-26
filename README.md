@@ -13,10 +13,27 @@ The clock switches between time and date when clicked.
 
 The remaining modules display audio, brightness, keyboard layout, CPU temperature,
 Wi-Fi and battery state. Scroll audio or brightness to adjust them; click audio
-to mute, Wi-Fi to open `nmtui`, and temperature to open `btop` in `foot`.
+to mute, Wi-Fi to open its built-in network menu, and temperature to open `btop`
+in `foot`.
 Missing services and unavailable readings are distinguished from disconnected
 network devices. System commands run sequentially outside the GTK thread with
 timeouts. Monitor changes do not start additional system observers.
+
+The Wi-Fi menu shows the current connection, IP address, available networks with
+signal strength, and saved profiles. It supports searching, scanning, adapter
+selection, turning Wi-Fi on/off, joining hidden networks, connecting,
+disconnecting and forgetting saved profiles with confirmation. Passwords are
+entered in the menu and sent directly to NetworkManager over the system D-Bus;
+they are not passed through command-line arguments or saved by chuhshell.
+NetworkManager stores the connection profiles and credentials. Operations run
+outside the GTK thread, with progress and error messages in the menu. The
+network list refreshes only while the menu is open.
+
+New connections support open, WPA/WPA2 Personal, WPA3 Personal and Enhanced Open
+networks. Enterprise and legacy networks require an existing configured profile;
+certificate/802.1X setup is not provided by this menu. The compact network panel
+in [Omarchy](https://omarchy.org/manual/networking/) is a reference for the flow;
+the interface uses chuhshell's own styling.
 
 The launcher supports fuzzy search, launch-frequency ranking and a separate
 hide/show mode. Arrow keys and Page Up/Down navigate matching results, Enter
