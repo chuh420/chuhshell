@@ -3,7 +3,9 @@ use gtk::gdk;
 pub const CSS: &str = r#"
 * { font-family: "InputSans Nerd Font"; font-size: 12px; }
 window#bar { background: #191724; border-bottom: 1px solid #403d52; }
-.module { background: #1f1d2e; border-radius: 8px; padding: 4px 10px; margin: 4px 1px; color: #e0def4; }
+.module { border: 0; box-shadow: none; min-height: 0; min-width: 0; background: #1f1d2e; border-radius: 8px; padding: 4px 10px; margin: 4px 1px; color: #e0def4; }
+.module:focus-visible { outline: 1px solid #c4a7e7; outline-offset: -2px; }
+popover > contents { background: transparent; box-shadow: none; border: 0; padding: 0; }
 .module:hover { background: #403d52; }
 .workspaces { background: transparent; padding: 0; }
 .workspace { background: transparent; color: #908caa; border: 0; border-radius: 8px; padding: 4px 9px; margin: 4px 1px; }

@@ -1,6 +1,6 @@
+use async_channel::Sender;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
-use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
@@ -181,9 +181,9 @@ fn read_ok_line(reader: &mut impl BufRead, line: &mut String) -> bool {
     reader.read_line(line).is_ok() && response(line).is_some()
 }
 
-pub fn spawn_poller(sender: mpsc::Sender<Snapshot>) {
+pub fn spawn_poller(sender: Sender<Snapshot>) {
     thread::spawn(move || {
-        loop {
+        while !crate::process::stopped() && !sender.is_closed() {
             let Some(socket_path) = std::env::var_os("NIRI_SOCKET") else {
                 thread::sleep(RECONNECT_DELAY);
                 continue;
@@ -212,12 +212,15 @@ pub fn spawn_poller(sender: mpsc::Sender<Snapshot>) {
                             continue;
                         };
                         if apply_event(&event, &mut snapshot)
-                            && sender.send(snapshot.clone()).is_err()
+                            && sender.send_blocking(snapshot.clone()).is_err()
                         {
                             return;
                         }
                     }
                 }
+            }
+            if sender.send_blocking(Snapshot::default()).is_err() {
+                return;
             }
             thread::sleep(SESSION_DELAY);
         }

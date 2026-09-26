@@ -1,0 +1,17 @@
+name: Checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - run: pacman -Syu --noconfirm rust git gtk4 gtk4-layer-shell pkgconf python labwc dbus
+      - uses: actions/checkout@v4
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked --all-targets
+      - run: bash -n scripts/*.sh
+      - run: python scripts/test_install.py
+      - run: scripts/check-headless.sh

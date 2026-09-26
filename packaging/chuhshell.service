@@ -1,0 +1,19 @@
+[Unit]
+Description=Chuhshell desktop shell
+PartOf=graphical-session.target
+After=graphical-session-pre.target
+StartLimitIntervalSec=30
+StartLimitBurst=3
+
+[Service]
+Type=dbus
+BusName=org.freedesktop.Notifications
+ExecStart=/usr/bin/chuhshell
+Restart=on-failure
+RestartSec=2
+TimeoutStartSec=15
+TimeoutStopSec=5
+KillMode=process
+
+[Install]
+WantedBy=graphical-session.target

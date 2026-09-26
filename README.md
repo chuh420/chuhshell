@@ -1,100 +1,157 @@
 # chuhshell
 
-this is a personal project made for myself and my own desktop setup.
+A personal desktop shell for Niri, written in Rust with GTK4 and gtk4-layer-shell.
+It combines a panel, application launcher, system OSD, application notifications
+and background application controls in one process.
 
-it contains a panel and an application launcher for niri, written in rust with
-gtk4 and gtk4-layer-shell. the project is mainly for personal use and may
-change to suit my needs.
+## Interface
 
-## features
+A panel is created on each connected monitor. Workspaces belong to their output.
+The clock stays between background apps on the left and notifications on the
+right. Side modules scroll horizontally when there is insufficient space.
+The clock switches between time and date when clicked.
 
-the bar is a 36px layer-shell panel on top of every output, styled after the
-rosé pine palette. it shows workspaces with their empty, active, focused and
-urgent states, and clicking one focuses it. next to them is a clock that
-toggles between the time and the date on click, with the full date in its
-tooltip. the background apps and notifications modules sit beside the clock;
-`chuhshell background-apps` opens the background apps list. the remaining
-modules are audio with volume and mute state, screen brightness, the current
-keyboard layout, the cpu package temperature, wi-fi signal and ip, and the
-battery with a time estimate. audio and brightness react to scrolling, and
-most modules open a matching tool on click.
-the center modules list background desktop applications without open niri
-windows, such as tray-resident apps. `Open` launches an app again and `Quit`
-sends `SIGTERM` to its background processes. `Alt+F4` closes the focused
-window normally and leaves any background process running.
+The remaining modules display audio, brightness, keyboard layout, CPU temperature,
+Wi-Fi and battery state. Scroll audio or brightness to adjust them; click audio
+to mute, Wi-Fi to open `nmtui`, and temperature to open `btop` in `foot`.
+Missing services and unavailable readings are distinguished from disconnected
+network devices. System commands run sequentially outside the GTK thread with
+timeouts. Monitor changes do not start additional system observers.
 
-the launcher is a fuzzy application launcher with two modes. the normal mode
-lists visible applications by launch frequency, filters them as you type and
-launches the selected one. search match quality takes priority over frequency.
-the manage mode toggles applications between visible and hidden.
+The launcher supports fuzzy search, launch-frequency ranking and a separate
+hide/show mode. Arrow keys and Page Up/Down navigate matching results, Enter
+launches, and Escape closes. Empty searches cannot activate filtered-out rows.
+Desktop visibility rules come from GIO; the shared catalog supports nested
+.desktop directories and refreshes when applications change. Launching uses GIO
+and reports errors without counting failed requests as successful launches.
 
-chuhshell displays its own on-screen notifications for volume, microphone,
-brightness and keyboard layout changes. it also reports wi-fi connections and
-network names, power and charging changes, and usb device connections. repeated
-updates refresh the current notification instead of flashing a new window.
-it owns `org.freedesktop.Notifications` on the session bus to show notifications
-from other applications. system OSD events such as volume, brightness, keyboard
-layout and device changes stay in their original popup and are not saved in the
-notification list. the notification button in the top bar opens a
-scrollable list; `Clear notifications` removes its contents. notification
-actions and standard close signals are supported. notification history lasts
-for the current chuhshell session. `chuhshell notifications` also toggles the
-list.
-after installing the binary, run `scripts/install-notification-service.sh` to
-make chuhshell the D-Bus activatable notification service.
+Background apps lists recognized desktop applications with no open Niri windows.
+`Open` activates their desktop entry. `Quit` sends SIGTERM to identified root
+processes after rechecking their identities and windows; Linux pidfds prevent
+signalling a reused PID. Ambiguous executables are omitted. Recognition uses
+canonical executable paths, Flatpak metadata, verified launch metadata and
+previously observed Niri windows. Some applications launched through wrappers
+may only be recognized after an open window has been observed. This is not a
+complete system process list or a tray implementation. Alt+F4 remains a normal
+Niri window close.
 
-## controls
+Application notifications use `org.freedesktop.Notifications`. System OSD events
+(volume, brightness, layout, network, power and peripherals) remain separate.
+Notification history is bounded and lasts for the current shell session.
+Popups have constrained previews, individual dismissal and height-aware placement.
+The drawer scrolls, supports individual deletion, and keeps `Clear notifications`
+at the bottom. Menus attach to their panel buttons, close on Escape/outside click,
+and only one menu is open at a time.
 
-mod+d opens the launcher and mod+shift+d opens it in manage mode. inside, the
-arrow keys move the selection, page up and page down move five rows at a time,
-enter launches the selected application, and escape closes it. typing searches
-applications directly, while arrow keys and scrolling navigate the results.
-the configured media keys control volume, microphone mute and screen
-brightness, with chuhshell showing the resulting on-screen notification.
+Notification replacement, close/action signals, resident/transient hints,
+desktop-entry hints and validated image data are supported. Images and text have
+size limits. Expired notification actions are not reused; archived entries can
+open their source application when the sender supplies its desktop ID.
 
-## configuration
+## Build and installation
 
-hidden applications are read from and written to
-`~/.config/chuhshell/hidden-apps`, one desktop-file id per line, with lines
-starting with `#` ignored. the bar detects the battery, ac adapter, backlight,
-wireless interface and cpu thermal sensor at runtime, so it is not tied to
-specific device names. launch counts are stored in
-`~/.local/state/chuhshell/launch-counts.json` (or under `XDG_STATE_HOME`). usb
-connection events are read from udev.
+On Arch, build dependencies include `rust`, `pkgconf`, `gtk4`, `gtk4-layer-shell`
+and GLib 2.80 or newer. Runtime integrations use Niri, `wpctl` (WirePlumber),
+`pactl` (libpulse and a compatible server), NetworkManager, `brightnessctl` and
+`udevadm`. `foot` and `btop` are needed only for their module actions. The intended
+font is InputSans Nerd Font. `gtk-launch` and GTK3 are not required.
 
-## building and running
+```sh
+cargo build --release --locked
+scripts/install.sh
+```
 
-build with `cargo build --release` and install the binary with
-`install -Dm755 target/release/chuhshell ~/.local/bin/chuhshell`.
+The local installer places the binary in `~/.local/bin`, installs a user service
+and D-Bus activation file, updates the existing Niri startup entry, validates
+Niri's configuration, and starts chuhshell. It imports the current display and
+Niri socket into the user service environment. Run it from the active Niri
+session as the desktop user. It does not change autologin.
 
-to use it with niri, add `spawn-at-startup "chuhshell"` to the config and bind
-`Mod+D` to `chuhshell launcher` and `Mod+Shift+D` to `chuhshell manage`. media
-key bindings can call `chuhshell volume-up`, `chuhshell volume-down`,
-`chuhshell volume-mute`, `chuhshell microphone-mute`, `chuhshell brightness-key-up`
-and `chuhshell brightness-key-down`.
+The user service restarts after failures. Managed system observers are terminated
+when the shell stops, while applications launched by the shell remain independent.
+Installation backups are stored under `$XDG_STATE_HOME/chuhshell/installation`
+(default `~/.local/state/chuhshell/installation`). Installation failures roll back
+replaced files. `scripts/uninstall.sh` restores backups and preserves files edited
+after installation. Review any preserved Niri startup entry before the next login.
 
-to log in automatically on tty1 and start niri as the main session, run
-`scripts/setup-autologin.sh` from this repository as the account that should be
-logged in. It installs a systemd getty drop-in and adds a tty1-only
-`niri --session` startup to `~/.zprofile`. The setup does not store or use the
-account password. Reboot to activate the configuration.
+A local Arch package can also be built with `cd packaging && makepkg -s`. Its
+PKGBUILD builds the surrounding checkout and installs to `/usr`; it does not
+configure the current session. With that installation, enable the user service
+and start it from Niri after the compositor has established its environment.
+The repository currently has no declared redistribution license.
 
-the bar expects `nmcli` for wi-fi information, `wpctl` and `pactl` for audio,
-`brightnessctl` for brightness controls, `udevadm` for usb events, `foot` and
-`nmtui` for the network menu, and `btop` for the temperature module action. the
-configured `InputSans Nerd Font` font should be installed for the intended
-appearance. on-screen notifications are drawn by chuhshell and do not require
-a separate notification daemon.
+For an existing manual installation, `scripts/install-notification-service.sh`
+only configures notification activation and keeps a backup of a replaced file.
 
-## structure
+## Commands and diagnostics
 
-the code is split by feature. `main.rs` is the entry point and routes
-commands. `app.rs` holds the shared state. `bar.rs` assembles the panel,
-`background_apps.rs` finds and manages running desktop applications without
-Niri windows, and `launcher.rs` builds the launcher. `niri.rs` talks to niri
-over its ipc and event stream, and
-`modules.rs` runs the system pollers and usb event monitor. `notifications.rs`
-builds the on-screen notifications, and `notification_center.rs` handles the
-D-Bus service and notification drawer. `apps.rs` reads desktop entries and the
-hidden list, `fuzzy.rs` does the matching, and `css.rs` and `ui.rs` hold the
-stylesheet and layer-shell helpers.
+```sh
+chuhshell launcher
+chuhshell manage
+chuhshell notifications
+chuhshell background-apps
+chuhshell doctor
+chuhshell --help
+chuhshell --version
+journalctl --user -u chuhshell.service
+```
+
+Bind Mod+D to `chuhshell launcher` and Mod+Shift+D to `chuhshell manage`.
+Media commands are `volume-up`, `volume-down`, `volume-mute`, `microphone-mute`,
+`brightness-key-up` and `brightness-key-down`. Brightness also accepts
+`brightness-up/down` and `brightness-scroll-up/down`. Unknown commands and failed
+remote system actions return a nonzero exit status.
+
+## Configuration and state
+
+Optional settings are read at startup from `$XDG_CONFIG_HOME/chuhshell/config.json`
+(default `~/.config/chuhshell/config.json`). An absent file uses automatic device
+selection, all monitors and a 200-entry notification history. Unknown keys and
+invalid configuration are reported. History limits are clamped to 10–1000.
+
+```json
+{
+  "monitors": [],
+  "battery": null,
+  "backlight": null,
+  "wifi": null,
+  "temperature_sensor": null,
+  "notification_history_limit": 200
+}
+```
+
+Device overrides name sysfs devices/interfaces; temperature_sensor is a path to
+a temperature input file. Monitor entries are connector names such as `eDP-1`.
+These settings have no graphical editor; restart the service after changing them.
+
+Hidden application IDs are stored in `chuhshell/hidden-apps` under the config
+home. Launch counts are stored in `chuhshell/launch-counts.json` under the state
+home. XDG locations are respected by the notification installer as well.
+
+TTY1 autologin is separate and optional: `scripts/setup-autologin.sh` validates
+the zsh account, backs up the getty drop-in and login profile, and adds the
+`niri --session` startup. It uses sudo for system configuration and never stores
+a password. Reboot to activate. `scripts/setup-autologin.sh --undo` restores the
+backups if the managed files have not subsequently changed.
+
+## Architecture and checks
+
+`Services` owns the shared system state and event delivery. Panel windows are
+views over that state. The catalog is shared between the launcher and background
+application manager. System commands have a bounded serial queue; external
+observers and bounded command processes have explicit cleanup. UI updates are
+driven by delivered events instead of polling queues every 32/100 milliseconds.
+
+```sh
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked --all-targets
+python scripts/test_install.py
+scripts/check-headless.sh
+```
+
+The last check needs `labwc` and `dbus-run-session`. It creates two headless
+outputs and private runtime/config/data/state directories and a private D-Bus
+session. It checks actual GTK filtering, popup sizing, notification replacement,
+expiration, history limits, D-Bus calls, menus and multiple panel views. It does
+not interact with the running desktop shell. These checks also run in CI.

@@ -1,6 +1,9 @@
+use gio::prelude::*;
+use gtk::gdk::prelude::DisplayExt;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 #[derive(Clone, Debug)]
 pub struct AppEntry {
@@ -10,6 +13,8 @@ pub struct AppEntry {
     pub comment: String,
     pub exec: String,
     pub terminal: bool,
+    pub keywords: String,
+    pub startup_wm_class: String,
     pub hidden: bool,
 }
 
@@ -150,6 +155,12 @@ fn parse_entry_for_locale(
         terminal: key_file
             .boolean("Desktop Entry", "Terminal")
             .unwrap_or(false),
+        startup_wm_class: get_string("StartupWMClass").unwrap_or_default(),
+        keywords: [get_string("Keywords"), get_string("GenericName")]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" "),
         hidden,
     })
 }
@@ -191,33 +202,93 @@ fn collect_entries(
 }
 
 fn load_entry_files() -> Vec<(String, String)> {
+    fn collect(base: &Path, dir: &Path, entries: &mut Vec<(String, String)>) {
+        let Ok(files) = fs::read_dir(dir) else {
+            return;
+        };
+        let mut files: Vec<_> = files.flatten().collect();
+        files.sort_by_key(|entry| entry.path());
+        for entry in files {
+            let path = entry.path();
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                collect(base, &path, entries);
+            } else if path.extension().is_some_and(|ext| ext == "desktop") {
+                let Ok(relative) = path.strip_prefix(base) else {
+                    continue;
+                };
+                let id = relative.to_string_lossy().replace('/', "-");
+                if let Ok(contents) = fs::read_to_string(path) {
+                    entries.push((id, contents));
+                }
+            }
+        }
+    }
     let mut entries = Vec::new();
     for dir in search_dirs() {
-        let Ok(files) = fs::read_dir(dir) else {
-            continue;
-        };
-        let mut paths: Vec<_> = files.flatten().map(|entry| entry.path()).collect();
-        paths.sort();
-        for file in paths {
-            if file.extension().is_none_or(|ext| ext != "desktop") {
-                continue;
-            }
-            let Some(id) = file.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            let Ok(contents) = fs::read_to_string(&file) else {
-                continue;
-            };
-            entries.push((id.to_owned(), contents));
-        }
+        collect(&dir, &dir, &mut entries);
     }
     entries
 }
 
+static CATALOG: OnceLock<Mutex<Option<Vec<AppEntry>>>> = OnceLock::new();
+
+pub fn invalidate() {
+    *CATALOG
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+pub fn watch() -> gio::AppInfoMonitor {
+    let monitor = gio::AppInfoMonitor::get();
+    monitor.connect_changed(|_| invalidate());
+    monitor
+}
+
 pub fn load_apps() -> Vec<AppEntry> {
-    let mut apps = collect_entries(load_entry_files(), &read_hidden());
-    apps.sort_by_cached_key(|app| app.name.to_lowercase());
+    let mut cache = CATALOG
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mut apps = cache
+        .get_or_insert_with(|| {
+            let visible: HashSet<String> = gio::AppInfo::all()
+                .into_iter()
+                .filter(|app| app.should_show())
+                .filter_map(|app| app.id().map(|id| id.to_string()))
+                .collect();
+            let mut apps = collect_entries(load_entry_files(), &HashSet::new());
+            apps.retain(|app| visible.contains(&app.id));
+            apps.sort_by_cached_key(|app| app.name.to_lowercase());
+            apps
+        })
+        .clone();
+    let hidden = read_hidden();
+    for app in &mut apps {
+        app.hidden = hidden.contains(&app.id);
+    }
     apps
+}
+
+pub fn app_info(id: &str) -> Option<gio::AppInfo> {
+    let entries = gio::AppInfo::all();
+    entries
+        .into_iter()
+        .find(|app| app.id().as_deref() == Some(id))
+        .or_else(|| {
+            let full_id = format!("{id}.desktop");
+            gio::AppInfo::all()
+                .into_iter()
+                .find(|app| app.id().as_deref() == Some(&full_id))
+        })
+}
+
+pub async fn launch(id: &str) -> Result<(), String> {
+    let info = app_info(id).ok_or_else(|| format!("Application not found: {id}"))?;
+    let context = gtk::gdk::Display::default().map(|display| display.app_launch_context());
+    info.launch_uris_future(&[], context.as_ref())
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

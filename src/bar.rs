@@ -1,284 +1,116 @@
+use crate::{
+    app::AppState, background_apps::BackgroundManager, modules, niri,
+    notification_center::NotificationCenter, notifications, services::Services, ui,
+};
+use gtk::prelude::*;
+use gtk4_layer_shell::{self as layer_shell, LayerShell};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::sync::mpsc::Receiver;
-use std::thread;
-use std::time::Duration;
 
-use gtk::prelude::*;
-use gtk4_layer_shell as layer_shell;
-
-use crate::app::AppState;
-use crate::background_apps::BackgroundManager;
-use crate::modules::{self, DeviceEvent, NetworkInfo};
-use crate::niri;
-use crate::notification_center::NotificationCenter;
-use crate::notifications::{self, ConnectionNotice, Notice, NoticeKind, PowerNotice};
-use crate::ui::set_layer_window;
-
-struct ModuleRefs {
-    audio: gtk::Label,
-    brightness: gtk::Label,
-    temperature: gtk::Label,
-    network: gtk::Label,
-    battery: gtk::Label,
-    clock: gtk::Label,
-    audio_text: RefCell<Option<String>>,
-    audio_rx: Receiver<Option<String>>,
-    network_rx: Receiver<NetworkInfo>,
-    cpu_rx: Receiver<Option<i64>>,
-    device_rx: Receiver<DeviceEvent>,
+fn module(text: &str, class: &str, tooltip: &str) -> gtk::Button {
+    let button = gtk::Button::with_label(text);
+    button.add_css_class("module");
+    button.add_css_class(class);
+    button.set_tooltip_text(Some(tooltip));
+    button
 }
 
-type NetworkState = Option<(bool, Option<String>)>;
-
-fn brightness_text(value: Option<(u8, &'static str)>) -> String {
-    value.map_or_else(
-        || "--".to_owned(),
-        |(percent, icon)| format!("{icon} {percent}%"),
-    )
-}
-
-fn temperature_text(value: Option<i64>) -> String {
-    value.map_or_else(
-        || "󰔏 --°C".to_owned(),
-        |temp| format!("󰔏 {}°C", temp / 1000),
-    )
-}
-
-enum ScrollAction {
-    Volume,
-    Brightness,
-}
-
-fn module(text: &str, class: &str, tooltip: &str) -> gtk::Label {
-    let label = gtk::Label::new(Some(text));
-    label.add_css_class("module");
-    label.add_css_class(class);
-    label.set_tooltip_text(Some(tooltip));
-    label
-}
-
-fn update_workspaces(state: &Rc<AppState>, container: &gtk::Box) {
-    while let Some(child) = container.first_child() {
-        container.remove(&child);
-    }
-    let mut workspaces = state.workspaces.borrow().clone();
-    workspaces.sort_by_key(|workspace| workspace.idx);
-    for workspace in workspaces {
-        let label = workspace
-            .name
-            .as_ref()
-            .map(|name| name.to_lowercase())
-            .unwrap_or_else(|| {
-                if workspace.is_urgent || workspace.is_active || workspace.is_focused {
-                    "●".to_owned()
-                } else {
-                    "○".to_owned()
-                }
-            });
-        let button = gtk::Button::with_label(&label);
-        button.add_css_class("workspace");
-        if workspace.active_window_id.is_none() {
-            button.add_css_class("empty");
-        }
-        if workspace.is_active {
-            button.add_css_class("active");
-        }
-        if workspace.is_focused {
-            button.add_css_class("focused");
-        }
-        if workspace.is_urgent {
-            button.add_css_class("urgent");
-        }
-        button.set_tooltip_text(Some(&format!("workspace {}", workspace.idx)));
-        let idx = workspace.idx;
-        button.connect_clicked(move |_| {
-            let command = format!(
-                "{{\"Action\":{{\"FocusWorkspace\":{{\"reference\":{{\"Index\":{idx}}}}}}}}}"
-            );
-            thread::spawn(move || {
-                let _ = niri::command(&command);
-            });
-        });
-        container.append(&button);
-    }
-}
-
-fn update_layout(state: &Rc<AppState>, label: &gtk::Label) {
-    let names = state.layout_names.borrow();
-    if names.is_empty() {
-        label.set_text("󰌌 --");
-        return;
-    }
-    let name = names
-        .get(state.current_layout.get())
-        .map(String::as_str)
-        .unwrap_or("?");
-    let short = match name.to_lowercase().as_str() {
-        "russian" => "ru".to_owned(),
-        "english (us)" => "us".to_owned(),
-        _ => name
-            .split_whitespace()
-            .next_back()
-            .unwrap_or(name)
-            .to_lowercase(),
-    };
-    label.set_text(&format!("󰌌 {short}"));
-    label.set_tooltip_text(Some(&name.to_lowercase()));
-}
-
-fn update_modules(refs: &ModuleRefs, state: &Rc<AppState>, last_network: &mut NetworkState) {
-    if let Some(text) = refs.audio_rx.try_iter().last().flatten()
-        && refs.audio_text.borrow().as_ref() != Some(&text)
-    {
-        *refs.audio_text.borrow_mut() = Some(text.clone());
-        let muted = text.contains("MUTED");
-        let volume = text
-            .split_whitespace()
-            .nth(1)
-            .and_then(|value| value.parse::<f32>().ok())
-            .unwrap_or(0.0);
-        refs.audio.set_text(&format!(
-            "{} {}%",
-            if muted {
-                "󰝟"
-            } else if volume >= 0.5 {
-                "󰕾"
-            } else {
-                "󰕿"
-            },
-            if muted { 0 } else { (volume * 100.0) as u32 }
-        ));
-        refs.audio.remove_css_class("muted");
-        if muted {
-            refs.audio.add_css_class("muted");
-        }
-    }
-
-    if let Some(value) = refs.cpu_rx.try_iter().last() {
-        match value {
-            Some(temp) => {
-                refs.temperature.set_text(&temperature_text(Some(temp)));
-                refs.temperature
-                    .set_tooltip_text(Some(&format!("cpu temperature: {}°c", temp / 1000)));
-                refs.temperature.set_visible(true);
-            }
-            None => {
-                refs.temperature.set_text(&temperature_text(None));
-                refs.temperature
-                    .set_tooltip_text(Some("cpu temperature unavailable"));
-            }
-        }
-    }
-
-    if let Some(info) = refs.network_rx.try_iter().last() {
-        let connected = info.status == "connected";
-        match notifications::network_transition(
-            last_network.as_ref(),
-            connected,
-            info.ssid.as_deref(),
-        ) {
-            Some(ConnectionNotice::Connected(ssid)) => notifications::show(
-                state,
-                Notice::transient(NoticeKind::Network, "wi-fi connected").with_detail(ssid),
-            ),
-            Some(ConnectionNotice::Disconnected) => notifications::show(
-                state,
-                Notice::transient(NoticeKind::Network, "wi-fi disconnected"),
-            ),
-            None => {}
-        }
-        *last_network = Some((connected, info.ssid.clone()));
-        if refs.network.text() != info.text
-            || refs.network.tooltip_text().as_deref() != Some(&info.tooltip)
-        {
-            refs.network.set_text(&info.text);
-            refs.network.set_tooltip_text(Some(&info.tooltip));
-            if connected {
-                refs.network.remove_css_class("disconnected");
-            } else {
-                refs.network.add_css_class("disconnected");
-            }
-        }
-    }
-}
-
-fn update_battery(refs: &ModuleRefs, state: &Rc<AppState>, last_power: &mut Option<(bool, bool)>) {
-    let battery = modules::battery_status();
-    if refs.battery.text() != battery.text
-        || refs.battery.tooltip_text().as_deref() != Some(&battery.tooltip)
-        || *last_power != Some((battery.plugged, battery.charging))
-    {
-        let transition =
-            notifications::power_transition(*last_power, battery.plugged, battery.charging);
-        *last_power = Some((battery.plugged, battery.charging));
-        if let Some(transition) = transition {
-            let title = match transition {
-                PowerNotice::Connected => "power connected",
-                PowerNotice::Disconnected => "power disconnected",
-                PowerNotice::ChargingStarted => "charging started",
-                PowerNotice::ChargingComplete => "charging complete",
-            };
-            notifications::show(
-                state,
-                Notice::transient(NoticeKind::Power, title)
-                    .with_detail(format!("{} · {}", battery.text, battery.tooltip)),
-            );
-        }
-        refs.battery.set_text(&battery.text);
-        refs.battery.set_tooltip_text(Some(&battery.tooltip));
-        refs.battery.remove_css_class("warning");
-        refs.battery.remove_css_class("critical");
-        if !battery.level.is_empty() && battery.level != "normal" {
-            refs.battery.add_css_class(&battery.level);
-        }
-        refs.battery.set_visible(!battery.text.is_empty());
-    }
-}
-
-fn add_scroll_controller(
-    widget: &impl IsA<gtk::Widget>,
-    action: ScrollAction,
-    state: Rc<AppState>,
-) {
-    let controller = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+fn scroll(button: &gtk::Button, state: &Rc<AppState>, up: &'static str, down: &'static str) {
+    let controller = gtk::EventControllerScroll::new(
+        gtk::EventControllerScrollFlags::VERTICAL | gtk::EventControllerScrollFlags::DISCRETE,
+    );
+    let state = Rc::clone(state);
     controller.connect_scroll(move |_, _, y| {
-        let direction = if y < 0.0 { "+" } else { "-" };
-        match &action {
-            ScrollAction::Volume => {
-                notifications::handle_command(
-                    &state,
-                    if direction == "+" {
-                        "volume-up"
-                    } else {
-                        "volume-down"
-                    },
-                );
-            }
-            ScrollAction::Brightness => {
-                notifications::handle_command(
-                    &state,
-                    if direction == "+" {
-                        "brightness-scroll-up"
-                    } else {
-                        "brightness-scroll-down"
-                    },
-                );
-            }
+        if y != 0.0 {
+            notifications::handle_command(&state, if y < 0.0 { up } else { down });
         }
         glib::Propagation::Stop
     });
-    widget.add_controller(controller);
+    button.add_controller(controller);
 }
 
 pub fn create(app: &gtk::Application, state: &Rc<AppState>, center: &Rc<NotificationCenter>) {
+    if state.services.borrow().is_some() {
+        return;
+    }
+    *state.services.borrow_mut() = Some(Services::new(state));
+    *state.background_manager.borrow_mut() = Some(BackgroundManager::new(app));
+    let Some(display) = gtk::gdk::Display::default() else {
+        return;
+    };
+    let monitors = display.monitors();
+    reconcile(app, state, center, &monitors);
+    let app = app.downgrade();
+    let state = Rc::downgrade(state);
+    let center = Rc::downgrade(center);
+    monitors.connect_items_changed(move |monitors, _, _, _| {
+        if let (Some(app), Some(state), Some(center)) =
+            (app.upgrade(), state.upgrade(), center.upgrade())
+        {
+            reconcile(&app, &state, &center, monitors);
+        }
+    });
+}
+
+fn reconcile(
+    app: &gtk::Application,
+    state: &Rc<AppState>,
+    center: &Rc<NotificationCenter>,
+    monitors: &gio::ListModel,
+) {
+    let active: Vec<_> = (0..monitors.n_items())
+        .filter_map(|i| monitors.item(i).and_downcast::<gtk::gdk::Monitor>())
+        .filter(|m| {
+            crate::config::get().monitors.is_empty()
+                || m.connector()
+                    .is_some_and(|name| crate::config::get().monitors.iter().any(|s| s == &name))
+        })
+        .collect();
+    state.bars.borrow_mut().retain(|(monitor, window)| {
+        if active.contains(monitor) {
+            true
+        } else {
+            window.close();
+            false
+        }
+    });
+    for monitor in active {
+        if state.bars.borrow().iter().any(|(m, _)| m == &monitor) {
+            continue;
+        }
+        let window = build(app, state, center, &monitor);
+        state.bars.borrow_mut().push((monitor, window));
+    }
+}
+
+fn sidebar(content: &gtk::Box, monitor: &gtk::gdk::Monitor) -> gtk::ScrolledWindow {
+    let scroll = gtk::ScrolledWindow::new();
+    scroll.set_policy(gtk::PolicyType::External, gtk::PolicyType::Never);
+    scroll.set_propagate_natural_width(true);
+    scroll.set_max_content_width(((monitor.geometry().width() - 290) / 2).max(30));
+    scroll.set_child(Some(content));
+    let weak = scroll.downgrade();
+    monitor.connect_geometry_notify(move |monitor| {
+        if let Some(scroll) = weak.upgrade() {
+            scroll.set_max_content_width(((monitor.geometry().width() - 290) / 2).max(30));
+        }
+    });
+    scroll
+}
+
+fn build(
+    app: &gtk::Application,
+    state: &Rc<AppState>,
+    center: &Rc<NotificationCenter>,
+    monitor: &gtk::gdk::Monitor,
+) -> gtk::Window {
     let window = gtk::ApplicationWindow::builder()
         .application(app)
         .title("chuhshell")
         .build();
     window.set_widget_name("bar");
     window.set_default_height(36);
-    set_layer_window(
+    ui::set_layer_window(
         &window,
         "chuhshell",
         layer_shell::Layer::Top,
@@ -288,292 +120,146 @@ pub fn create(app: &gtk::Application, state: &Rc<AppState>, center: &Rc<Notifica
             layer_shell::Edge::Right,
         ],
         36,
-        layer_shell::KeyboardMode::None,
+        layer_shell::KeyboardMode::OnDemand,
     );
-
-    let overlay = gtk::Overlay::new();
-    let root = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    root.set_margin_start(8);
-    root.set_margin_end(8);
-    root.set_hexpand(true);
-    overlay.set_child(Some(&root));
-    let left = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    left.add_css_class("workspaces");
-    let right = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    right.set_halign(gtk::Align::End);
-
-    let clock = module("󰥔 --:--", "clock", "");
-    clock.set_widget_name("clock");
-    let clock_alt = Rc::new(Cell::new(false));
-    let clock_alt_signal = Rc::clone(&clock_alt);
-    let gesture = gtk::GestureClick::new();
-    gesture.connect_released(move |_, _, _, _| clock_alt_signal.set(!clock_alt_signal.get()));
-    clock.add_controller(gesture);
-    clock.set_halign(gtk::Align::Center);
-    clock.set_valign(gtk::Align::Center);
-
-    let audio = module("--", "audio", "audio volume");
-    let brightness = module("--", "brightness", "screen brightness — scroll to adjust");
-    let language = module("󰌌 --", "language", "keyboard layout");
-    language.set_width_chars(7);
-    language.set_xalign(0.5);
-    let temperature = module("", "temperature", "cpu temperature");
-    let network = module("󰖪", "network", "wi-fi status");
-    let battery = module("", "battery", "battery level");
-    let notification_label = module("󰂚", "notification-toggle", "Notifications");
-    center.attach_label(&notification_label);
-    let notification_click = gtk::GestureClick::new();
-    notification_click.connect_released({
+    window.set_monitor(Some(monitor));
+    let layout = gtk::CenterBox::new();
+    layout.set_margin_start(8);
+    layout.set_margin_end(8);
+    let left = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+    let right = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+    layout.set_start_widget(Some(&sidebar(&left, monitor)));
+    layout.set_end_widget(Some(&sidebar(&right, monitor)));
+    let clock = module("", "clock", "Date and time");
+    let date = Rc::new(Cell::new(false));
+    update_clock(&clock, false);
+    clock.connect_clicked({
+        let date = Rc::clone(&date);
+        move |button| {
+            date.set(!date.get());
+            update_clock(button, date.get());
+        }
+    });
+    clock_tick(clock.downgrade(), date);
+    let notification = module("󰂚", "notification-toggle", "Notifications");
+    center.attach_button(&notification);
+    notification.connect_clicked({
         let center = Rc::clone(center);
-        move |_, _, _, _| center.toggle_drawer()
+        move |button| center.toggle_at(button)
     });
-    notification_label.add_controller(notification_click);
-    let background_manager = BackgroundManager::new(app);
-    *state.background_manager.borrow_mut() = Some(Rc::clone(&background_manager));
-    let background_label = module("󰀻", "background-apps-toggle", "Background apps");
-    background_manager.attach_label(&background_label);
-    let background_click = gtk::GestureClick::new();
-    background_click.connect_released({
-        let manager = Rc::clone(&background_manager);
-        move |_, _, _, _| manager.toggle()
-    });
-    background_label.add_controller(background_click);
-    let center_modules = gtk::Grid::new();
-    center_modules.set_column_homogeneous(true);
-    center_modules.set_column_spacing(6);
-    center_modules.set_halign(gtk::Align::Center);
-    center_modules.set_valign(gtk::Align::Center);
-    background_label.set_halign(gtk::Align::End);
-    notification_label.set_halign(gtk::Align::Start);
-    center_modules.attach(&background_label, 0, 0, 1, 1);
-    center_modules.attach(&clock, 1, 0, 1, 1);
-    center_modules.attach(&notification_label, 2, 0, 1, 1);
-    overlay.add_overlay(&center_modules);
-    right.append(&audio);
-    right.append(&brightness);
-    right.append(&language);
-    right.append(&temperature);
-    right.append(&network);
-    right.append(&battery);
-    root.append(&left);
-    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    spacer.set_hexpand(true);
-    root.append(&spacer);
-    root.append(&right);
-    window.set_child(Some(&overlay));
-
-    let audio_click = gtk::GestureClick::new();
-    audio_click.connect_released({
+    let background = module("󰀻", "background-apps-toggle", "Background apps");
+    if let Some(manager) = state.background_manager.borrow().as_ref() {
+        manager.attach_button(&background);
+        background.connect_clicked({
+            let manager = Rc::clone(manager);
+            move |button| manager.toggle_at(button)
+        });
+    }
+    let middle = gtk::Grid::new();
+    middle.set_column_homogeneous(true);
+    middle.set_column_spacing(4);
+    background.set_halign(gtk::Align::End);
+    notification.set_halign(gtk::Align::Start);
+    middle.attach(&background, 0, 0, 1, 1);
+    middle.attach(&clock, 1, 0, 1, 1);
+    middle.attach(&notification, 2, 0, 1, 1);
+    layout.set_center_widget(Some(&middle));
+    let audio = module("--", "audio", "Audio unavailable");
+    let brightness = module("--", "brightness", "Screen brightness");
+    let language = module("--", "language", "Keyboard layout");
+    let temperature = module("--", "temperature", "CPU temperature");
+    let network = module("󰖪", "network", "Wi-Fi unavailable");
+    let battery = module("", "battery", "Battery");
+    for button in [
+        &audio,
+        &brightness,
+        &language,
+        &temperature,
+        &network,
+        &battery,
+    ] {
+        right.append(button);
+    }
+    audio.connect_clicked({
         let state = Rc::clone(state);
-        move |_, _, _, _| {
+        move |_| {
             notifications::handle_command(&state, "volume-mute");
         }
     });
-    audio.add_controller(audio_click);
-    add_scroll_controller(&audio, ScrollAction::Volume, Rc::clone(state));
-    add_scroll_controller(&brightness, ScrollAction::Brightness, Rc::clone(state));
-
-    let network_click = gtk::GestureClick::new();
-    network_click.connect_released(move |_, _, _, _| {
+    scroll(&audio, state, "volume-up", "volume-down");
+    scroll(
+        &brightness,
+        state,
+        "brightness-scroll-up",
+        "brightness-scroll-down",
+    );
+    network.connect_clicked(|_| {
         modules::spawn_detached("foot", &["-e", "nmtui"]);
     });
-    network.add_controller(network_click);
-
-    let temp_click = gtk::GestureClick::new();
-    temp_click.connect_released(move |_, _, _, _| {
+    temperature.connect_clicked(|_| {
         modules::spawn_detached("foot", &["-e", "btop"]);
     });
-    temperature.add_controller(temp_click);
-
-    let (niri_tx, niri_rx) = std::sync::mpsc::channel();
-    niri::spawn_poller(niri_tx);
-    let last_layout = Rc::new(Cell::new(None));
-    glib::timeout_add_local(Duration::from_millis(32), {
-        let state = Rc::clone(state);
-        let workspaces = left.clone();
-        let layout_label = language.clone();
-        let last_layout = Rc::clone(&last_layout);
-        move || {
-            if let Some(snapshot) = niri_rx.try_iter().last() {
-                if *state.workspaces.borrow() != snapshot.workspaces {
-                    *state.workspaces.borrow_mut() = snapshot.workspaces;
-                    update_workspaces(&state, &workspaces);
-                }
-                if *state.layout_names.borrow() != snapshot.layouts.names
-                    || state.current_layout.get() != snapshot.layouts.current_idx
-                {
-                    *state.layout_names.borrow_mut() = snapshot.layouts.names;
-                    state.current_layout.set(snapshot.layouts.current_idx);
-                    update_layout(&state, &layout_label);
-                    if let Some(previous) = last_layout.replace(Some(snapshot.layouts.current_idx))
-                        && previous != snapshot.layouts.current_idx
-                        && let Some(name) = state
-                            .layout_names
-                            .borrow()
-                            .get(snapshot.layouts.current_idx)
-                    {
-                        notifications::show(
-                            &state,
-                            Notice::transient(
-                                NoticeKind::Keyboard,
-                                notifications::layout_label(name),
-                            ),
-                        );
-                    }
-                }
-                if let Some(initial_window) = state.launcher_focus_window.get() {
-                    if state.focused_window_id() != initial_window {
-                        let launcher = state.launcher.borrow().clone();
-                        if let Some(launcher) = launcher {
-                            launcher.close();
-                        }
-                    }
-                } else if let Some(current_window) = state.focused_window_id() {
-                    state.launcher_focus_window.set(Some(Some(current_window)));
-                }
-            }
-            glib::ControlFlow::Continue
-        }
-    });
-
-    let (audio_tx, audio_rx) = std::sync::mpsc::sync_channel(1);
-    modules::spawn_audio_poller(audio_tx);
-    let (network_tx, network_rx) = std::sync::mpsc::sync_channel(1);
-    modules::spawn_network_poller(network_tx);
-    let (cpu_tx, cpu_rx) = std::sync::mpsc::sync_channel(1);
-    modules::spawn_temperature_poller(cpu_tx);
-    let (device_tx, device_rx) = std::sync::mpsc::sync_channel(32);
-    modules::spawn_device_monitor(device_tx);
-
-    let refs = Rc::new(ModuleRefs {
-        audio,
-        brightness,
-        temperature,
-        network,
-        battery,
-        clock,
-        audio_text: RefCell::new(None),
-        audio_rx,
-        network_rx,
-        cpu_rx,
-        device_rx,
-    });
-    let mut last_network = None;
-    let mut last_power = None;
-    update_modules(&refs, state, &mut last_network);
-    update_battery(&refs, state, &mut last_power);
-    let refs_update = Rc::clone(&refs);
-    let state_for_notifications = Rc::clone(state);
-    let state_for_modules = Rc::clone(state);
-    let mut backlight = modules::backlight_device();
-    let mut last_brightness = backlight.as_deref().and_then(modules::brightness_level);
-    refs.brightness.set_text(&brightness_text(last_brightness));
-    if last_brightness.is_none() {
-        refs.brightness
-            .set_tooltip_text(Some("screen brightness unavailable"));
-    }
-    let mut brightness_check = std::time::Instant::now();
-    let mut battery_check = std::time::Instant::now();
-    glib::timeout_add_local(Duration::from_millis(100), move || {
-        let mut brightness_changed = false;
-        let mut battery_changed = false;
-        for event in refs_update.device_rx.try_iter() {
-            match event {
-                DeviceEvent::Peripheral(connected, name) => notifications::show(
-                    &state_for_notifications,
-                    Notice::transient(
-                        NoticeKind::Peripheral,
-                        if connected {
-                            "device connected"
-                        } else {
-                            "device disconnected"
-                        },
-                    )
-                    .with_detail(name),
-                ),
-                DeviceEvent::Brightness => brightness_changed = true,
-                DeviceEvent::Power => battery_changed = true,
-            }
-        }
-        if battery_check.elapsed() >= Duration::from_secs(30) {
-            battery_changed = true;
-        }
-        if battery_changed {
-            battery_check = std::time::Instant::now();
-            update_battery(&refs_update, &state_for_modules, &mut last_power);
-        }
-        if brightness_check.elapsed() >= Duration::from_secs(15) {
-            brightness_check = std::time::Instant::now();
-            brightness_changed = true;
-        }
-        if brightness_changed {
-            if backlight.is_none() {
-                backlight = modules::backlight_device();
-            }
-            let mut value = backlight.as_deref().and_then(modules::brightness_level);
-            if value.is_none() {
-                backlight = modules::backlight_device();
-                value = backlight.as_deref().and_then(modules::brightness_level);
-            }
-            if value != last_brightness {
-                refs_update.brightness.set_text(&brightness_text(value));
-                refs_update
-                    .brightness
-                    .set_tooltip_text(Some(if value.is_some() {
-                        "screen brightness — scroll to adjust"
-                    } else {
-                        "screen brightness unavailable"
-                    }));
-                last_brightness = value;
-            }
-        }
-        update_modules(&refs_update, &state_for_modules, &mut last_network);
-        glib::ControlFlow::Continue
-    });
-
-    let clock = refs.clock.clone();
-    let mut last_clock = String::new();
-    let mut last_day = String::new();
-    glib::timeout_add_local(Duration::from_secs(1), move || {
-        if let Ok(now) = glib::DateTime::now_local() {
-            let format = if clock_alt.get() { "%a %d.%m" } else { "%H:%M" };
-            let time = now
-                .format(format)
-                .map(|text| text.to_string())
-                .unwrap_or_default();
-            let weekday = now
-                .format("%A, %d %B %Y")
-                .map(|text| text.to_string())
-                .unwrap_or_default();
-            if time != last_clock {
-                clock.set_text(&format!("󰥔 {time}"));
-                last_clock = time;
-            }
-            if weekday != last_day {
-                clock.set_tooltip_text(Some(&weekday.to_lowercase()));
-                last_day = weekday;
-            }
-        }
-        glib::ControlFlow::Continue
-    });
-
+    language.set_focusable(false);
+    battery.set_focusable(false);
+    let output = monitor.connector().map(|s| s.to_string());
+    let old_workspaces = RefCell::new(Vec::new());
+    let weak_window = window.downgrade();
+    window.set_child(Some(&layout));
     window.present();
-    *state.bar.borrow_mut() = Some(window.upcast());
+    state.services.borrow().as_ref().unwrap().subscribe(move |data| {
+        if weak_window.upgrade().is_none_or(|window| !window.is_visible()) { return false; }
+        if *old_workspaces.borrow() != data.niri.workspaces {
+            *old_workspaces.borrow_mut() = data.niri.workspaces.clone();
+            while let Some(child) = left.first_child() { left.remove(&child); }
+            let mut workspaces = data.niri.workspaces.clone();
+            workspaces.sort_by_key(|w| w.idx);
+            for workspace in workspaces.iter().filter(|w| w.output == output) {
+                let text = workspace.name.clone().unwrap_or_else(|| if workspace.is_active { "●" } else { "○" }.into());
+                let button = gtk::Button::with_label(&text);
+                button.add_css_class("workspace");
+                for (enabled, class) in [(workspace.active_window_id.is_none(), "empty"), (workspace.is_active, "active"), (workspace.is_focused, "focused"), (workspace.is_urgent, "urgent")] { if enabled { button.add_css_class(class); } }
+                button.set_tooltip_text(Some(&format!("Workspace {}", workspace.idx)));
+                let id = workspace.id;
+                button.connect_clicked(move |_| { std::thread::spawn(move || { if !niri::command(&format!("{{\"Action\":{{\"FocusWorkspace\":{{\"reference\":{{\"Id\":{id}}}}}}}}}")) { eprintln!("chuhshell: could not focus workspace"); } }); });
+                left.append(&button);
+            }
+        }
+        if let Some(text) = &data.audio {
+            let muted = text.contains("MUTED");
+            let percent = text.split_whitespace().nth(1).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0) * 100.0;
+            audio.set_label(&format!("{} {:.0}%", if muted { "󰝟" } else { "󰕾" }, percent));
+            audio.set_tooltip_text(Some(if muted { "Audio muted" } else { "Audio volume" }));
+        } else { audio.set_label("󰝟 --"); audio.set_tooltip_text(Some("Audio unavailable")); }
+        brightness.set_label(&data.brightness.map_or_else(|| "--".into(), |(p, icon)| format!("{icon} {p}%")));
+        brightness.set_tooltip_text(Some(if data.brightness.is_some() { "Screen brightness — scroll to adjust" } else { "Screen brightness unavailable" }));
+        temperature.set_label(&data.temperature.map_or_else(|| "󰔏 --°C".into(), |t| format!("󰔏 {}°C", t / 1000)));
+        let name = data.niri.layouts.names.get(data.niri.layouts.current_idx);
+        language.set_label(&name.map_or_else(|| "󰌌 --".into(), |s| format!("󰌌 {}", notifications::layout_label(s))));
+        if let Some(info) = &data.network { network.set_label(&info.text); network.set_tooltip_text(Some(&info.tooltip)); }
+        battery.set_label(&data.battery.text); battery.set_tooltip_text(Some(&data.battery.tooltip)); battery.set_visible(!data.battery.text.is_empty());
+        for class in ["warning", "critical"] { if data.battery.level == class { battery.add_css_class(class); } else { battery.remove_css_class(class); } }
+        true
+    });
+    window.upcast()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn brightness_state_never_keeps_a_stale_reading() {
-        assert_eq!(brightness_text(Some((42, "󰃝"))), "󰃝 42%");
-        assert_eq!(brightness_text(None), "--");
+fn update_clock(clock: &gtk::Button, date: bool) {
+    if let Ok(now) = glib::DateTime::now_local() {
+        if let Ok(text) = now.format(if date { "%a %d.%m" } else { "%H:%M" }) {
+            clock.set_label(&format!("󰥔 {text}"));
+        }
+        if let Ok(text) = now.format("%A, %d %B %Y") {
+            clock.set_tooltip_text(Some(&text));
+        }
     }
+}
 
-    #[test]
-    fn temperature_state_never_keeps_a_stale_reading() {
-        assert_eq!(temperature_text(Some(52_000)), "󰔏 52°C");
-        assert_eq!(temperature_text(None), "󰔏 --°C");
-    }
+fn clock_tick(clock: glib::WeakRef<gtk::Button>, date: Rc<Cell<bool>>) {
+    let delay = glib::DateTime::now_local().map_or(30, |now| (60 - now.second()).clamp(1, 30));
+    glib::timeout_add_local_once(std::time::Duration::from_secs(delay as u64), move || {
+        if let Some(button) = clock.upgrade() {
+            update_clock(&button, date.get());
+            clock_tick(clock, date);
+        }
+    });
 }

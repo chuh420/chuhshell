@@ -1,8 +1,9 @@
+use crate::{config, process};
+use async_channel::Sender;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc::SyncSender;
 use std::thread;
 use std::time::Duration;
 
@@ -18,13 +19,14 @@ pub struct NetworkInfo {
     pub ssid: Option<String>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BatteryStatus {
     pub text: String,
     pub level: String,
     pub tooltip: String,
     pub plugged: bool,
     pub charging: bool,
+    pub available: bool,
 }
 
 pub enum DeviceEvent {
@@ -34,15 +36,9 @@ pub enum DeviceEvent {
 }
 
 pub fn child_process(program: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(program)
-        .args(args)
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    process::run(program, args)
+        .map_err(|error| eprintln!("chuhshell: {error}"))
+        .ok()
 }
 
 pub fn spawn_detached(program: &str, args: &[&str]) -> bool {
@@ -61,23 +57,33 @@ fn read_trim(path: &Path) -> Option<String> {
         .map(|value| value.trim().to_owned())
 }
 
-fn power_supply(prefixes: &[&str]) -> Option<PathBuf> {
-    let mut candidates: Vec<PathBuf> = fs::read_dir(POWER_SUPPLY_ROOT)
-        .ok()?
+fn supplies(kind: &str) -> Vec<PathBuf> {
+    let mut paths: Vec<_> = fs::read_dir(POWER_SUPPLY_ROOT)
+        .into_iter()
+        .flatten()
         .flatten()
         .map(|entry| entry.path())
+        .filter(|path| read_trim(&path.join("type")).as_deref() == Some(kind))
         .collect();
-    candidates.sort();
-    candidates.into_iter().find(|path| {
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| prefixes.iter().any(|prefix| name.starts_with(prefix)))
-    })
+    paths.sort();
+    paths
+}
+
+fn battery_path() -> Option<PathBuf> {
+    if let Some(name) = &config::get().battery {
+        return Some(Path::new(POWER_SUPPLY_ROOT).join(name));
+    }
+    supplies("Battery")
+        .into_iter()
+        .find(|path| read_trim(&path.join("scope")).as_deref() != Some("Device"))
 }
 
 pub fn thermal_sensor_path() -> Option<PathBuf> {
+    if let Some(path) = &config::get().temperature_sensor {
+        return Some(path.clone());
+    }
     let mut fallback = None;
-    for entry in fs::read_dir(THERMAL_ROOT).ok()?.flatten() {
+    for entry in fs::read_dir(THERMAL_ROOT).into_iter().flatten().flatten() {
         let path = entry.path();
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
@@ -91,27 +97,43 @@ pub fn thermal_sensor_path() -> Option<PathBuf> {
         }
         fallback.get_or_insert(temp);
     }
+    for entry in fs::read_dir("/sys/class/hwmon")
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let path = entry.path();
+        if read_trim(&path.join("name")).is_some_and(|name| {
+            ["coretemp", "k10temp", "zenpower", "cpu_thermal"].contains(&name.as_str())
+        }) && path.join("temp1_input").exists()
+        {
+            return Some(path.join("temp1_input"));
+        }
+    }
     fallback
 }
 
 pub fn backlight_device() -> Option<String> {
+    if let Some(name) = &config::get().backlight {
+        return Some(name.clone());
+    }
     let mut names: Vec<String> = fs::read_dir(BACKLIGHT_ROOT)
         .ok()?
         .flatten()
         .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
         .collect();
-    names.sort();
-    names.into_iter().next()
-}
-
-pub fn wifi_interface() -> Option<String> {
-    let mut names: Vec<String> = fs::read_dir("/sys/class/net")
-        .ok()?
-        .flatten()
-        .filter(|entry| entry.path().join("wireless").exists())
-        .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
-        .collect();
-    names.sort();
+    names.sort_by_key(|name| {
+        let kind =
+            read_trim(&Path::new(BACKLIGHT_ROOT).join(name).join("type")).unwrap_or_default();
+        (
+            match kind.as_str() {
+                "raw" => 0,
+                "platform" => 1,
+                _ => 2,
+            },
+            name.clone(),
+        )
+    });
     names.into_iter().next()
 }
 
@@ -156,17 +178,26 @@ fn battery_estimate(battery: &Path, status: &str) -> String {
 }
 
 pub fn battery_status() -> BatteryStatus {
-    let Some(battery) = power_supply(&["BAT"]) else {
+    let Some(battery) = battery_path() else {
         return BatteryStatus::default();
+    };
+    let unavailable = || BatteryStatus {
+        text: "󰂎 --".into(),
+        tooltip: "Battery data unavailable".into(),
+        ..BatteryStatus::default()
     };
     let Some(capacity) = read_trim(&battery.join("capacity")) else {
-        return BatteryStatus::default();
+        return unavailable();
     };
-    let capacity_num: u32 = capacity.parse().unwrap_or(0);
+    let Some(capacity_num) = capacity.parse::<u32>().ok().filter(|value| *value <= 100) else {
+        return unavailable();
+    };
     let status = read_trim(&battery.join("status")).unwrap_or_default();
-    let online = power_supply(&["AC", "ADP", "AD"])
-        .and_then(|adapter| read_trim(&adapter.join("online")))
-        .is_some_and(|value| value == "1");
+    let online = ["Mains", "USB", "USB_C", "USB_PD"]
+        .iter()
+        .flat_map(|kind| supplies(kind))
+        .any(|adapter| read_trim(&adapter.join("online")).as_deref() == Some("1"))
+        || status.eq_ignore_ascii_case("charging");
     let icon = if online && status.eq_ignore_ascii_case("charging") {
         "󰂄"
     } else if online {
@@ -193,6 +224,7 @@ pub fn battery_status() -> BatteryStatus {
         tooltip: format!("{capacity}% • {}", battery_estimate(&battery, &status)),
         plugged: online,
         charging: status.eq_ignore_ascii_case("charging"),
+        available: true,
     }
 }
 
@@ -226,59 +258,75 @@ fn signal_icon(signal: u8) -> &'static str {
 }
 
 pub fn network_info() -> NetworkInfo {
-    let active = child_process(
+    let unavailable = |status: &str| NetworkInfo {
+        text: "󰖪".into(),
+        tooltip: format!("Wi-Fi: {status}"),
+        status: status.into(),
+        ssid: None,
+    };
+    let Some(data) = child_process(
         "nmcli",
-        &["-t", "-f", "ACTIVE,SSID,SIGNAL", "device", "wifi"],
-    )
-    .and_then(|data| {
-        data.lines().find_map(|line| {
-            let fields = split_terse(line);
-            fields
-                .first()
-                .is_some_and(|field| field == "yes")
-                .then_some(fields)
+        &["-t", "-f", "DEVICE,TYPE,STATE", "device", "status"],
+    ) else {
+        return unavailable("unavailable");
+    };
+    let candidates: Vec<_> = data
+        .lines()
+        .map(split_terse)
+        .filter(|fields| fields.get(1).is_some_and(|kind| kind == "wifi"))
+        .filter(|fields| {
+            config::get()
+                .wifi
+                .as_ref()
+                .is_none_or(|name| fields.first() == Some(name))
         })
-    });
-    let Some(fields) = active else {
-        return NetworkInfo {
-            text: "󰖪".to_owned(),
-            tooltip: "wi-fi: disconnected".to_owned(),
-            status: "disconnected".to_owned(),
-            ssid: None,
-        };
+        .collect();
+    if candidates.is_empty() {
+        return unavailable("unavailable");
+    }
+    let Some(interface) = candidates
+        .iter()
+        .find(|fields| fields.get(2).is_some_and(|state| state == "connected"))
+        .and_then(|fields| fields.first())
+    else {
+        let disabled = child_process("nmcli", &["radio", "wifi"]).as_deref() == Some("disabled");
+        return unavailable(if disabled { "disabled" } else { "disconnected" });
+    };
+    let Some(data) = child_process(
+        "nmcli",
+        &[
+            "-t",
+            "-f",
+            "ACTIVE,SSID,SIGNAL",
+            "device",
+            "wifi",
+            "list",
+            "ifname",
+            interface,
+            "--rescan",
+            "no",
+        ],
+    ) else {
+        return unavailable("unavailable");
+    };
+    let Some(fields) = data
+        .lines()
+        .map(split_terse)
+        .find(|fields| fields.first().is_some_and(|value| value == "yes"))
+    else {
+        return unavailable("unavailable");
     };
     let ssid = fields.get(1).cloned().filter(|value| !value.is_empty());
-    let name = ssid
-        .as_deref()
-        .map(str::to_lowercase)
-        .unwrap_or_else(|| "wi-fi".to_owned());
-    let signal: u8 = fields
+    let signal = fields
         .get(2)
-        .and_then(|value| value.parse().ok())
+        .and_then(|value| value.parse::<u8>().ok())
         .unwrap_or(0);
-    let ip = wifi_interface()
-        .and_then(|interface| {
-            child_process(
-                "nmcli",
-                &[
-                    "-t",
-                    "-f",
-                    "IP4.ADDRESS",
-                    "device",
-                    "show",
-                    interface.as_str(),
-                ],
-            )
-        })
-        .and_then(|data| {
-            data.lines()
-                .find_map(|line| line.strip_prefix("IP4.ADDRESS[1]:").map(str::to_owned))
-        })
+    let ip = child_process("nmcli", &["-g", "IP4.ADDRESS", "device", "show", interface])
         .unwrap_or_default();
     NetworkInfo {
-        text: signal_icon(signal).to_owned(),
-        tooltip: format!("{name}\n{signal}% • {ip}"),
-        status: "connected".to_owned(),
+        text: signal_icon(signal).into(),
+        tooltip: format!("{}\n{signal}% • {ip}", ssid.as_deref().unwrap_or("Wi-Fi")),
+        status: "connected".into(),
         ssid,
     }
 }
@@ -300,39 +348,56 @@ pub fn brightness_level(device: &str) -> Option<(u8, &'static str)> {
     Some((percent, icon))
 }
 
-pub fn spawn_audio_poller(sender: SyncSender<Option<String>>) {
+pub fn spawn_audio_poller(sender: Sender<Option<String>>) {
     thread::spawn(move || {
-        loop {
-            if let Some(value) = child_process("wpctl", &["get-volume", "@DEFAULT_AUDIO_SINK@"]) {
-                let _ = sender.try_send(Some(value));
+        while !process::stopped() && !sender.is_closed() {
+            if sender
+                .send_blocking(child_process(
+                    "wpctl",
+                    &["get-volume", "@DEFAULT_AUDIO_SINK@"],
+                ))
+                .is_err()
+            {
+                return;
             }
-            let Ok(mut child) = Command::new("pactl")
+            let mut command = Command::new("pactl");
+            command
                 .arg("subscribe")
                 .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()
-            else {
-                thread::sleep(Duration::from_secs(1));
-                continue;
-            };
-            if let Some(stdout) = child.stdout.take() {
+                .stderr(Stdio::null());
+            if let Ok(mut child) = process::ManagedChild::spawn(&mut command)
+                && let Some(stdout) = child.0.stdout.take()
+            {
                 for line in BufReader::new(stdout).lines() {
-                    let Ok(line) = line else { break };
+                    let Ok(line) = line else {
+                        break;
+                    };
+                    if process::stopped() || sender.is_closed() {
+                        break;
+                    }
                     if (line.contains("sink") || line.contains("server"))
-                        && let Some(value) =
-                            child_process("wpctl", &["get-volume", "@DEFAULT_AUDIO_SINK@"])
+                        && sender
+                            .send_blocking(child_process(
+                                "wpctl",
+                                &["get-volume", "@DEFAULT_AUDIO_SINK@"],
+                            ))
+                            .is_err()
                     {
-                        let _ = sender.try_send(Some(value));
+                        return;
                     }
                 }
             }
-            let _ = child.kill();
-            let _ = child.wait();
+            if sender.send_blocking(None).is_err() {
+                return;
+            }
+            if !process::pause(Duration::from_secs(2)) {
+                return;
+            }
         }
     });
 }
 
-pub fn spawn_temperature_poller(sender: SyncSender<Option<i64>>) {
+pub fn spawn_temperature_poller(sender: Sender<Option<i64>>) {
     thread::spawn(move || {
         let mut sensor = thermal_sensor_path();
         loop {
@@ -343,25 +408,33 @@ pub fn spawn_temperature_poller(sender: SyncSender<Option<i64>>) {
                 .as_deref()
                 .and_then(read_trim)
                 .and_then(|text| text.parse::<i64>().ok());
-            let _ = sender.try_send(value);
-            thread::sleep(Duration::from_secs(3));
+            if value.is_none() {
+                sensor = None;
+            }
+            if sender.send_blocking(value).is_err() || !process::pause(Duration::from_secs(3)) {
+                return;
+            }
         }
     });
 }
 
-pub fn spawn_network_poller(sender: SyncSender<NetworkInfo>) {
+pub fn spawn_network_poller(sender: Sender<NetworkInfo>) {
     thread::spawn(move || {
         loop {
-            let _ = sender.try_send(network_info());
-            thread::sleep(Duration::from_secs(5));
+            if sender.send_blocking(network_info()).is_err()
+                || !process::pause(Duration::from_secs(5))
+            {
+                return;
+            }
         }
     });
 }
 
-pub fn spawn_device_monitor(sender: SyncSender<DeviceEvent>) {
+pub fn spawn_device_monitor(sender: Sender<DeviceEvent>) {
     thread::spawn(move || {
-        loop {
-            let Ok(mut child) = Command::new("udevadm")
+        while !process::stopped() && !sender.is_closed() {
+            let mut command = Command::new("udevadm");
+            command
                 .args([
                     "monitor",
                     "--udev",
@@ -371,19 +444,23 @@ pub fn spawn_device_monitor(sender: SyncSender<DeviceEvent>) {
                     "--subsystem-match=power_supply",
                 ])
                 .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()
-            else {
-                thread::sleep(Duration::from_secs(2));
-                continue;
-            };
-            if let Some(stdout) = child.stdout.take() {
+                .stderr(Stdio::null());
+            if let Ok(mut child) = process::ManagedChild::spawn(&mut command)
+                && let Some(stdout) = child.0.stdout.take()
+            {
                 let mut properties = Vec::new();
                 for line in BufReader::new(stdout).lines() {
-                    let Ok(line) = line else { break };
+                    let Ok(line) = line else {
+                        break;
+                    };
+                    if process::stopped() || sender.is_closed() {
+                        break;
+                    }
                     if line.is_empty() {
-                        if let Some(event) = parse_device_event(&properties) {
-                            let _ = sender.try_send(event);
+                        if let Some(event) = parse_device_event(&properties)
+                            && sender.send_blocking(event).is_err()
+                        {
+                            return;
                         }
                         properties.clear();
                     } else if let Some((key, value)) = line.split_once('=') {
@@ -391,9 +468,9 @@ pub fn spawn_device_monitor(sender: SyncSender<DeviceEvent>) {
                     }
                 }
             }
-            let _ = child.kill();
-            let _ = child.wait();
-            thread::sleep(Duration::from_secs(2));
+            if !process::pause(Duration::from_secs(2)) {
+                return;
+            }
         }
     });
 }

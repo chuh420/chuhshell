@@ -14,7 +14,9 @@ pub enum LauncherMode {
 
 #[derive(Default)]
 pub struct AppState {
-    pub bar: RefCell<Option<gtk::Window>>,
+    pub bars: RefCell<Vec<(gtk::gdk::Monitor, gtk::Window)>>,
+    pub services: RefCell<Option<Rc<crate::services::Services>>>,
+    pub commands: RefCell<Option<async_channel::Sender<crate::notifications::CommandRequest>>>,
     pub background_manager: RefCell<Option<Rc<BackgroundManager>>>,
     pub launcher: RefCell<Option<gtk::Window>>,
     pub osd: RefCell<Option<gtk::Window>>,
@@ -24,6 +26,7 @@ pub struct AppState {
     pub workspaces: RefCell<Vec<Workspace>>,
     pub layout_names: RefCell<Vec<String>>,
     pub current_layout: Cell<usize>,
+    pub launcher_generation: Cell<u64>,
     pub launcher_mode: Cell<Option<LauncherMode>>,
     pub launcher_apps: RefCell<Vec<AppEntry>>,
     pub launcher_focus_window: Cell<Option<Option<u64>>>,

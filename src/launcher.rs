@@ -6,15 +6,31 @@ use std::rc::Rc;
 use gtk::gdk;
 use gtk::prelude::*;
 use gtk4_layer_shell as layer_shell;
+use gtk4_layer_shell::LayerShell;
 
 use crate::app::{AppState, LauncherMode};
 use crate::apps::{self, AppEntry};
 use crate::fuzzy;
-use crate::modules;
+
 use crate::ui::set_layer_window;
 
 pub fn show(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode) {
-    create(app, state, mode);
+    let generation = state.launcher_generation.get().wrapping_add(1);
+    state.launcher_generation.set(generation);
+    let (tx, rx) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let _ = tx.send_blocking((apps::load_apps(), apps::read_launch_counts()));
+    });
+    let state = Rc::downgrade(state);
+    let app = app.downgrade();
+    glib::MainContext::default().spawn_local(async move {
+        if let Ok((apps, counts)) = rx.recv().await
+            && let (Some(app), Some(state)) = (app.upgrade(), state.upgrade())
+            && state.launcher_generation.get() == generation
+        {
+            create(&app, &state, mode, apps, counts);
+        }
+    });
 }
 
 fn compare_apps(
@@ -51,7 +67,13 @@ fn compare_apps(
         .then_with(|| a_id.cmp(b_id))
 }
 
-fn create(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode) {
+fn create(
+    app: &gtk::Application,
+    state: &Rc<AppState>,
+    mode: LauncherMode,
+    entries: Vec<AppEntry>,
+    launch_counts: HashMap<String, u64>,
+) {
     let old = state.launcher.borrow_mut().take();
     if let Some(old) = old {
         old.close();
@@ -60,7 +82,7 @@ fn create(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode) {
     state
         .launcher_focus_window
         .set(Some(state.focused_window_id()));
-    *state.launcher_apps.borrow_mut() = apps::load_apps();
+    *state.launcher_apps.borrow_mut() = entries;
 
     let window = gtk::ApplicationWindow::builder()
         .application(app)
@@ -77,6 +99,7 @@ fn create(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode) {
         layer_shell::KeyboardMode::OnDemand,
     );
 
+    window.set_monitor(crate::ui::active_monitor().as_ref());
     let outer = gtk::Box::new(gtk::Orientation::Vertical, 8);
     outer.add_css_class("launcher-box");
     let search = gtk::SearchEntry::new();
@@ -100,7 +123,7 @@ fn create(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode) {
     window.set_child(Some(&outer));
 
     let scores = Rc::new(RefCell::new(HashMap::new()));
-    let counts = Rc::new(RefCell::new(apps::read_launch_counts()));
+    let counts = Rc::new(RefCell::new(launch_counts));
     let searching = Rc::new(std::cell::Cell::new(false));
     let names: HashMap<String, (String, String)> = state
         .launcher_apps
@@ -110,7 +133,10 @@ fn create(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode) {
         .map(|app| {
             (
                 app.id.clone(),
-                (app.name.to_lowercase(), app.id.to_lowercase()),
+                (
+                    format!("{} {}", app.name, app.keywords).to_lowercase(),
+                    app.id.to_lowercase(),
+                ),
             )
         })
         .collect();
@@ -154,9 +180,7 @@ fn create(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode) {
             .into()
         }
     });
-    if let Some(first) = list.row_at_index(0) {
-        list.select_row(Some(&first));
-    }
+    list.select_row(visible_rows(&list).first());
     update_selected_row_styles(&list);
     scroll_selected_row_into_view(&list, &scrolled);
     let scrolled_for_selection = scrolled.downgrade();
@@ -189,9 +213,7 @@ fn create(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode) {
             drop(next);
             list.invalidate_filter();
             list.invalidate_sort();
-            if let Some(first) = list.row_at_index(0) {
-                list.select_row(Some(&first));
-            }
+            list.select_row(visible_rows(&list).first());
         }
     });
 
@@ -202,6 +224,9 @@ fn create(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode) {
         let Some(state_for_activate) = state_for_activate.upgrade() else {
             return;
         };
+        if !row.is_child_visible() || !row.is_visible() {
+            return;
+        }
         let Some(id) = row.widget_name().strip_prefix("app-").map(str::to_owned) else {
             return;
         };
@@ -243,13 +268,33 @@ fn create(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode) {
                     content.remove_css_class("hidden-app");
                 }
             }
-        } else if modules::spawn_detached("gtk-launch", &[&id]) {
-            if let Err(error) = apps::record_launch(&mut counts_for_activate.borrow_mut(), &id) {
-                eprintln!("chuhshell: failed to save launch counts: {error}");
-            }
-            if let Some(window) = window_for_activate.upgrade() {
-                window.close();
-            }
+        } else {
+            row.set_sensitive(false);
+            let row = row.downgrade();
+            let window = window_for_activate.clone();
+            let counts = Rc::clone(&counts_for_activate);
+            glib::MainContext::default().spawn_local(async move {
+                match apps::launch(&id).await {
+                    Ok(()) => {
+                        if let Err(error) = apps::record_launch(&mut counts.borrow_mut(), &id) {
+                            eprintln!("chuhshell: failed to save launch counts: {error}");
+                        }
+                        if let Some(window) = window.upgrade() {
+                            window.close();
+                        }
+                    }
+                    Err(error) => {
+                        if let Some(row) = row.upgrade() {
+                            row.set_sensitive(true);
+                            row.set_tooltip_text(Some(&error));
+                        }
+                        if let Some(window) = window.upgrade() {
+                            window.set_title(Some(&format!("Launch failed: {error}")));
+                        }
+                        eprintln!("chuhshell: {error}");
+                    }
+                }
+            });
         }
     });
 
@@ -268,32 +313,32 @@ fn create(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode) {
                 }
                 glib::Propagation::Stop
             }
-            gdk::Key::Down => {
-                let index = list_keys.selected_row().map_or(0, |row| row.index() + 1);
-                if let Some(row) = list_keys.row_at_index(index) {
-                    list_keys.select_row(Some(&row));
-                }
-                glib::Propagation::Stop
-            }
-            gdk::Key::Up => {
-                let index = list_keys.selected_row().map_or(0, |row| row.index() - 1);
-                if let Some(row) = list_keys.row_at_index(index.max(0)) {
-                    list_keys.select_row(Some(&row));
+            gdk::Key::Down | gdk::Key::Up | gdk::Key::Page_Down | gdk::Key::Page_Up => {
+                let offset = match key {
+                    gdk::Key::Up => -1,
+                    gdk::Key::Page_Up => -5,
+                    gdk::Key::Page_Down => 5,
+                    _ => 1,
+                };
+                let rows = visible_rows(&list_keys);
+                if let Some(index) = selection_index(
+                    rows.len(),
+                    rows.iter()
+                        .position(|row| Some(row) == list_keys.selected_row().as_ref()),
+                    offset,
+                ) {
+                    list_keys.select_row(rows.get(index));
+                } else {
+                    list_keys.unselect_all();
                 }
                 glib::Propagation::Stop
             }
             gdk::Key::Return | gdk::Key::KP_Enter => {
-                if let Some(row) = list_keys.selected_row() {
+                if let Some(row) = list_keys
+                    .selected_row()
+                    .filter(|row| row.is_visible() && row.is_child_visible() && row.is_sensitive())
+                {
                     list_keys.emit_by_name::<()>("row-activated", &[&row]);
-                }
-                glib::Propagation::Stop
-            }
-            gdk::Key::Page_Down | gdk::Key::Page_Up => {
-                let direction = if key == gdk::Key::Page_Down { 1 } else { -1 };
-                let current = list_keys.selected_row().map_or(0, |row| row.index());
-                let max = list_keys.observe_children().n_items().saturating_sub(1) as i32;
-                if let Some(row) = list_keys.row_at_index((current + direction * 5).clamp(0, max)) {
-                    list_keys.select_row(Some(&row));
                 }
                 glib::Propagation::Stop
             }
@@ -329,6 +374,31 @@ fn create(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode) {
     window.present();
     search.grab_focus();
     *state.launcher.borrow_mut() = Some(window.upcast());
+}
+
+fn visible_rows(list: &gtk::ListBox) -> Vec<gtk::ListBoxRow> {
+    let mut rows = Vec::new();
+    let mut child = list.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        if let Ok(row) = widget.downcast::<gtk::ListBoxRow>()
+            && row.is_visible()
+            && row.is_child_visible()
+        {
+            rows.push(row);
+        }
+    }
+    rows
+}
+
+fn selection_index(len: usize, selected: Option<usize>, offset: i32) -> Option<usize> {
+    if len == 0 {
+        None
+    } else {
+        Some(selected.map_or(0, |index| {
+            (index as i64 + i64::from(offset)).clamp(0, len as i64 - 1) as usize
+        }))
+    }
 }
 
 fn update_selected_row_styles(list: &gtk::ListBox) {
@@ -388,11 +458,7 @@ fn append_app_row(list: &gtk::ListBox, entry: &AppEntry, mode: LauncherMode) {
         icon.add_css_class("app-icon");
         content.append(&icon);
     } else {
-        let icon = if entry.icon.is_empty() {
-            gtk::Image::from_icon_name("application-x-executable")
-        } else {
-            gtk::Image::from_icon_name(&entry.icon)
-        };
+        let icon = crate::ui::image(&entry.icon, 22);
         icon.set_pixel_size(22);
         icon.add_css_class("app-icon");
         content.append(&icon);
@@ -420,8 +486,74 @@ fn append_app_row(list: &gtk::ListBox, entry: &AppEntry, mode: LauncherMode) {
 }
 
 #[cfg(test)]
+pub fn regression_checks(app: &gtk::Application) {
+    let state = Rc::new(AppState::default());
+    let entries = ["Alpha", "Beta"]
+        .iter()
+        .map(|name| {
+            apps::parse_entry(
+                &format!("{name}.desktop"),
+                &format!("[Desktop Entry]\nType=Application\nName={name}\nExec=/bin/true\n"),
+                false,
+            )
+            .unwrap()
+        })
+        .collect();
+    create(app, &state, LauncherMode::Normal, entries, HashMap::new());
+    let window = state.launcher.borrow().clone().unwrap();
+    let outer = window.child().unwrap().downcast::<gtk::Box>().unwrap();
+    let search = outer
+        .first_child()
+        .unwrap()
+        .downcast::<gtk::SearchEntry>()
+        .unwrap();
+    let list = search
+        .next_sibling()
+        .unwrap()
+        .downcast::<gtk::ScrolledWindow>()
+        .unwrap()
+        .child()
+        .unwrap()
+        .downcast::<gtk::Viewport>()
+        .unwrap()
+        .child()
+        .unwrap()
+        .downcast::<gtk::ListBox>()
+        .unwrap();
+    search.set_text("no-such-application");
+    search.emit_by_name::<()>("search-changed", &[]);
+    assert!(list.selected_row().is_none());
+    assert!(visible_rows(&list).is_empty());
+    search.set_text("Beta");
+    search.emit_by_name::<()>("search-changed", &[]);
+    assert_eq!(visible_rows(&list).len(), 1);
+    assert!(list.selected_row().unwrap().is_child_visible());
+    let controllers = window.observe_controllers();
+    for index in 0..controllers.n_items() {
+        if let Some(key) = controllers
+            .item(index)
+            .and_downcast::<gtk::EventControllerKey>()
+        {
+            key.emit_by_name::<bool>(
+                "key-pressed",
+                &[&gdk::Key::Down, &0u32, &gdk::ModifierType::empty()],
+            );
+        }
+    }
+    assert!(list.selected_row().unwrap().is_child_visible());
+    window.close();
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn navigation_stays_inside_filtered_results() {
+        assert_eq!(selection_index(0, None, 1), None);
+        assert_eq!(selection_index(1, Some(0), 5), Some(0));
+        assert_eq!(selection_index(3, Some(0), -1), Some(0));
+        assert_eq!(selection_index(10, Some(2), 5), Some(7));
+    }
 
     #[test]
     fn launch_frequency_orders_normal_mode_and_search_scores_stay_primary() {

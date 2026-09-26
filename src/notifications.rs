@@ -209,6 +209,7 @@ pub fn show(state: &Rc<AppState>, notice: Notice) {
     if let Some(widgets) = state.osd_widgets.borrow().as_ref() {
         widgets.update(&notice);
     }
+    window.set_monitor(crate::ui::active_monitor().as_ref());
     window.present();
 
     let expected = generation;
@@ -258,66 +259,124 @@ fn build_content(window: &impl IsA<gtk::Window>) -> OsdWidgets {
     }
 }
 
-pub fn handle_command(state: &Rc<AppState>, command: &str) -> bool {
-    match command {
-        "volume-up" => set_audio(state, "5%+", false),
-        "volume-down" => set_audio(state, "5%-", false),
-        "volume-mute" => set_audio(state, "toggle", true),
-        "microphone-mute" => set_microphone(state),
-        "brightness-up" => set_brightness(state, "5%+"),
-        "brightness-down" => set_brightness(state, "5%-"),
-        "brightness-key-up" => set_brightness(state, "10%+"),
-        "brightness-key-down" => set_brightness(state, "10%-"),
-        "brightness-scroll-up" => set_brightness(state, "5%+"),
-        "brightness-scroll-down" => set_brightness(state, "5%-"),
-        _ => return false,
+pub struct CommandRequest {
+    command: String,
+    reply: async_channel::Sender<Result<Notice, String>>,
+}
+
+pub fn is_command(command: &str) -> bool {
+    matches!(
+        command,
+        "volume-up"
+            | "volume-down"
+            | "volume-mute"
+            | "microphone-mute"
+            | "brightness-up"
+            | "brightness-down"
+            | "brightness-key-up"
+            | "brightness-key-down"
+            | "brightness-scroll-up"
+            | "brightness-scroll-down"
+    )
+}
+
+pub fn submit(
+    state: &Rc<AppState>,
+    command: &str,
+) -> async_channel::Receiver<Result<Notice, String>> {
+    if state.commands.borrow().is_none() {
+        let (tx, rx) = async_channel::bounded::<CommandRequest>(32);
+        std::thread::spawn(move || {
+            while let Ok(request) = rx.recv_blocking() {
+                if crate::process::stopped() {
+                    break;
+                }
+                let result = execute(&request.command);
+                let _ = request.reply.send_blocking(result);
+            }
+        });
+        *state.commands.borrow_mut() = Some(tx);
     }
+    let (tx, rx) = async_channel::bounded(1);
+    let request = CommandRequest {
+        command: command.into(),
+        reply: tx.clone(),
+    };
+    if state
+        .commands
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .try_send(request)
+        .is_err()
+    {
+        let _ = tx.try_send(Err("Too many pending system commands".into()));
+    }
+    rx
+}
+
+pub fn handle_command(state: &Rc<AppState>, command: &str) -> bool {
+    if !is_command(command) {
+        return false;
+    }
+    let rx = submit(state, command);
+    let state = Rc::downgrade(state);
+    glib::MainContext::default().spawn_local(async move {
+        if let Ok(result) = rx.recv().await
+            && let Some(state) = state.upgrade()
+        {
+            match result {
+                Ok(notice) => show(&state, notice),
+                Err(error) => {
+                    eprintln!("chuhshell: {error}");
+                    show(
+                        &state,
+                        Notice::transient(NoticeKind::Peripheral, "Action failed")
+                            .with_detail(error),
+                    );
+                }
+            }
+        }
+    });
     true
 }
 
-fn set_audio(state: &Rc<AppState>, adjustment: &str, mute_toggle: bool) {
-    let mut command = std::process::Command::new("wpctl");
-    if mute_toggle {
-        command.args(["set-mute", "@DEFAULT_AUDIO_SINK@", adjustment]);
-    } else {
-        command.args([
-            "set-volume",
-            "-l",
-            "1.0",
-            "@DEFAULT_AUDIO_SINK@",
-            adjustment,
-        ]);
-    }
-    if command.status().is_ok_and(|status| status.success())
-        && let Some(value) =
-            modules::child_process("wpctl", &["get-volume", "@DEFAULT_AUDIO_SINK@"])
-        && let Some((percent, muted)) = parse_wpctl_volume(&value)
-    {
-        let notice = Notice::transient(
-            NoticeKind::Volume,
-            if muted {
-                format!("Volume muted · {percent}%")
+fn execute(command: &str) -> Result<Notice, String> {
+    use crate::process::run;
+    match command {
+        "volume-up" | "volume-down" | "volume-mute" => {
+            if command == "volume-mute" {
+                run("wpctl", &["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"])?;
             } else {
-                format!("Volume · {percent}%")
-            },
-        )
-        .with_progress(if muted { 0 } else { percent });
-        show(state, notice);
-    }
-}
-
-fn set_microphone(state: &Rc<AppState>) {
-    if std::process::Command::new("wpctl")
-        .args(["set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"])
-        .status()
-        .is_ok_and(|status| status.success())
-        && let Some(value) =
-            modules::child_process("wpctl", &["get-volume", "@DEFAULT_AUDIO_SOURCE@"])
-        && let Some((percent, muted)) = parse_wpctl_volume(&value)
-    {
-        show(
-            state,
-            Notice::transient(
+                run(
+                    "wpctl",
+                    &[
+                        "set-volume",
+                        "-l",
+                        "1.0",
+                        "@DEFAULT_AUDIO_SINK@",
+                        if command == "volume-up" { "5%+" } else { "5%-" },
+                    ],
+                )?;
+            }
+            let value = run("wpctl", &["get-volume", "@DEFAULT_AUDIO_SINK@"])?;
+            let (percent, muted) = parse_wpctl_volume(&value).ok_or("Invalid audio response")?;
+            Ok(Notice::transient(
+                NoticeKind::Volume,
+                if muted {
+                    format!("Volume muted · {percent}%")
+                } else {
+                    format!("Volume · {percent}%")
+                },
+            )
+            .with_progress(if muted { 0 } else { percent }))
+        }
+        "microphone-mute" => {
+            run("wpctl", &["set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"])?;
+            let value = run("wpctl", &["get-volume", "@DEFAULT_AUDIO_SOURCE@"])?;
+            let (percent, muted) =
+                parse_wpctl_volume(&value).ok_or("Invalid microphone response")?;
+            Ok(Notice::transient(
                 NoticeKind::Microphone,
                 if muted {
                     "Microphone muted"
@@ -325,26 +384,25 @@ fn set_microphone(state: &Rc<AppState>) {
                     "Microphone on"
                 },
             )
-            .with_detail(format!("{percent}%")),
-        );
-    }
-}
-
-fn set_brightness(state: &Rc<AppState>, adjustment: &str) {
-    let Some(device) = modules::backlight_device() else {
-        return;
-    };
-    if std::process::Command::new("brightnessctl")
-        .args(["-d", &device, "set", adjustment])
-        .status()
-        .is_ok_and(|status| status.success())
-        && let Some((percent, _)) = modules::brightness_level(&device)
-    {
-        show(
-            state,
-            Notice::transient(NoticeKind::Brightness, format!("Brightness · {percent}%"))
-                .with_progress(percent),
-        );
+            .with_detail(format!("{percent}%")))
+        }
+        _ if is_command(command) => {
+            let device = modules::backlight_device().ok_or("Backlight unavailable")?;
+            let adjustment = match command {
+                "brightness-key-up" => "10%+",
+                "brightness-key-down" => "10%-",
+                "brightness-up" | "brightness-scroll-up" => "5%+",
+                _ => "5%-",
+            };
+            run("brightnessctl", &["-d", &device, "set", adjustment])?;
+            let (percent, _) =
+                modules::brightness_level(&device).ok_or("Could not read brightness")?;
+            Ok(
+                Notice::transient(NoticeKind::Brightness, format!("Brightness · {percent}%"))
+                    .with_progress(percent),
+            )
+        }
+        _ => Err("Unknown system command".into()),
     }
 }
 
