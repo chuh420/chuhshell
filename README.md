@@ -6,11 +6,15 @@ a personal desktop shell for niri, written in rust with gtk4. the panel, app lau
 
 ## using it
 
-the panel shows your workspaces, background apps, clock, notifications, volume, brightness, keyboard layout, temperature, wifi and battery. it works across multiple monitors. you can turn individual modules on or off from chuh menu, and your choices are saved.
+the panel shows your workspaces, background apps, clock, notifications, volume, brightness, keyboard layout, temperature, wifi and battery. it works across multiple monitors. you can turn individual modules on or off from chuh menu.
 
-press mod and space to open chuh menu in the middle of the screen. use the arrow keys to move, enter to select and escape to close. alt and left takes you back. some sections are still marked wip and do not do anything yet.
+press mod and space to open chuh menu in the middle of the screen. use up and down to move, enter or right to select, left to go back and escape to close. some sections are still marked wip and do not do anything yet.
 
-press mod and d to open the app launcher. it has fuzzy search and remembers the apps you use most. to hide or show apps, open the app launcher section in chuh menu.
+press mod and d to open the app launcher. it has fuzzy search and remembers the apps you use most. the app launcher section in chuh menu lets you hide or show apps. choose configure to drag the launcher to a new position or resize it by its bottom edge.
+
+under bar, configure lets you arrange modules in the left, center and right groups. drag a module from the panel to a + slot, or select its name and then a slot. the panel’s size and position are fixed, and the module order applies to every monitor.
+
+in either editor, save keeps your changes and cancel or escape discards them. reset restores the default arrangement before saving.
 
 click wifi to manage networks without opening a terminal. you can scan, connect, disconnect and manage saved connections. networkmanager handles passwords. enterprise networks need a profile configured beforehand.
 
@@ -26,7 +30,7 @@ run `scripts/uninstall.sh` to restore installation backups. autologin is optiona
 
 ## settings
 
-settings live in `~/.config/chuhshell/config.json`. you can choose monitors and devices and change the notification history limit. the default is 200 notifications. manual changes need a service restart, while module toggles from the menu apply immediately.
+settings live in `~/.config/chuhshell/config.json`, or under your config home if you set `XDG_CONFIG_HOME`. module visibility, module order and launcher layout are saved there. you can also choose monitors and devices and change the notification history limit, which defaults to 200. manual changes need a service restart. menu changes apply in the running shell, and the launcher keeps the same relative position on whichever monitor opens it.
 
 ## development
 

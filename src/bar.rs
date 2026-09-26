@@ -85,16 +85,24 @@ fn reconcile(
     }
 }
 
-fn sidebar(content: &gtk::Box, monitor: &gtk::gdk::Monitor) -> gtk::ScrolledWindow {
+fn sidebar(content: &gtk::Box, monitor: &gtk::gdk::Monitor, center: bool) -> gtk::ScrolledWindow {
     let scroll = gtk::ScrolledWindow::new();
     scroll.set_policy(gtk::PolicyType::External, gtk::PolicyType::Never);
     scroll.set_propagate_natural_width(true);
-    scroll.set_max_content_width(((monitor.geometry().width() - 290) / 2).max(30));
+    scroll.set_max_content_width(if center {
+        (monitor.geometry().width() / 3 - 16).max(30)
+    } else {
+        ((monitor.geometry().width() - 290) / 2).max(30)
+    });
     scroll.set_child(Some(content));
     let weak = scroll.downgrade();
     monitor.connect_geometry_notify(move |monitor| {
         if let Some(scroll) = weak.upgrade() {
-            scroll.set_max_content_width(((monitor.geometry().width() - 290) / 2).max(30));
+            scroll.set_max_content_width(if center {
+                (monitor.geometry().width() / 3 - 16).max(30)
+            } else {
+                ((monitor.geometry().width() - 290) / 2).max(30)
+            });
         }
     });
     scroll
@@ -129,13 +137,11 @@ fn build(
     layout.set_margin_start(8);
     layout.set_margin_end(8);
     let left = gtk::Box::new(gtk::Orientation::Horizontal, 2);
-    let right = gtk::Box::new(gtk::Orientation::Horizontal, 2);
-    layout.set_start_widget(Some(
-        &state
-            .bar_modules
-            .wrap("workspaces", &sidebar(&left, monitor)),
-    ));
-    layout.set_end_widget(Some(&sidebar(&right, monitor)));
+    let groups = std::array::from_fn(|_| gtk::Box::new(gtk::Orientation::Horizontal, 2));
+    groups[1].set_homogeneous(true);
+    layout.set_start_widget(Some(&sidebar(&groups[0], monitor, false)));
+    layout.set_center_widget(Some(&sidebar(&groups[1], monitor, true)));
+    layout.set_end_widget(Some(&sidebar(&groups[2], monitor, false)));
     let clock = module("", "clock", "Date and time");
     let date = Rc::new(Cell::new(false));
     update_clock(&clock, false);
@@ -161,27 +167,17 @@ fn build(
             move |button| manager.toggle_at(button)
         });
     }
-    let middle = gtk::Grid::new();
-    middle.set_valign(gtk::Align::Center);
-    middle.set_column_homogeneous(true);
-    middle.set_column_spacing(4);
-    for (column, id, button, align) in [
-        (0, "background-apps", &background, gtk::Align::End),
-        (1, "clock", &clock, gtk::Align::Center),
-        (2, "notifications", &notification, gtk::Align::Start),
-    ] {
-        let container = state.bar_modules.wrap(id, button);
-        container.set_halign(align);
-        middle.attach(&container, column, 0, 1, 1);
-    }
-    layout.set_center_widget(Some(&middle));
     let audio = module("--", "audio", "Audio unavailable");
     let brightness = module("--", "brightness", "Screen brightness");
     let language = module("--", "language", "Keyboard layout");
     let temperature = module("--", "temperature", "CPU temperature");
     let network = module("󰖪", "network", "Wi-Fi unavailable");
     let battery = module("", "battery", "Battery");
+    let mut module_widgets = vec![("workspaces", state.bar_modules.wrap("workspaces", &left))];
     for (id, button) in [
+        ("background-apps", &background),
+        ("clock", &clock),
+        ("notifications", &notification),
         ("audio", &audio),
         ("brightness", &brightness),
         ("language", &language),
@@ -189,8 +185,11 @@ fn build(
         ("wifi", &network),
         ("battery", &battery),
     ] {
-        right.append(&state.bar_modules.wrap(id, button));
+        module_widgets.push((id, state.bar_modules.wrap(id, button)));
     }
+    state
+        .bar_modules
+        .register(window.upcast_ref(), &groups, module_widgets);
     audio.connect_clicked({
         let state = Rc::clone(state);
         move |_| {

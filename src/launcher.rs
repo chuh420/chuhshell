@@ -15,6 +15,14 @@ use crate::fuzzy;
 use crate::ui::set_layer_window;
 
 pub fn show(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode) {
+    show_inner(app, state, mode, false);
+}
+
+pub fn configure(app: &gtk::Application, state: &Rc<AppState>) {
+    show_inner(app, state, LauncherMode::Normal, true);
+}
+
+fn show_inner(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode, editing: bool) {
     crate::menu::close(state);
     crate::ui::close_popover();
     let generation = state.launcher_generation.get().wrapping_add(1);
@@ -30,7 +38,29 @@ pub fn show(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode) {
             && let (Some(app), Some(state)) = (app.upgrade(), state.upgrade())
             && state.launcher_generation.get() == generation
         {
-            create(&app, &state, mode, apps, counts);
+            let window = create(&app, &state, mode, apps, counts, editing);
+            if editing {
+                let app = app.downgrade();
+                let state = Rc::downgrade(&state);
+                window.add_tick_callback(move |window, _| {
+                    if window.width() <= 0 || window.height() <= 0 {
+                        return glib::ControlFlow::Continue;
+                    }
+                    let window = window.downgrade();
+                    let app = app.clone();
+                    let state = state.clone();
+                    glib::idle_add_local_once(move || {
+                        if let (Some(app), Some(state), Some(window)) =
+                            (app.upgrade(), state.upgrade(), window.upgrade())
+                            && state.launcher_generation.get() == generation
+                            && window.is_visible()
+                        {
+                            crate::layout::show_ready(&app, &state);
+                        }
+                    });
+                    glib::ControlFlow::Break
+                });
+            }
         }
     });
 }
@@ -75,7 +105,8 @@ fn create(
     mode: LauncherMode,
     entries: Vec<AppEntry>,
     launch_counts: HashMap<String, u64>,
-) {
+    editing: bool,
+) -> gtk::Window {
     let old = state.launcher.borrow_mut().take();
     if let Some(old) = old {
         old.close();
@@ -83,7 +114,7 @@ fn create(
     state.launcher_mode.set(Some(mode));
     state
         .launcher_focus_window
-        .set(Some(state.focused_window_id()));
+        .set((!editing).then(|| state.focused_window_id()));
     *state.launcher_apps.borrow_mut() = entries;
 
     let window = gtk::ApplicationWindow::builder()
@@ -102,12 +133,17 @@ fn create(
             &[layer_shell::Edge::Top]
         },
         0,
-        layer_shell::KeyboardMode::OnDemand,
+        if editing {
+            layer_shell::KeyboardMode::None
+        } else {
+            layer_shell::KeyboardMode::OnDemand
+        },
     );
 
     window.set_monitor(crate::ui::active_monitor().as_ref());
     let outer = gtk::Box::new(gtk::Orientation::Vertical, 8);
     outer.add_css_class("launcher-box");
+    outer.set_can_target(!editing);
     let search = gtk::SearchEntry::new();
     search.set_placeholder_text(Some("search applications…"));
     search.add_css_class("search");
@@ -126,6 +162,14 @@ fn create(
     list.set_placeholder(Some(&empty));
     scrolled.set_child(Some(&list));
     outer.append(&scrolled);
+    if mode == LauncherMode::Normal
+        && let Some(geometry) = state.layouts.launcher.get()
+    {
+        crate::layout::apply_launcher(&window, geometry);
+        scrolled.set_min_content_height(0);
+        scrolled.set_propagate_natural_height(false);
+        scrolled.set_vexpand(true);
+    }
     window.set_child(Some(&outer));
 
     let scores = Rc::new(RefCell::new(HashMap::new()));
@@ -359,7 +403,7 @@ fn create(
     window.connect_is_active_notify(move |window| {
         if window.is_active() {
             was_active.set(true);
-        } else if !closing_notify.get() && was_active.replace(false) {
+        } else if !editing && !closing_notify.get() && was_active.replace(false) {
             window.close();
         }
     });
@@ -379,7 +423,9 @@ fn create(
 
     window.present();
     search.grab_focus();
-    *state.launcher.borrow_mut() = Some(window.upcast());
+    let window: gtk::Window = window.upcast();
+    *state.launcher.borrow_mut() = Some(window.clone());
+    window
 }
 
 pub(crate) fn visible_rows(list: &gtk::ListBox) -> Vec<gtk::ListBoxRow> {
@@ -505,7 +551,14 @@ pub fn regression_checks(app: &gtk::Application) {
             .unwrap()
         })
         .collect();
-    create(app, &state, LauncherMode::Normal, entries, HashMap::new());
+    create(
+        app,
+        &state,
+        LauncherMode::Normal,
+        entries,
+        HashMap::new(),
+        false,
+    );
     let window = state.launcher.borrow().clone().unwrap();
     let outer = window.child().unwrap().downcast::<gtk::Box>().unwrap();
     let search = outer

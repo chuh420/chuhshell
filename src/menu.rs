@@ -17,6 +17,7 @@ enum Action {
     Page(Page),
     Launch(LauncherMode),
     Toggle(&'static str),
+    Configure(bool),
     Wip,
 }
 
@@ -37,12 +38,11 @@ fn entries(page: Page) -> Vec<(&'static str, &'static str, Action)> {
                 Action::Launch(LauncherMode::Normal),
             ),
             ("Hide/show apps", "", Action::Launch(LauncherMode::Manage)),
-            ("Configure", "WIP", Action::Wip),
+            ("Configure", "", Action::Configure(false)),
         ],
         Page::Bar => vec![
             ("Modules", "", Action::Page(Page::Modules)),
-            ("Order", "WIP", Action::Wip),
-            ("Configure", "WIP", Action::Wip),
+            ("Configure", "", Action::Configure(true)),
         ],
         Page::Modules => crate::bar_settings::MODULES
             .iter()
@@ -111,7 +111,7 @@ fn render(window: &gtk::ApplicationWindow, state: &Rc<AppState>, page: Page) {
         let back = gtk::Button::with_label("←");
         back.add_css_class("network-action");
         back.add_css_class("menu-back");
-        back.set_tooltip_text(Some("Back · Alt+Left"));
+        back.set_tooltip_text(Some("Back · Left"));
         let window = window.downgrade();
         let state = Rc::downgrade(state);
         back.connect_clicked(move |_| {
@@ -245,6 +245,12 @@ fn render(window: &gtk::ApplicationWindow, state: &Rc<AppState>, page: Page) {
                         }
                     }
                 },
+                Action::Configure(bar) => {
+                    if let Some(app) = window.application() {
+                        close(&state);
+                        crate::layout::show(&app, &state, bar);
+                    }
+                }
                 Action::Wip => {}
             }
         }
@@ -255,7 +261,7 @@ fn render(window: &gtk::ApplicationWindow, state: &Rc<AppState>, page: Page) {
         let list = list.downgrade();
         let window = window.downgrade();
         let state = Rc::downgrade(state);
-        move |_, key, _, modifiers| {
+        move |_, key, _, _| {
             let (Some(window), Some(list), Some(state)) =
                 (window.upgrade(), list.upgrade(), state.upgrade())
             else {
@@ -263,7 +269,7 @@ fn render(window: &gtk::ApplicationWindow, state: &Rc<AppState>, page: Page) {
             };
             match key {
                 gdk::Key::Escape => close(&state),
-                gdk::Key::Left if modifiers.contains(gdk::ModifierType::ALT_MASK) => {
+                gdk::Key::Left => {
                     if let Some(parent) = parent {
                         render(&window, &state, parent);
                     }
@@ -285,7 +291,7 @@ fn render(window: &gtk::ApplicationWindow, state: &Rc<AppState>, page: Page) {
                         list.select_row(rows.get(index));
                     }
                 }
-                gdk::Key::Return | gdk::Key::KP_Enter => {
+                gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::Right => {
                     if let Some(row) = list
                         .selected_row()
                         .filter(|row| row.is_child_visible() && row.is_visible())
@@ -365,10 +371,14 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
     let window = state.menu.borrow().as_ref().unwrap().clone();
     assert!(!window.is_anchor(gtk4_layer_shell::Edge::Top));
     assert_eq!(crate::launcher::visible_rows(&list(&window)).len(), 6);
-    press(&window, gdk::Key::Down);
-    press(&window, gdk::Key::Return);
+    press(&window, gdk::Key::Right);
     crate::ui_tests::pump(100);
     assert_eq!(crate::launcher::visible_rows(&list(&window)).len(), 3);
+    press(&window, gdk::Key::Left);
+    press(&window, gdk::Key::Down);
+    press(&window, gdk::Key::Right);
+    crate::ui_tests::pump(100);
+    assert_eq!(crate::launcher::visible_rows(&list(&window)).len(), 2);
     press(&window, gdk::Key::Return);
     crate::ui_tests::pump(100);
     assert_eq!(crate::launcher::visible_rows(&list(&window)).len(), 10);

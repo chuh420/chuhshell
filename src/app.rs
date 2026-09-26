@@ -21,6 +21,7 @@ pub struct AppState {
     pub background_manager: RefCell<Option<Rc<BackgroundManager>>>,
     pub launcher: RefCell<Option<gtk::Window>>,
     pub menu: RefCell<Option<gtk::Window>>,
+    pub layouts: crate::layout::Layouts,
     pub bar_modules: crate::bar_settings::BarModules,
     pub osd: RefCell<Option<gtk::Window>>,
     pub osd_widgets: RefCell<Option<OsdWidgets>>,
