@@ -20,6 +20,8 @@ pub struct AppState {
     pub network_menu: RefCell<Option<Rc<crate::network::NetworkMenu>>>,
     pub background_manager: RefCell<Option<Rc<BackgroundManager>>>,
     pub launcher: RefCell<Option<gtk::Window>>,
+    pub menu: RefCell<Option<gtk::Window>>,
+    pub bar_modules: crate::bar_settings::BarModules,
     pub osd: RefCell<Option<gtk::Window>>,
     pub osd_widgets: RefCell<Option<OsdWidgets>>,
     pub osd_timeout: RefCell<Option<glib::SourceId>>,

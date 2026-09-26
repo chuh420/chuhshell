@@ -53,12 +53,16 @@ pub fn widget_monitor(widget: &impl IsA<gtk::Widget>) -> Option<gtk::gdk::Monito
         .or_else(active_monitor)
 }
 
-pub fn popover(anchor: &gtk::Button, content: &impl IsA<gtk::Widget>) -> gtk::Popover {
+pub fn close_popover() {
     let previous =
         OPEN_MENU.with(|value| value.borrow_mut().take().and_then(|weak| weak.upgrade()));
     if let Some(previous) = previous {
         previous.popdown();
     }
+}
+
+pub fn popover(anchor: &gtk::Button, content: &impl IsA<gtk::Widget>) -> gtk::Popover {
+    close_popover();
     let popover = gtk::Popover::new();
     popover.set_has_arrow(false);
     popover.set_position(gtk::PositionType::Bottom);

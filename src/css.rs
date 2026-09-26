@@ -3,12 +3,12 @@ use gtk::gdk;
 pub const CSS: &str = r#"
 * { font-family: "InputSans Nerd Font"; font-size: 12px; }
 window#bar { background: #191724; border-bottom: 1px solid #403d52; }
-.module { border: 0; box-shadow: none; min-height: 0; min-width: 0; background: #1f1d2e; border-radius: 8px; padding: 4px 10px; margin: 4px 1px; color: #e0def4; }
+.module { border: 0; box-shadow: none; min-height: 20px; min-width: 0; background: #1f1d2e; border-radius: 8px; padding: 4px 10px; margin: 4px 1px; color: #e0def4; }
 .module:focus-visible { outline: 1px solid #c4a7e7; outline-offset: -2px; }
 popover > contents { background: transparent; box-shadow: none; border: 0; padding: 0; }
 .module:hover { background: #403d52; }
 .workspaces { background: transparent; padding: 0; }
-.workspace { background: transparent; color: #908caa; border: 0; border-radius: 8px; padding: 4px 9px; margin: 4px 1px; }
+.workspace { min-height: 20px; box-shadow: none; background: transparent; color: #908caa; border: 0; border-radius: 8px; padding: 4px 9px; margin: 4px 1px; }
 .workspace.empty { color: #6e6a86; }
 .workspace.active { background: #26233a; color: #9ccfd8; }
 .workspace.focused { background: #31748f; color: #191724; }
@@ -90,6 +90,20 @@ window#app-notification, window#notification-drawer { background: transparent; }
 .network-search, .network-password { background: #191724; color: #e0def4; border: 1px solid #403d52; border-radius: 8px; padding: 7px 10px; }
 .network-search:focus-within, .network-password:focus-within { border-color: #c4a7e7; outline: none; box-shadow: none; }
 .network-content dropdown > button { background: #26233a; color: #e0def4; border: 0; box-shadow: none; border-radius: 8px; }
+window#chuh-menu { background: transparent; color: #e0def4; }
+.menu-content { background: #1f1d2e; color: #e0def4; border: 1px solid #403d52; border-radius: 12px; padding: 18px; }
+.menu-heading { font-size: 18px; font-weight: 600; }
+.menu-back { padding: 5px 10px; min-height: 24px; }
+.menu-list { background: transparent; color: #e0def4; }
+.menu-list row { border: 0; box-shadow: none; border-radius: 8px; padding: 13px 14px; margin: 3px 0; background: #26233a; color: #e0def4; }
+.menu-list row:selected, .menu-list row:hover { background: #403d52; color: #e0def4; }
+.menu-list row:focus { outline: none; }
+.menu-title { font-size: 15px; }
+.menu-hint, .menu-wip .menu-title { color: #908caa; }
+.menu-hint { font-size: 11px; }
+.menu-state { color: #908caa; font-size: 13px; }
+.menu-state.enabled { color: #9ccfd8; }
+.menu-error { color: #eb6f92; }
 "#;
 
 pub fn install() {

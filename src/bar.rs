@@ -10,6 +10,7 @@ use std::rc::Rc;
 fn module(text: &str, class: &str, tooltip: &str) -> gtk::Button {
     let button = gtk::Button::with_label(text);
     button.add_css_class("module");
+    button.set_valign(gtk::Align::Center);
     button.add_css_class(class);
     button.set_tooltip_text(Some(tooltip));
     button
@@ -129,7 +130,11 @@ fn build(
     layout.set_margin_end(8);
     let left = gtk::Box::new(gtk::Orientation::Horizontal, 2);
     let right = gtk::Box::new(gtk::Orientation::Horizontal, 2);
-    layout.set_start_widget(Some(&sidebar(&left, monitor)));
+    layout.set_start_widget(Some(
+        &state
+            .bar_modules
+            .wrap("workspaces", &sidebar(&left, monitor)),
+    ));
     layout.set_end_widget(Some(&sidebar(&right, monitor)));
     let clock = module("", "clock", "Date and time");
     let date = Rc::new(Cell::new(false));
@@ -157,13 +162,18 @@ fn build(
         });
     }
     let middle = gtk::Grid::new();
+    middle.set_valign(gtk::Align::Center);
     middle.set_column_homogeneous(true);
     middle.set_column_spacing(4);
-    background.set_halign(gtk::Align::End);
-    notification.set_halign(gtk::Align::Start);
-    middle.attach(&background, 0, 0, 1, 1);
-    middle.attach(&clock, 1, 0, 1, 1);
-    middle.attach(&notification, 2, 0, 1, 1);
+    for (column, id, button, align) in [
+        (0, "background-apps", &background, gtk::Align::End),
+        (1, "clock", &clock, gtk::Align::Center),
+        (2, "notifications", &notification, gtk::Align::Start),
+    ] {
+        let container = state.bar_modules.wrap(id, button);
+        container.set_halign(align);
+        middle.attach(&container, column, 0, 1, 1);
+    }
     layout.set_center_widget(Some(&middle));
     let audio = module("--", "audio", "Audio unavailable");
     let brightness = module("--", "brightness", "Screen brightness");
@@ -171,15 +181,15 @@ fn build(
     let temperature = module("--", "temperature", "CPU temperature");
     let network = module("󰖪", "network", "Wi-Fi unavailable");
     let battery = module("", "battery", "Battery");
-    for button in [
-        &audio,
-        &brightness,
-        &language,
-        &temperature,
-        &network,
-        &battery,
+    for (id, button) in [
+        ("audio", &audio),
+        ("brightness", &brightness),
+        ("language", &language),
+        ("temperature", &temperature),
+        ("wifi", &network),
+        ("battery", &battery),
     ] {
-        right.append(button);
+        right.append(&state.bar_modules.wrap(id, button));
     }
     audio.connect_clicked({
         let state = Rc::clone(state);
@@ -219,6 +229,7 @@ fn build(
                 let text = workspace.name.clone().unwrap_or_else(|| if workspace.is_active { "●" } else { "○" }.into());
                 let button = gtk::Button::with_label(&text);
                 button.add_css_class("workspace");
+                button.set_valign(gtk::Align::Center);
                 for (enabled, class) in [(workspace.active_window_id.is_none(), "empty"), (workspace.is_active, "active"), (workspace.is_focused, "focused"), (workspace.is_urgent, "urgent")] { if enabled { button.add_css_class(class); } }
                 button.set_tooltip_text(Some(&format!("Workspace {}", workspace.idx)));
                 let id = workspace.id;

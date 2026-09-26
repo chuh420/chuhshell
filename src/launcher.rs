@@ -15,6 +15,8 @@ use crate::fuzzy;
 use crate::ui::set_layer_window;
 
 pub fn show(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode) {
+    crate::menu::close(state);
+    crate::ui::close_popover();
     let generation = state.launcher_generation.get().wrapping_add(1);
     state.launcher_generation.set(generation);
     let (tx, rx) = async_channel::bounded(1);
@@ -94,7 +96,11 @@ fn create(
         &window,
         "chuhshell-launcher",
         layer_shell::Layer::Overlay,
-        &[layer_shell::Edge::Top],
+        if mode == LauncherMode::Manage {
+            &[]
+        } else {
+            &[layer_shell::Edge::Top]
+        },
         0,
         layer_shell::KeyboardMode::OnDemand,
     );
@@ -376,7 +382,7 @@ fn create(
     *state.launcher.borrow_mut() = Some(window.upcast());
 }
 
-fn visible_rows(list: &gtk::ListBox) -> Vec<gtk::ListBoxRow> {
+pub(crate) fn visible_rows(list: &gtk::ListBox) -> Vec<gtk::ListBoxRow> {
     let mut rows = Vec::new();
     let mut child = list.first_child();
     while let Some(widget) = child {
@@ -391,7 +397,7 @@ fn visible_rows(list: &gtk::ListBox) -> Vec<gtk::ListBoxRow> {
     rows
 }
 
-fn selection_index(len: usize, selected: Option<usize>, offset: i32) -> Option<usize> {
+pub(crate) fn selection_index(len: usize, selected: Option<usize>, offset: i32) -> Option<usize> {
     if len == 0 {
         None
     } else {
@@ -420,7 +426,7 @@ fn update_selected_row_styles(list: &gtk::ListBox) {
     }
 }
 
-fn scroll_selected_row_into_view(list: &gtk::ListBox, scrolled: &gtk::ScrolledWindow) {
+pub(crate) fn scroll_selected_row_into_view(list: &gtk::ListBox, scrolled: &gtk::ScrolledWindow) {
     let Some(row) = list.selected_row() else {
         return;
     };

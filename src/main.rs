@@ -2,10 +2,12 @@ mod app;
 mod apps;
 mod background_apps;
 mod bar;
+mod bar_settings;
 mod config;
 mod css;
 mod fuzzy;
 mod launcher;
+mod menu;
 mod modules;
 mod network;
 mod niri;
@@ -24,7 +26,7 @@ use std::rc::Rc;
 fn valid_command(command: &str) -> bool {
     matches!(
         command,
-        "launcher" | "manage" | "notifications" | "background-apps"
+        "menu" | "launcher" | "manage" | "notifications" | "background-apps"
     ) || notifications::is_command(command)
 }
 
@@ -90,7 +92,7 @@ fn main() -> glib::ExitCode {
             }
             "--help" | "-h" => {
                 println!(
-                    "chuhshell [launcher|manage|notifications|background-apps|doctor]\nMedia commands: volume-up, volume-down, volume-mute, microphone-mute, brightness-up, brightness-down, brightness-key-up, brightness-key-down, brightness-scroll-up, brightness-scroll-down"
+                    "chuhshell [menu|launcher|manage|notifications|background-apps|doctor]\nMedia commands: volume-up, volume-down, volume-mute, microphone-mute, brightness-up, brightness-down, brightness-key-up, brightness-key-down, brightness-scroll-up, brightness-scroll-down"
                 );
                 return glib::ExitCode::SUCCESS;
             }
@@ -179,6 +181,7 @@ fn main() -> glib::ExitCode {
                         manager.toggle();
                     }
                 }
+                Some("menu") => menu::show(app, &state),
                 Some("launcher") => launcher::show(app, &state, LauncherMode::Normal),
                 Some("manage") => launcher::show(app, &state, LauncherMode::Manage),
                 _ => {}

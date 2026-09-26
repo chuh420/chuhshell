@@ -6,6 +6,7 @@ use std::sync::OnceLock;
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub monitors: Vec<String>,
+    pub disabled_modules: Vec<String>,
     pub battery: Option<String>,
     pub backlight: Option<String>,
     pub wifi: Option<String>,
@@ -17,6 +18,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             monitors: Vec::new(),
+            disabled_modules: Vec::new(),
             battery: None,
             backlight: None,
             wifi: None,

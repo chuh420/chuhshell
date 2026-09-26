@@ -31,6 +31,7 @@ fn ui_regressions() {
     assert_eq!(state.bars.borrow().len(), 2);
     crate::bar::create(&app, &state, &center);
     assert_eq!(state.bars.borrow().len(), 2);
+    crate::menu::regression_checks(&app, &state);
     center.toggle_drawer();
     pump(100);
     state.background_manager.borrow().as_ref().unwrap().toggle();

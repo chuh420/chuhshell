@@ -90,6 +90,17 @@ def stop_old_shell():
     raise RuntimeError('The previous shell has not stopped')
 
 
+def menu_bindings(text, binary):
+    text = re.sub(r'^[ \t]*Mod\+Shift\+D\b[^\n{]*\{[^{}]*\}[ \t]*;?[ \t]*\n?', '', text, flags=re.MULTILINE)
+    binding = '    Mod+Space hotkey-overlay-title="chuh menu" { spawn ' + json.dumps(str(binary)) + ' "menu"; }'
+    text, count = re.subn(r'^[ \t]*Mod\+Space\b[^\n{]*\{[^{}]*\}[ \t]*;?[ \t]*$', lambda _: binding, text, flags=re.MULTILINE)
+    if not count:
+        text, count = re.subn(r'(^[ \t]*binds[ \t]*\{)', lambda match: match[1] + '\n' + binding, text, count=1, flags=re.MULTILINE)
+        if not count:
+            raise RuntimeError('Could not find the Niri binds block')
+    return text
+
+
 def install():
     binary = ROOT / 'target/release/chuhshell'
     if not binary.exists():
@@ -104,7 +115,7 @@ def install():
     notification = (ROOT / 'packaging/org.freedesktop.Notifications.service').read_text().replace('Exec=/usr/bin/chuhshell', 'Exec=' + json.dumps(str(destination)))
     changes = [(destination, binary.read_bytes(), 0o755), (service_path, service.encode(), 0o644), (notification_path, notification.encode(), 0o644)]
     if niri_path.exists():
-        text = niri_path.read_text()
+        text = menu_bindings(niri_path.read_text(), destination)
         replacement = 'spawn-at-startup "systemctl" "--user" "start" "chuhshell.service"'
         text, count = re.subn(r'^\s*spawn-at-startup\s+"[^"\n]*chuhshell"\s*;?\s*$', replacement, text, flags=re.MULTILINE)
         if not count and replacement not in text:
