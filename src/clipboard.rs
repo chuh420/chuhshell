@@ -57,7 +57,7 @@ fn insert(entries: &mut Vec<Entry>, entry: Entry) {
 }
 
 impl History {
-    pub fn start(self: &Rc<Self>) {
+    pub fn start(self: &Rc<Self>, state: &Rc<crate::app::AppState>) {
         if self.started.replace(true) {
             return;
         }
@@ -93,11 +93,11 @@ impl History {
                             }
                             let mut data = vec![0; length];
                             output.read_exact(&mut data).map_err(|e| e.to_string())?;
-                            if !paused.load(Ordering::Relaxed)
-                                && (mime != "text"
-                                    || (!data.contains(&0) && std::str::from_utf8(&data).is_ok()))
+                            if mime != "text"
+                                || (!data.contains(&0) && std::str::from_utf8(&data).is_ok())
                             {
-                                let _ = tx.try_send(Ok(Entry { mime, data }));
+                                let record = !paused.load(Ordering::Relaxed);
+                                let _ = tx.try_send(Ok((Entry { mime, data }, record)));
                             }
                         }
                     })();
@@ -111,22 +111,42 @@ impl History {
             });
         }
         let weak = Rc::downgrade(self);
+        let state = Rc::downgrade(state);
         glib::MainContext::default().spawn_local(async move {
             while let Ok(result) = rx.recv().await {
                 let Some(history) = weak.upgrade() else {
                     break;
                 };
                 match result {
-                    Ok(entry) if !history.paused.load(Ordering::Relaxed) => {
-                        insert(&mut history.entries.borrow_mut(), entry);
-                        history.status.borrow_mut().clear();
+                    Ok((entry, record)) => {
+                        if let Some(state) = state.upgrade() {
+                            history.received(entry, record, &state);
+                        }
                     }
                     Err(error) => *history.status.borrow_mut() = error,
-                    _ => {}
                 }
                 history.revision.set(history.revision.get().wrapping_add(1));
             }
         });
+    }
+
+    fn received(&self, entry: Entry, record: bool, state: &Rc<crate::app::AppState>) {
+        let title = if entry.mime == "image/png" {
+            "Image copied"
+        } else {
+            "Copied to clipboard"
+        };
+        if record && !self.paused.load(Ordering::Relaxed) {
+            insert(&mut self.entries.borrow_mut(), entry);
+        }
+        self.status.borrow_mut().clear();
+        crate::notifications::show(
+            state,
+            crate::notifications::Notice::transient(
+                crate::notifications::NoticeKind::Clipboard,
+                title,
+            ),
+        );
     }
 
     pub fn view(self: &Rc<Self>, on_copy: impl Fn() + 'static) -> gtk::Box {
@@ -437,6 +457,41 @@ pub fn regression_checks(app: &gtk::Application) {
     assert_eq!(history.entries.borrow().len(), 1);
     assert!(list.row_at_index(0).is_none());
     window.close();
+    let state = Rc::new(crate::app::AppState::default());
+    history.received(
+        Entry {
+            mime: "text",
+            data: b"private contents".to_vec(),
+        },
+        true,
+        &state,
+    );
+    let osd = state.osd.borrow().as_ref().unwrap().clone();
+    let title = osd
+        .child()
+        .unwrap()
+        .last_child()
+        .unwrap()
+        .first_child()
+        .unwrap()
+        .downcast::<gtk::Label>()
+        .unwrap();
+    assert_eq!(title.text(), "Copied to clipboard");
+    let count = history.entries.borrow().len();
+    history.paused.store(true, Ordering::Relaxed);
+    history.received(
+        Entry {
+            mime: "image/png",
+            data: vec![1, 2, 3],
+        },
+        false,
+        &state,
+    );
+    assert_eq!(history.entries.borrow().len(), count);
+    assert_eq!(state.osd.borrow().as_ref(), Some(&osd));
+    assert_eq!(title.text(), "Image copied");
+    crate::ui_tests::pump(1400);
+    assert!(state.osd.borrow().is_none());
 }
 
 #[cfg(test)]

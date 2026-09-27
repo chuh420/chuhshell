@@ -169,7 +169,7 @@ fn main() -> glib::ExitCode {
             command_line.printerr_literal("Unknown command or extra arguments\n");
             return glib::ExitCode::FAILURE;
         }
-        state.clipboard.start();
+        state.clipboard.start(&state);
         bar::create(app, &state, &center);
         if let Some(command) = command
             .as_deref()

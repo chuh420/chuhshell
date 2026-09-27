@@ -17,6 +17,7 @@ pub enum NoticeKind {
     Network,
     Power,
     Peripheral,
+    Clipboard,
 }
 
 impl NoticeKind {
@@ -29,6 +30,7 @@ impl NoticeKind {
             Self::Network => "󰖩",
             Self::Power => "󰂄",
             Self::Peripheral => "󰂱",
+            Self::Clipboard => "󰅍",
         }
     }
 
