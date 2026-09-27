@@ -92,12 +92,14 @@ def stop_old_shell():
 
 def menu_bindings(text, binary):
     text = re.sub(r'^[ \t]*Mod\+Shift\+D\b[^\n{]*\{[^{}]*\}[ \t]*;?[ \t]*\n?', '', text, flags=re.MULTILINE)
-    binding = '    Mod+Space hotkey-overlay-title="chuh menu" { spawn ' + json.dumps(str(binary)) + ' "menu"; }'
-    text, count = re.subn(r'^[ \t]*Mod\+Space\b[^\n{]*\{[^{}]*\}[ \t]*;?[ \t]*$', lambda _: binding, text, flags=re.MULTILINE)
-    if not count:
-        text, count = re.subn(r'(^[ \t]*binds[ \t]*\{)', lambda match: match[1] + '\n' + binding, text, count=1, flags=re.MULTILINE)
+    for key, command, title in [('Space', 'menu', 'chuh menu'), ('C', 'clipboard', 'clipboard history')]:
+        binding = f'    Mod+{key} hotkey-overlay-title="{title}" {{ spawn ' + json.dumps(str(binary)) + f' "{command}"; }}'
+        pattern = r'^[ \t]*Mod\+' + key + r'\b[^\n{]*\{[^{}]*\}[ \t]*;?[ \t]*$'
+        text, count = re.subn(pattern, lambda _: binding, text, flags=re.MULTILINE)
         if not count:
-            raise RuntimeError('Could not find the Niri binds block')
+            text, count = re.subn(r'(^[ \t]*binds[ \t]*\{)', lambda match: match[1] + '\n' + binding, text, count=1, flags=re.MULTILINE)
+            if not count:
+                raise RuntimeError('Could not find the Niri binds block')
     return text
 
 

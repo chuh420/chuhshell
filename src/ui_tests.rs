@@ -32,6 +32,9 @@ fn ui_regressions() {
     crate::bar::create(&app, &state, &center);
     assert_eq!(state.bars.borrow().len(), 2);
     crate::menu::regression_checks(&app, &state);
+    crate::clipboard::regression_checks(&app);
+    crate::bluetooth::regression_checks(&app);
+    crate::weather::regression_checks(&app);
     crate::layout::regression_checks(&app, &state);
     crate::bar_editor::regression_checks(&app, &state);
     center.toggle_drawer();
@@ -47,4 +50,17 @@ fn ui_regressions() {
         window.close();
     }
     pump(100);
+}
+
+pub fn capture(name: &str) {
+    let Some(directory) = std::env::var_os("CHUHSHELL_TEST_SCREENSHOTS") else {
+        return;
+    };
+    let directory = std::path::PathBuf::from(directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    let status = std::process::Command::new("grim")
+        .arg(directory.join(format!("{name}.png")))
+        .status()
+        .unwrap();
+    assert!(status.success());
 }

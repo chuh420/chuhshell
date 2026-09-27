@@ -16,6 +16,9 @@ pub struct Config {
     pub wifi: Option<String>,
     pub temperature_sensor: Option<PathBuf>,
     pub notification_history_limit: usize,
+    pub weather_location: Option<crate::weather::Location>,
+    pub weather_system: bool,
+    pub weather_units: crate::weather::Units,
 }
 
 impl Default for Config {
@@ -31,6 +34,9 @@ impl Default for Config {
             wifi: None,
             temperature_sensor: None,
             notification_history_limit: 200,
+            weather_location: None,
+            weather_system: false,
+            weather_units: Default::default(),
         }
     }
 }

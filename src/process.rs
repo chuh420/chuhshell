@@ -87,7 +87,7 @@ pub fn run(program: &str, args: &[&str]) -> Result<String, String> {
     run_with_timeout(program, args, Duration::from_secs(4))
 }
 
-fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> Result<String, String> {
+pub fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> Result<String, String> {
     let mut command = Command::new(program);
     command
         .args(args)

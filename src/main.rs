@@ -4,9 +4,12 @@ mod background_apps;
 mod bar;
 mod bar_editor;
 mod bar_settings;
+mod bluetooth;
+mod clipboard;
 mod config;
 mod css;
 mod fuzzy;
+mod info;
 mod launcher;
 mod layout;
 mod menu;
@@ -20,6 +23,7 @@ mod services;
 mod ui;
 #[cfg(test)]
 mod ui_tests;
+mod weather;
 
 use app::{AppState, LauncherMode};
 use gio::prelude::*;
@@ -28,7 +32,7 @@ use std::rc::Rc;
 fn valid_command(command: &str) -> bool {
     matches!(
         command,
-        "menu" | "launcher" | "manage" | "notifications" | "background-apps"
+        "clipboard" | "menu" | "launcher" | "manage" | "notifications" | "background-apps"
     ) || notifications::is_command(command)
 }
 
@@ -51,12 +55,21 @@ fn doctor() -> glib::ExitCode {
         "brightnessctl",
         "udevadm",
         "foot",
+        "wl-paste",
+        "curl",
     ] {
         let found = std::env::var_os("PATH").is_some_and(|paths| {
             std::env::split_paths(&paths).any(|path| path.join(program).is_file())
         });
         println!("{program}: {}", if found { "OK" } else { "missing" });
         healthy &= found;
+    }
+    match process::run("busctl", &["--system", "tree", "org.bluez"]) {
+        Ok(_) => println!("Bluetooth service: OK"),
+        Err(error) => {
+            println!("Bluetooth: {error}");
+            healthy = false;
+        }
     }
     match process::run(
         "busctl",
@@ -86,6 +99,10 @@ fn doctor() -> glib::ExitCode {
 
 fn main() -> glib::ExitCode {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
+    if arguments.as_slice() == ["clipboard-capture"] {
+        clipboard::capture();
+        return glib::ExitCode::SUCCESS;
+    }
     if arguments.len() == 1 {
         match arguments[0].as_str() {
             "--version" => {
@@ -94,7 +111,7 @@ fn main() -> glib::ExitCode {
             }
             "--help" | "-h" => {
                 println!(
-                    "chuhshell [menu|launcher|manage|notifications|background-apps|doctor]\nMedia commands: volume-up, volume-down, volume-mute, microphone-mute, brightness-up, brightness-down, brightness-key-up, brightness-key-down, brightness-scroll-up, brightness-scroll-down"
+                    "chuhshell [menu|clipboard|launcher|manage|notifications|background-apps|doctor]\nMedia commands: volume-up, volume-down, volume-mute, microphone-mute, brightness-up, brightness-down, brightness-key-up, brightness-key-down, brightness-scroll-up, brightness-scroll-down"
                 );
                 return glib::ExitCode::SUCCESS;
             }
@@ -152,6 +169,7 @@ fn main() -> glib::ExitCode {
             command_line.printerr_literal("Unknown command or extra arguments\n");
             return glib::ExitCode::FAILURE;
         }
+        state.clipboard.start();
         bar::create(app, &state, &center);
         if let Some(command) = command
             .as_deref()
@@ -183,6 +201,7 @@ fn main() -> glib::ExitCode {
                         manager.toggle();
                     }
                 }
+                Some("clipboard") => menu::show_clipboard(app, &state),
                 Some("menu") => menu::show(app, &state),
                 Some("launcher") => launcher::show(app, &state, LauncherMode::Normal),
                 Some("manage") => launcher::show(app, &state, LauncherMode::Manage),

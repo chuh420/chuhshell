@@ -47,6 +47,7 @@ class MenuBindings(unittest.TestCase):
             'binds {',
             '    Mod+D { spawn "chuhshell" "launcher"; }',
             '    Mod+Space { spawn "old-menu"; }',
+            '    Mod+C { spawn "old-clipboard"; }',
             '    Mod+Shift+D {',
             '        spawn "chuhshell" "manage"',
             '    }',
@@ -56,6 +57,9 @@ class MenuBindings(unittest.TestCase):
         result = installer.menu_bindings(source, Path('/home/test/.local/bin/chuhshell'))
         self.assertNotIn('Mod+Shift+D', result)
         self.assertNotIn('old-menu', result)
+        self.assertNotIn('old-clipboard', result)
+        self.assertEqual(result.count('Mod+C'), 1)
+        self.assertIn('\"clipboard\"', result)
         self.assertIn('Mod+D { spawn "chuhshell" "launcher"; }', result)
         self.assertIn('Alt+F4 { close-window; }', result)
         self.assertEqual(result.count('Mod+Space'), 1)
@@ -64,6 +68,7 @@ class MenuBindings(unittest.TestCase):
     def test_adds_menu_binding(self):
         result = installer.menu_bindings('binds {\n}\n', Path('/usr/bin/chuhshell'))
         self.assertIn('spawn "/usr/bin/chuhshell" "menu"', result)
+        self.assertIn('spawn "/usr/bin/chuhshell" "clipboard"', result)
 
 
 if __name__ == '__main__':

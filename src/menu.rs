@@ -10,6 +10,12 @@ enum Page {
     Launcher,
     Bar,
     Modules,
+    Settings,
+    Info,
+    Bluetooth,
+    Weather,
+    Calendar,
+    Clipboard,
 }
 
 #[derive(Clone, Copy)]
@@ -26,11 +32,19 @@ fn entries(page: Page) -> Vec<(&'static str, &'static str, Action)> {
         Page::Home => vec![
             ("App launcher", "", Action::Page(Page::Launcher)),
             ("Bar", "", Action::Page(Page::Bar)),
-            ("Settings", "WIP", Action::Wip),
+            ("Settings", "", Action::Page(Page::Settings)),
+            ("Info", "", Action::Page(Page::Info)),
             ("Appearance", "WIP", Action::Wip),
             ("Keybindings", "WIP", Action::Wip),
             ("System", "WIP", Action::Wip),
         ],
+        Page::Settings => vec![("Bluetooth", "", Action::Page(Page::Bluetooth))],
+        Page::Info => vec![
+            ("Weather", "", Action::Page(Page::Weather)),
+            ("Calendar", "", Action::Page(Page::Calendar)),
+            ("Clipboard", "Mod+C", Action::Page(Page::Clipboard)),
+        ],
+        Page::Bluetooth | Page::Weather | Page::Calendar | Page::Clipboard => Vec::new(),
         Page::Launcher => vec![
             (
                 "Open app launcher",
@@ -59,6 +73,22 @@ pub fn close(state: &AppState) {
 }
 
 pub fn show(app: &gtk::Application, state: &Rc<AppState>) {
+    show_page(app, state, Page::Home);
+}
+
+pub fn show_clipboard(app: &gtk::Application, state: &Rc<AppState>) {
+    let other_page = state
+        .menu
+        .borrow()
+        .as_ref()
+        .is_some_and(|window| window.title().as_deref() != Some("Clipboard"));
+    if other_page {
+        close(state);
+    }
+    show_page(app, state, Page::Clipboard);
+}
+
+fn show_page(app: &gtk::Application, state: &Rc<AppState>, page: Page) {
     if state.menu.borrow().is_some() {
         close(state);
         return;
@@ -93,7 +123,7 @@ pub fn show(app: &gtk::Application, state: &Rc<AppState>) {
         }
         glib::Propagation::Proceed
     });
-    render(&window, state, Page::Home);
+    render(&window, state, page);
     *state.menu.borrow_mut() = Some(window.clone().upcast());
     window.present();
 }
@@ -104,7 +134,9 @@ fn render(window: &gtk::ApplicationWindow, state: &Rc<AppState>, page: Page) {
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     let parent = match page {
         Page::Home => None,
-        Page::Launcher | Page::Bar => Some(Page::Home),
+        Page::Launcher | Page::Bar | Page::Settings | Page::Info => Some(Page::Home),
+        Page::Bluetooth => Some(Page::Settings),
+        Page::Weather | Page::Calendar | Page::Clipboard => Some(Page::Info),
         Page::Modules => Some(Page::Bar),
     };
     if let Some(parent) = parent {
@@ -122,16 +154,65 @@ fn render(window: &gtk::ApplicationWindow, state: &Rc<AppState>, page: Page) {
         header.append(&back);
     }
     let title = gtk::Label::new(Some(match page {
+        Page::Settings => "Settings",
+        Page::Info => "Info",
+        Page::Bluetooth => "Bluetooth",
+        Page::Weather => "Weather",
+        Page::Calendar => "Calendar",
+        Page::Clipboard => "Clipboard",
         Page::Home => "chuh menu",
         Page::Launcher => "App launcher",
         Page::Bar => "Bar",
         Page::Modules => "Modules",
     }));
+    window.set_title(Some(&title.text()));
     title.add_css_class("menu-heading");
     title.set_hexpand(true);
     title.set_xalign(0.0);
     header.append(&title);
     outer.append(&header);
+    let leaf = match page {
+        Page::Bluetooth => Some(crate::bluetooth::view()),
+        Page::Weather => Some(crate::weather::view()),
+        Page::Calendar => Some(crate::info::calendar()),
+        Page::Clipboard => {
+            let weak = Rc::downgrade(state);
+            Some(state.clipboard.view(move || {
+                if let Some(state) = weak.upgrade() {
+                    close(&state);
+                }
+            }))
+        }
+        _ => None,
+    };
+    if let Some(leaf) = leaf {
+        outer.append(&leaf);
+        let key = gtk::EventControllerKey::new();
+        let weak_window = window.downgrade();
+        let weak_state = Rc::downgrade(state);
+        key.connect_key_pressed(move |_, key, _, _| {
+            let (Some(window), Some(state)) = (weak_window.upgrade(), weak_state.upgrade()) else {
+                return glib::Propagation::Proceed;
+            };
+            if key == gdk::Key::Escape {
+                close(&state);
+            } else if key == gdk::Key::Left
+                && !gtk::prelude::GtkWindowExt::focus(&window)
+                    .is_some_and(|focus| focus.is::<gtk::Text>() || focus.is::<gtk::Entry>())
+            {
+                if let Some(parent) = parent {
+                    render(&window, &state, parent);
+                }
+            } else {
+                return glib::Propagation::Proceed;
+            }
+            glib::Propagation::Stop
+        });
+        outer.add_controller(key);
+        window.set_child(Some(&outer));
+        leaf.child_focus(gtk::DirectionType::TabForward);
+        return;
+    }
     let max_height =
         crate::ui::active_monitor().map_or(420, |m| (m.geometry().height() - 230).clamp(100, 420));
     let scrolled = gtk::ScrolledWindow::builder()
@@ -370,7 +451,7 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
     crate::ui_tests::pump(100);
     let window = state.menu.borrow().as_ref().unwrap().clone();
     assert!(!window.is_anchor(gtk4_layer_shell::Edge::Top));
-    assert_eq!(crate::launcher::visible_rows(&list(&window)).len(), 6);
+    assert_eq!(crate::launcher::visible_rows(&list(&window)).len(), 7);
     press(&window, gdk::Key::Right);
     crate::ui_tests::pump(100);
     assert_eq!(crate::launcher::visible_rows(&list(&window)).len(), 3);
@@ -382,9 +463,9 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
     press(&window, gdk::Key::Return);
     crate::ui_tests::pump(100);
     assert_eq!(crate::launcher::visible_rows(&list(&window)).len(), 10);
-    let list = list(&window);
-    let row = list.row_at_index(4).unwrap();
-    list.select_row(Some(&row));
+    let modules = list(&window);
+    let row = modules.row_at_index(4).unwrap();
+    modules.select_row(Some(&row));
     press(&window, gdk::Key::Return);
     assert!(!state.bar_modules.enabled("audio"));
     assert!(
@@ -411,10 +492,35 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
         assert!(audio.parent().unwrap().is_visible());
     }
     press(&window, gdk::Key::Page_Down);
-    assert_eq!(list.selected_row().unwrap().index(), 9);
+    assert_eq!(modules.selected_row().unwrap().index(), 9);
     press(&window, gdk::Key::Page_Up);
-    assert_eq!(list.selected_row().unwrap().index(), 4);
+    assert_eq!(modules.selected_row().unwrap().index(), 4);
     press(&window, gdk::Key::Escape);
+    assert!(state.menu.borrow().is_none());
+    show(app, state);
+    let window = state.menu.borrow().as_ref().unwrap().clone();
+    let menu = list(&window);
+    menu.select_row(menu.row_at_index(2).as_ref());
+    press(&window, gdk::Key::Return);
+    assert_eq!(list(&window).row_at_index(0).unwrap().index(), 0);
+    assert_eq!(window.title().as_deref(), Some("Settings"));
+    press(&window, gdk::Key::Left);
+    let menu = list(&window);
+    menu.select_row(menu.row_at_index(3).as_ref());
+    press(&window, gdk::Key::Return);
+    assert_eq!(crate::launcher::visible_rows(&list(&window)).len(), 3);
+    let menu = list(&window);
+    menu.select_row(menu.row_at_index(1).as_ref());
+    press(&window, gdk::Key::Return);
+    assert!(find(window.upcast_ref(), "calendar").is_some());
+    crate::ui_tests::pump(100);
+    crate::ui_tests::capture("calendar");
+    press(&window, gdk::Key::Left);
+    assert_eq!(window.title().as_deref(), Some("Info"));
+    show_clipboard(app, state);
+    let window = state.menu.borrow().as_ref().unwrap().clone();
+    assert_eq!(window.title().as_deref(), Some("Clipboard"));
+    show_clipboard(app, state);
     assert!(state.menu.borrow().is_none());
     show(app, state);
     show(app, state);

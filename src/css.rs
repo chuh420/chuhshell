@@ -93,7 +93,7 @@ window#app-notification, window#notification-drawer { background: transparent; }
 .network-status.error { color: #eb6f92; }
 .network-search, .network-password { background: @shell_base; color: @shell_text; border: 1px solid #403d52; border-radius: 8px; padding: 7px 10px; }
 .network-search:focus-within, .network-password:focus-within { border-color: #c4a7e7; outline: none; box-shadow: none; }
-.network-content dropdown > button { background: #26233a; color: @shell_text; border: 0; box-shadow: none; border-radius: 8px; }
+.menu-content dropdown > button, .network-content dropdown > button { background: #26233a; color: @shell_text; border: 0; box-shadow: none; border-radius: 8px; }
 .bar-edit-zone { background: #1f1d2e; color: #e0def4; border: 1px solid #403d52; border-radius: 8px; padding: 8px; }
 .bar-insert { background: #26233a; color: #9ccfd8; border: 1px dashed #6e6a86; border-radius: 6px; min-width: 20px; padding: 4px; }
 .bar-insert:drop(active), .bar-insert:hover { background: #403d52; border-color: #c4a7e7; }
@@ -112,6 +112,20 @@ window#chuh-menu { background: transparent; color: @shell_text; }
 .menu-state { color: #908caa; font-size: 13px; }
 .menu-state.enabled { color: #9ccfd8; }
 .menu-error { color: #eb6f92; }
+.calendar-weekday { color: #908caa; padding: 6px 0; }
+.calendar-day { min-width: 28px; min-height: 26px; padding: 6px; }
+.calendar-day.outside { color: #6e6a86; background: transparent; }
+.calendar-day.today { background: #31748f; color: #e0def4; font-weight: 600; }
+.calendar-day:focus-visible { outline: 1px solid #c4a7e7; }
+.clipboard-preview { color: @shell_text; }
+.weather-report { color: @shell_text; }
+.weather-current { background: #26233a; border-radius: 10px; padding: 16px; }
+.weather-temperature { font-size: 36px; font-weight: 600; color: #f6c177; }
+.weather-day { background: #26233a; border-radius: 8px; padding: 10px 12px; }
+.weather-range { color: #9ccfd8; }
+.clipboard-image { color: #9ccfd8; font-size: 32px; min-width: 48px; }
+.bluetooth-device { background: #26233a; border-radius: 8px; padding: 12px; }
+.bluetooth-prompt { color: #9ccfd8; }
 "#;
 
 pub fn install() {
