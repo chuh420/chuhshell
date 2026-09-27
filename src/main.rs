@@ -10,6 +10,7 @@ mod config;
 mod css;
 mod fuzzy;
 mod info;
+mod keybindings;
 mod launcher;
 mod layout;
 mod menu;

@@ -215,8 +215,10 @@ impl History {
                 }
                 status.set_text(&if history.status.borrow().is_empty() {
                     format!(
-                        "{} items · session only · Enter to copy · Delete to remove",
-                        history.entries.borrow().len()
+                        "{} items · session only · {} to copy · {} to remove",
+                        history.entries.borrow().len(),
+                        crate::keybindings::hint("clipboard.copy"),
+                        crate::keybindings::hint("clipboard.delete")
                     )
                 } else {
                     history.status.borrow().clone()
@@ -300,16 +302,42 @@ impl History {
             }
         });
         let key = gtk::EventControllerKey::new();
+        key.set_propagation_phase(gtk::PropagationPhase::Capture);
         key.connect_key_pressed({
             let history = self.clone();
             let visible = visible.clone();
             let list = list.downgrade();
             let render = render.clone();
-            move |_, key, _, _| {
+            move |_, key, _, modifiers| {
+                let default_key = crate::keybindings::is_default("clipboard", key);
+                let key = crate::keybindings::remap("clipboard", key, modifiers);
                 let Some(list) = list.upgrade() else {
                     return glib::Propagation::Proceed;
                 };
-                if key == gtk::gdk::Key::Right {
+                if matches!(
+                    key,
+                    gtk::gdk::Key::Down
+                        | gtk::gdk::Key::Up
+                        | gtk::gdk::Key::Page_Down
+                        | gtk::gdk::Key::Page_Up
+                ) {
+                    let offset = match key {
+                        gtk::gdk::Key::Up => -1,
+                        gtk::gdk::Key::Page_Up => -5,
+                        gtk::gdk::Key::Page_Down => 5,
+                        _ => 1,
+                    };
+                    let rows = crate::launcher::visible_rows(&list);
+                    let selected = rows
+                        .iter()
+                        .position(|row| Some(row) == list.selected_row().as_ref());
+                    if let Some(index) =
+                        crate::launcher::selection_index(rows.len(), selected, offset)
+                    {
+                        list.select_row(rows.get(index));
+                    }
+                    glib::Propagation::Stop
+                } else if key == gtk::gdk::Key::Right {
                     if let Some(row) = list.selected_row() {
                         list.emit_by_name::<()>("row-activated", &[&row]);
                     }
@@ -323,6 +351,8 @@ impl History {
                         render();
                     }
                     glib::Propagation::Stop
+                } else if default_key {
+                    glib::Propagation::Stop
                 } else {
                     glib::Propagation::Proceed
                 }
@@ -332,7 +362,8 @@ impl History {
         let search_keys = gtk::EventControllerKey::new();
         search_keys.connect_key_pressed({
             let list = list.downgrade();
-            move |_, key, _, _| {
+            move |_, key, _, modifiers| {
+                let key = crate::keybindings::remap("clipboard-search", key, modifiers);
                 if key == gtk::gdk::Key::Down
                     && let Some(list) = list.upgrade()
                 {

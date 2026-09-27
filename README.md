@@ -12,6 +12,8 @@ press mod and space to open chuh menu in the middle of the screen. use up and do
 
 press mod and d to open the app launcher. it has fuzzy search and remembers the apps you use most. the app launcher section in chuh menu lets you hide or show apps. choose configure to drag the launcher to a new position or resize it by its bottom edge.
 
+keybindings in chuh menu lists all niri bindings from the active config and its includes, plus chuhshell’s internal shortcuts. search by key, action or source, then enter or record a new combination and save. descriptions and source files are shown beside each binding; overridden bindings are marked. niri changes are validated before writing and reload automatically. internal shortcuts are stored in `keybindings` in the shell config and apply immediately. comma-separated alternatives are supported for internal shortcuts. standard gtk text editing and focus navigation remain provided by gtk.
+
 settings contains bluetooth controls for power, scanning, pairing, connections and trusted devices. bluez handles the radio; pin and confirmation prompts stay inside chuhshell. you can also disconnect devices or forget a pairing.
 
 info contains weather, a monthly calendar and clipboard history. weather starts in aktobe; search for another city or use the city from the system timezone. temperature units follow the system locale, with celsius and fahrenheit overrides. forecasts come from open-meteo. the timezone city is approximate. the calendar lets you browse months and return to today.
@@ -30,7 +32,7 @@ notifications from apps appear as popups and stay in the notification drawer unt
 
 to build on arch, you need rust, pkgconf, gtk4, gtk4-layer-shell and glib 2.80 or newer. desktop integrations use niri, wireplumber, pactl, networkmanager, brightnessctl, udevadm, bluez, wl-clipboard and curl. enable bluetooth with `sudo systemctl enable --now bluetooth.service`. clicking the temperature opens btop in foot, so those two are optional. the intended font is inputsans nerd font.
 
-run `scripts/install.sh` from the project directory inside your niri session. it builds and installs chuhshell, sets up the user service and notifications, and sets mod and space for the menu and mod and c for clipboard history. these replace any existing actions on those shortcuts. the old mod and shift and d binding is removed. mod and d should run `chuhshell launcher`.
+run `scripts/install.sh` from the project directory inside your niri session. it builds and installs chuhshell, sets up the user service and notifications, and sets mod and space for the menu and mod and c for clipboard history. on the first install, these replace any existing actions on those shortcuts. reinstalling preserves your niri bindings. the old mod and shift and d binding is removed. mod and d should run `chuhshell launcher`.
 
 run `scripts/uninstall.sh` to restore installation backups. autologin is optional and has its own script, `scripts/setup-autologin.sh`.
 

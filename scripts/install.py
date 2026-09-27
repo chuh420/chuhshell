@@ -90,7 +90,9 @@ def stop_old_shell():
     raise RuntimeError('The previous shell has not stopped')
 
 
-def menu_bindings(text, binary):
+def menu_bindings(text, binary, preserve=False):
+    if preserve:
+        return text
     text = re.sub(r'^[ \t]*Mod\+Shift\+D\b[^\n{]*\{[^{}]*\}[ \t]*;?[ \t]*\n?', '', text, flags=re.MULTILINE)
     for key, command, title in [('Space', 'menu', 'chuh menu'), ('C', 'clipboard', 'clipboard history')]:
         binding = f'    Mod+{key} hotkey-overlay-title="{title}" {{ spawn ' + json.dumps(str(binary)) + f' "{command}"; }}'
@@ -117,7 +119,7 @@ def install():
     notification = (ROOT / 'packaging/org.freedesktop.Notifications.service').read_text().replace('Exec=/usr/bin/chuhshell', 'Exec=' + json.dumps(str(destination)))
     changes = [(destination, binary.read_bytes(), 0o755), (service_path, service.encode(), 0o644), (notification_path, notification.encode(), 0o644)]
     if niri_path.exists():
-        text = menu_bindings(niri_path.read_text(), destination)
+        text = menu_bindings(niri_path.read_text(), destination, preserve=str(niri_path) in manifest)
         replacement = 'spawn-at-startup "systemctl" "--user" "start" "chuhshell.service"'
         text, count = re.subn(r'^\s*spawn-at-startup\s+"[^"\n]*chuhshell"\s*;?\s*$', replacement, text, flags=re.MULTILINE)
         if not count and replacement not in text:

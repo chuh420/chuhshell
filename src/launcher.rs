@@ -352,7 +352,9 @@ fn create(
     key.set_propagation_phase(gtk::PropagationPhase::Capture);
     let list_keys = list.downgrade();
     let window_keys = window.downgrade();
-    key.connect_key_pressed(move |_, key, _, _| {
+    key.connect_key_pressed(move |_, key, _, modifiers| {
+        let default_key = crate::keybindings::is_default("launcher", key);
+        let key = crate::keybindings::remap("launcher", key, modifiers);
         let Some(list_keys) = list_keys.upgrade() else {
             return glib::Propagation::Proceed;
         };
@@ -392,6 +394,7 @@ fn create(
                 }
                 glib::Propagation::Stop
             }
+            _ if default_key => glib::Propagation::Stop,
             _ => glib::Propagation::Proceed,
         }
     });

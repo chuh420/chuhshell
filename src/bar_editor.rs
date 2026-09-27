@@ -312,7 +312,8 @@ pub fn show(app: &gtk::Application, state: &Rc<AppState>) {
     let keys = gtk::EventControllerKey::new();
     keys.connect_key_pressed({
         let window = window.downgrade();
-        move |_, key, _, _| {
+        move |_, key, _, modifiers| {
+            let key = crate::keybindings::remap("bar-editor", key, modifiers);
             if key == gdk::Key::Escape {
                 if let Some(window) = window.upgrade() {
                     window.close();

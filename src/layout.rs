@@ -372,7 +372,8 @@ pub fn show_ready(app: &gtk::Application, state: &Rc<AppState>) {
     let keys = gtk::EventControllerKey::new();
     keys.connect_key_pressed({
         let window = window.downgrade();
-        move |_, key, _, _| {
+        move |_, key, _, modifiers| {
+            let key = crate::keybindings::remap("layout-editor", key, modifiers);
             if key == gtk::gdk::Key::Escape {
                 if let Some(window) = window.upgrade() {
                     window.close();

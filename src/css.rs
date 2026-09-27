@@ -72,6 +72,8 @@ window#app-notification, window#notification-drawer { background: transparent; }
 .notification-drawer-heading { font-size: 14px; font-weight: 600; }
 .notification-empty { color: #908caa; padding: 18px; }
 
+.keybinding-row { background: #1f1d2e; color: @shell_text; border-radius: 8px; padding: 10px; margin-bottom: 5px; }
+.keybinding-editor { background: #26233a; border-radius: 8px; padding: 10px; }
 .network-content { background: #1f1d2e; color: @shell_text; border: 1px solid #403d52; border-radius: 12px; padding: 14px; }
 .network-heading { font-size: 14px; font-weight: 600; }
 .network-section { color: #908caa; font-size: 10px; margin: 8px 2px 3px; }

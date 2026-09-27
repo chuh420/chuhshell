@@ -16,6 +16,7 @@ enum Page {
     Weather,
     Calendar,
     Clipboard,
+    Keybindings,
 }
 
 #[derive(Clone, Copy)]
@@ -35,20 +36,22 @@ fn entries(page: Page) -> Vec<(&'static str, &'static str, Action)> {
             ("Settings", "", Action::Page(Page::Settings)),
             ("Info", "", Action::Page(Page::Info)),
             ("Appearance", "WIP", Action::Wip),
-            ("Keybindings", "WIP", Action::Wip),
+            ("Keybindings", "", Action::Page(Page::Keybindings)),
             ("System", "WIP", Action::Wip),
         ],
         Page::Settings => vec![("Bluetooth", "", Action::Page(Page::Bluetooth))],
         Page::Info => vec![
             ("Weather", "", Action::Page(Page::Weather)),
             ("Calendar", "", Action::Page(Page::Calendar)),
-            ("Clipboard", "Mod+C", Action::Page(Page::Clipboard)),
+            ("Clipboard", "", Action::Page(Page::Clipboard)),
         ],
-        Page::Bluetooth | Page::Weather | Page::Calendar | Page::Clipboard => Vec::new(),
+        Page::Bluetooth | Page::Weather | Page::Calendar | Page::Clipboard | Page::Keybindings => {
+            Vec::new()
+        }
         Page::Launcher => vec![
             (
                 "Open app launcher",
-                "Mod+D",
+                "",
                 Action::Launch(LauncherMode::Normal),
             ),
             ("Hide/show apps", "", Action::Launch(LauncherMode::Manage)),
@@ -134,7 +137,9 @@ fn render(window: &gtk::ApplicationWindow, state: &Rc<AppState>, page: Page) {
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     let parent = match page {
         Page::Home => None,
-        Page::Launcher | Page::Bar | Page::Settings | Page::Info => Some(Page::Home),
+        Page::Launcher | Page::Bar | Page::Settings | Page::Info | Page::Keybindings => {
+            Some(Page::Home)
+        }
         Page::Bluetooth => Some(Page::Settings),
         Page::Weather | Page::Calendar | Page::Clipboard => Some(Page::Info),
         Page::Modules => Some(Page::Bar),
@@ -143,7 +148,7 @@ fn render(window: &gtk::ApplicationWindow, state: &Rc<AppState>, page: Page) {
         let back = gtk::Button::with_label("←");
         back.add_css_class("network-action");
         back.add_css_class("menu-back");
-        back.set_tooltip_text(Some("Back · Left"));
+        back.set_tooltip_text(Some("Back"));
         let window = window.downgrade();
         let state = Rc::downgrade(state);
         back.connect_clicked(move |_| {
@@ -154,6 +159,7 @@ fn render(window: &gtk::ApplicationWindow, state: &Rc<AppState>, page: Page) {
         header.append(&back);
     }
     let title = gtk::Label::new(Some(match page {
+        Page::Keybindings => "Keybindings",
         Page::Settings => "Settings",
         Page::Info => "Info",
         Page::Bluetooth => "Bluetooth",
@@ -172,6 +178,7 @@ fn render(window: &gtk::ApplicationWindow, state: &Rc<AppState>, page: Page) {
     header.append(&title);
     outer.append(&header);
     let leaf = match page {
+        Page::Keybindings => Some(crate::keybindings::view()),
         Page::Bluetooth => Some(crate::bluetooth::view()),
         Page::Weather => Some(crate::weather::view()),
         Page::Calendar => Some(crate::info::calendar()),
@@ -190,15 +197,18 @@ fn render(window: &gtk::ApplicationWindow, state: &Rc<AppState>, page: Page) {
         let key = gtk::EventControllerKey::new();
         let weak_window = window.downgrade();
         let weak_state = Rc::downgrade(state);
-        key.connect_key_pressed(move |_, key, _, _| {
+        key.connect_key_pressed(move |_, key, _, modifiers| {
+            let text_navigation = key == gdk::Key::Left;
+            let key = crate::keybindings::remap("menu", key, modifiers);
             let (Some(window), Some(state)) = (weak_window.upgrade(), weak_state.upgrade()) else {
                 return glib::Propagation::Proceed;
             };
             if key == gdk::Key::Escape {
                 close(&state);
             } else if key == gdk::Key::Left
-                && !gtk::prelude::GtkWindowExt::focus(&window)
-                    .is_some_and(|focus| focus.is::<gtk::Text>() || focus.is::<gtk::Entry>())
+                && !(text_navigation
+                    && gtk::prelude::GtkWindowExt::focus(&window)
+                        .is_some_and(|focus| focus.is::<gtk::Text>() || focus.is::<gtk::Entry>()))
             {
                 if let Some(parent) = parent {
                     render(&window, &state, parent);
@@ -342,7 +352,9 @@ fn render(window: &gtk::ApplicationWindow, state: &Rc<AppState>, page: Page) {
         let list = list.downgrade();
         let window = window.downgrade();
         let state = Rc::downgrade(state);
-        move |_, key, _, _| {
+        move |_, key, _, modifiers| {
+            let default_key = crate::keybindings::is_default("menu", key);
+            let key = crate::keybindings::remap("menu", key, modifiers);
             let (Some(window), Some(list), Some(state)) =
                 (window.upgrade(), list.upgrade(), state.upgrade())
             else {
@@ -380,6 +392,7 @@ fn render(window: &gtk::ApplicationWindow, state: &Rc<AppState>, page: Page) {
                         list.emit_by_name::<()>("row-activated", &[&row]);
                     }
                 }
+                _ if default_key => return glib::Propagation::Stop,
                 _ => return glib::Propagation::Proceed,
             }
             glib::Propagation::Stop
@@ -523,7 +536,13 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
     show_clipboard(app, state);
     assert!(state.menu.borrow().is_none());
     show(app, state);
-    show(app, state);
+    let window = state.menu.borrow().as_ref().unwrap().clone();
+    let menu = list(&window);
+    menu.select_row(menu.row_at_index(5).as_ref());
+    press(&window, gdk::Key::Return);
+    assert_eq!(window.title().as_deref(), Some("Keybindings"));
+    assert!(find(window.upcast_ref(), "keybinding-editor").is_some());
+    press(&window, gdk::Key::Escape);
     assert!(state.menu.borrow().is_none());
     crate::launcher::show(app, state, LauncherMode::Manage);
     crate::ui_tests::pump(350);

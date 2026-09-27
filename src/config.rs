@@ -5,6 +5,7 @@ use std::sync::OnceLock;
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    pub keybindings: std::collections::BTreeMap<String, String>,
     pub launcher_layout: Option<crate::layout::Geometry>,
     #[serde(rename = "bar_layout")]
     pub _legacy_bar_layout: Option<serde_json::Value>,
@@ -24,6 +25,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            keybindings: Default::default(),
             launcher_layout: None,
             _legacy_bar_layout: None,
             bar_order: Default::default(),

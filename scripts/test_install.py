@@ -65,6 +65,10 @@ class MenuBindings(unittest.TestCase):
         self.assertEqual(result.count('Mod+Space'), 1)
         self.assertEqual(installer.menu_bindings(result, Path('/home/test/.local/bin/chuhshell')), result)
 
+    def test_upgrade_preserves_custom_bindings_and_includes(self):
+        source = 'include "keys.kdl"\nbinds { Mod+M { spawn "chuhshell" "menu"; }; }\n'
+        self.assertEqual(installer.menu_bindings(source, Path('/usr/bin/chuhshell'), preserve=True), source)
+
     def test_adds_menu_binding(self):
         result = installer.menu_bindings('binds {\n}\n', Path('/usr/bin/chuhshell'))
         self.assertIn('spawn "/usr/bin/chuhshell" "menu"', result)

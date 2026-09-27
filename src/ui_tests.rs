@@ -33,6 +33,7 @@ fn ui_regressions() {
     assert_eq!(state.bars.borrow().len(), 2);
     crate::menu::regression_checks(&app, &state);
     crate::clipboard::regression_checks(&app);
+    crate::keybindings::regression_checks(&app);
     crate::bluetooth::regression_checks(&app);
     crate::weather::regression_checks(&app);
     crate::layout::regression_checks(&app, &state);
