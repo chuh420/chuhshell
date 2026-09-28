@@ -7,7 +7,7 @@ jobs:
     runs-on: ubuntu-latest
     container: archlinux:base-devel
     steps:
-      - run: pacman -Syu --noconfirm rust git gtk4 gtk4-layer-shell pkgconf python labwc dbus
+      - run: pacman -Syu --noconfirm rust git gtk4 gtk4-layer-shell pkgconf python labwc dbus niri
       - uses: actions/checkout@v4
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings

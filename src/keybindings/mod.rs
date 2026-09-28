@@ -522,10 +522,24 @@ pub fn regression_checks(app: &gtk::Application) {
     );
     assert!(panel.editor.upgrade().unwrap().is_visible());
     entry.set_text("Mod+Y");
+    let validator_available = crate::process::run("niri", &["--version"]).is_ok();
     panel.save();
     wait(&panel);
-    assert!(std::fs::read_to_string(&root).unwrap().contains("Mod+Y"));
-    assert!(!panel.editor.upgrade().unwrap().is_visible());
+    if validator_available {
+        assert!(std::fs::read_to_string(&root).unwrap().contains("Mod+Y"));
+        assert!(!panel.editor.upgrade().unwrap().is_visible());
+    } else {
+        assert!(std::fs::read_to_string(&root).unwrap().contains("Mod+T"));
+        assert!(
+            panel
+                .status
+                .upgrade()
+                .unwrap()
+                .text()
+                .contains("Niri rejected")
+        );
+        panel.cancel();
+    }
     let shortcut = &local::SHORTCUTS[7];
     assert_eq!(shortcut.id, "launcher.close");
     let original = local::value(shortcut);
