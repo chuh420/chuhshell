@@ -3,12 +3,13 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import re
-import shutil
 import signal
 import subprocess
 import sys
 import time
+import argparse
+import fcntl
+from storage import write, snapshot, restore as restore_file, sync_directory
 
 ROOT = Path(__file__).resolve().parent.parent
 HOME_DIR = Path.home()
@@ -26,22 +27,16 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def write(path, data, mode):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + '.chuhshell-new')
-    temporary.write_bytes(data)
-    temporary.chmod(mode)
-    temporary.replace(path)
-
-
 def save(path, data, mode, manifest):
     key = str(path)
     if key not in manifest:
         backup = STATE / digest(key.encode())
         exists = path.exists()
         if exists:
-            shutil.copy2(path, backup)
+            write(backup, path.read_bytes(), 0o600)
         manifest[key] = {'existed': exists, 'backup': str(backup), 'mode': path.stat().st_mode & 0o777 if exists else mode}
+        if path.is_symlink():
+            manifest[key]['original'] = snapshot(path)
     write(path, data, mode)
     manifest[key]['installed'] = digest(data)
 
@@ -54,18 +49,30 @@ def restore(manifest, respect_edits):
             print(f'Preserved modified file: {path}')
             remaining[filename] = entry
             continue
-        if entry['existed']:
+        if 'original' in entry:
+            restore_file(path, entry['original'])
+        elif entry['existed']:
             write(path, Path(entry['backup']).read_bytes(), entry['mode'])
         else:
             path.unlink(missing_ok=True)
     return remaining
 
 
-def stop_old_shell():
+def shell_pid():
     reply = run('busctl', '--user', 'call', 'org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus', 'GetConnectionUnixProcessID', 's', 'dev.chuh.chuhshell', check=False)
     if reply.returncode:
+        return None
+    try:
+        pid = int(reply.stdout.split()[-1])
+        return pid if pid > 1 else None
+    except (ValueError, IndexError):
+        return None
+
+
+def stop_old_shell():
+    pid = shell_pid()
+    if pid is None:
         return
-    pid = int(reply.stdout.split()[-1])
     helpers = set()
     for task in (Path('/proc') / str(pid) / 'task').glob('*'):
         try:
@@ -90,56 +97,87 @@ def stop_old_shell():
     raise RuntimeError('The previous shell has not stopped')
 
 
-def menu_bindings(text, binary, preserve=False):
+def journal_path():
+    return STATE / 'transaction.json'
+
+
+def recover():
+    path = journal_path()
+    if not path.exists():
+        return
+    journal = json.loads(path.read_text())
+    for filename, entry in journal['files'].items():
+        target = Path(filename)
+        current = snapshot(target)
+        if current != entry['before'] and (not target.is_file() or target.is_symlink() or digest(target.read_bytes()) != entry['installed']):
+            raise RuntimeError(f'Interrupted installation: {target} changed afterwards. Preserve your edits and resolve {path} before retrying.')
+    if journal['stopped']:
+        run('systemctl', '--user', 'stop', 'chuhshell.service', check=False)
+    for filename, entry in journal['files'].items():
+        restore_file(Path(filename), entry['before'])
+    restore_file(MANIFEST, journal['manifest'])
+    run('systemctl', '--user', 'daemon-reload')
+    if journal['stopped']:
+        run('systemctl', '--user', 'enable' if journal['enabled'] else 'disable', 'chuhshell.service')
+        if journal['active']:
+            run('systemctl', '--user', 'start', 'chuhshell.service')
+        elif journal.get('standalone') and 'NIRI_SOCKET' in os.environ:
+            run('niri', 'msg', 'action', 'spawn', '--', journal['standalone'])
+    path.unlink()
+    sync_directory(STATE)
+    print('Recovered interrupted installation')
+
+
+def plan_configuration(binary, destination, config, preserve):
+    args = [str(binary), 'installation-plan', str(destination)]
+    if config is not None:
+        args += ['--config', str(config)]
     if preserve:
-        return text
-    text = re.sub(r'^[ \t]*Mod\+Shift\+D\b[^\n{]*\{[^{}]*\}[ \t]*;?[ \t]*\n?', '', text, flags=re.MULTILINE)
-    for key, command, title in [('Space', 'menu', 'chuh menu'), ('C', 'clipboard', 'clipboard history')]:
-        binding = f'    Mod+{key} hotkey-overlay-title="{title}" {{ spawn ' + json.dumps(str(binary)) + f' "{command}"; }}'
-        pattern = r'^[ \t]*Mod\+' + key + r'\b[^\n{]*\{[^{}]*\}[ \t]*;?[ \t]*$'
-        text, count = re.subn(pattern, lambda _: binding, text, flags=re.MULTILINE)
-        if not count:
-            text, count = re.subn(r'(^[ \t]*binds[ \t]*\{)', lambda match: match[1] + '\n' + binding, text, count=1, flags=re.MULTILINE)
-            if not count:
-                raise RuntimeError('Could not find the Niri binds block')
-    return text
+        args.append('--preserve')
+    return json.loads(run(*args).stdout)
 
 
-def install():
+def install(config=None):
     binary = ROOT / 'target/release/chuhshell'
     if not binary.exists():
         raise RuntimeError('Build first: cargo build --release --locked')
     STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    recover()
     manifest = json.loads(MANIFEST.read_text()) if MANIFEST.exists() else {}
     destination = HOME_DIR / '.local/bin/chuhshell'
     service_path = CONFIG / 'systemd/user/chuhshell.service'
     notification_path = DATA / 'dbus-1/services/org.freedesktop.Notifications.service'
-    niri_path = (CONFIG / 'niri/config.kdl').resolve()
     service = (ROOT / 'packaging/chuhshell.service').read_text().replace('ExecStart=/usr/bin/chuhshell', 'ExecStart=' + json.dumps(str(destination)))
     notification = (ROOT / 'packaging/org.freedesktop.Notifications.service').read_text().replace('Exec=/usr/bin/chuhshell', 'Exec=' + json.dumps(str(destination)))
     changes = [(destination, binary.read_bytes(), 0o755), (service_path, service.encode(), 0o644), (notification_path, notification.encode(), 0o644)]
-    if niri_path.exists():
-        text = menu_bindings(niri_path.read_text(), destination, preserve=str(niri_path) in manifest)
-        replacement = 'spawn-at-startup "systemctl" "--user" "start" "chuhshell.service"'
-        text, count = re.subn(r'^\s*spawn-at-startup\s+"[^"\n]*chuhshell"\s*;?\s*$', replacement, text, flags=re.MULTILINE)
-        if not count and replacement not in text:
-            text += '\n' + replacement + '\n'
-        changes.append((niri_path, text.encode(), niri_path.stat().st_mode & 0o777))
-    before = {path: (path.read_bytes(), path.stat().st_mode & 0o777) if path.exists() else None for path, _, _ in changes}
+    plan = plan_configuration(binary, destination, config, bool(manifest))
+    for entry in plan:
+        path = Path(entry['path'])
+        if path.read_text() != entry['before']:
+            raise RuntimeError(f'Niri configuration changed while preparing installation: {path}')
+        if entry['text'] != entry['before']:
+            changes.append((path, entry['text'].encode(), path.stat().st_mode & 0o777))
+    before = {str(path): {'before': snapshot(path), 'installed': digest(data)} for path, data, _ in changes}
     enabled_before = run('systemctl', '--user', 'is-enabled', 'chuhshell.service', check=False).returncode == 0
     active_before = run('systemctl', '--user', 'is-active', 'chuhshell.service', check=False).returncode == 0
-    stopped = False
+    standalone = None
+    if not active_before and (pid := shell_pid()) is not None:
+        try:
+            standalone = str(Path(f'/proc/{pid}/exe').readlink())
+        except OSError:
+            pass
+    journal = {'standalone': standalone, 'files': before, 'manifest': snapshot(MANIFEST), 'enabled': enabled_before, 'active': active_before, 'stopped': False}
+    write(journal_path(), json.dumps(journal).encode(), 0o600)
     try:
         for path, data, mode in changes:
             save(path, data, mode, manifest)
-        if niri_path.exists():
-            run('niri', 'validate', '--config', str(niri_path))
         run('systemctl', '--user', 'daemon-reload')
         environment = [name for name in ['WAYLAND_DISPLAY', 'NIRI_SOCKET', 'DISPLAY', 'XDG_CURRENT_DESKTOP'] if name in os.environ]
         if environment:
             run('systemctl', '--user', 'import-environment', *environment)
-        run('systemctl', '--user', 'stop', 'chuhshell.service', check=False)
-        stopped = True
+        journal['stopped'] = True
+        write(journal_path(), json.dumps(journal).encode(), 0o600)
+        run('systemctl', '--user', 'stop', 'chuhshell.service')
         stop_old_shell()
         run('systemctl', '--user', 'enable', 'chuhshell.service')
         run('systemctl', '--user', 'reset-failed', 'chuhshell.service', check=False)
@@ -149,26 +187,16 @@ def install():
         if 'NIRI_SOCKET' in os.environ:
             run('niri', 'msg', 'action', 'load-config-file')
         write(MANIFEST, json.dumps(manifest, indent=2).encode(), 0o600)
+        journal_path().unlink()
+        sync_directory(STATE)
         print('Installed chuhshell and started its user service. Backups: ' + str(STATE))
-    except Exception:
-        if stopped:
-            run('systemctl', '--user', 'stop', 'chuhshell.service', check=False)
-        if stopped and not enabled_before:
-            run('systemctl', '--user', 'disable', 'chuhshell.service', check=False)
-        for path, previous in before.items():
-            if previous:
-                write(path, *previous)
-            else:
-                path.unlink(missing_ok=True)
-        run('systemctl', '--user', 'daemon-reload', check=False)
-        if stopped and active_before:
-            run('systemctl', '--user', 'start', 'chuhshell.service', check=False)
-        elif stopped and destination.exists() and 'NIRI_SOCKET' in os.environ:
-            run('niri', 'msg', 'action', 'spawn', '--', str(destination), check=False)
+    except BaseException:
+        recover()
         raise
 
 
 def uninstall():
+    recover()
     if not MANIFEST.exists():
         raise RuntimeError('No installation manifest found')
     run('systemctl', '--user', 'disable', '--now', 'chuhshell.service', check=False)
@@ -184,13 +212,18 @@ def uninstall():
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('action', choices=['install', 'uninstall'])
+    parser.add_argument('--config', type=Path)
+    args = parser.parse_args()
     try:
-        if sys.argv[1:] == ['install']:
-            install()
-        elif sys.argv[1:] == ['uninstall']:
-            uninstall()
-        else:
-            raise RuntimeError('Usage: install.py install|uninstall')
+        STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with (STATE / 'lock').open('w') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if args.action == 'install':
+                install(args.config)
+            else:
+                uninstall()
     except (RuntimeError, OSError, subprocess.CalledProcessError, ValueError) as error:
         print(f'chuhshell installation failed: {error}', file=sys.stderr)
         if isinstance(error, subprocess.CalledProcessError):

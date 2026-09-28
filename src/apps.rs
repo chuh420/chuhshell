@@ -3,7 +3,7 @@ use gtk::gdk::prelude::DisplayExt;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Clone, Debug)]
 pub struct AppEntry {
@@ -56,9 +56,7 @@ fn record_launch_at(
     let count = counts.entry(id.to_owned()).or_default();
     *count = count.saturating_add(1);
     let contents = serde_json::to_vec(counts)?;
-    let temp = path.with_extension("tmp");
-    fs::write(&temp, contents)?;
-    fs::rename(temp, path)
+    crate::storage::atomic_write(path, &contents)
 }
 
 pub fn toggled_hidden(
@@ -108,9 +106,7 @@ pub fn write_hidden(hidden: &HashSet<String>) -> std::io::Result<()> {
     if !body.is_empty() {
         body.push('\n');
     }
-    let temp = path.with_extension("tmp");
-    fs::write(&temp, body)?;
-    fs::rename(temp, path)
+    crate::storage::atomic_write(&path, body.as_bytes())
 }
 
 pub fn parse_entry(id: &str, contents: &str, hidden: bool) -> Option<AppEntry> {
@@ -230,13 +226,20 @@ fn load_entry_files() -> Vec<(String, String)> {
     entries
 }
 
-static CATALOG: OnceLock<Mutex<Option<Vec<AppEntry>>>> = OnceLock::new();
+#[derive(Default)]
+struct CatalogCache {
+    generation: u64,
+    entries: Option<Arc<Vec<AppEntry>>>,
+}
+static CATALOG: OnceLock<Mutex<CatalogCache>> = OnceLock::new();
 
 pub fn invalidate() {
-    *CATALOG
+    let mut cache = CATALOG
         .get_or_init(Default::default)
         .lock()
-        .unwrap_or_else(|e| e.into_inner()) = None;
+        .unwrap_or_else(|e| e.into_inner());
+    cache.generation = cache.generation.wrapping_add(1);
+    cache.entries = None;
 }
 
 pub fn watch() -> gio::AppInfoMonitor {
@@ -246,23 +249,33 @@ pub fn watch() -> gio::AppInfoMonitor {
 }
 
 pub fn load_apps() -> Vec<AppEntry> {
-    let mut cache = CATALOG
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    let mut apps = cache
-        .get_or_insert_with(|| {
-            let visible: HashSet<String> = gio::AppInfo::all()
-                .into_iter()
-                .filter(|app| app.should_show())
-                .filter_map(|app| app.id().map(|id| id.to_string()))
-                .collect();
-            let mut apps = collect_entries(load_entry_files(), &HashSet::new());
-            apps.retain(|app| visible.contains(&app.id));
-            apps.sort_by_cached_key(|app| app.name.to_lowercase());
-            apps
-        })
-        .clone();
+    let (generation, entries) = {
+        let cache = CATALOG
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        (cache.generation, cache.entries.clone())
+    };
+    let entries = entries.unwrap_or_else(|| {
+        let visible: HashSet<String> = gio::AppInfo::all()
+            .into_iter()
+            .filter(|app| app.should_show())
+            .filter_map(|app| app.id().map(|id| id.to_string()))
+            .collect();
+        let mut apps = collect_entries(load_entry_files(), &HashSet::new());
+        apps.retain(|app| visible.contains(&app.id));
+        apps.sort_by_cached_key(|app| app.name.to_lowercase());
+        let apps = Arc::new(apps);
+        let mut cache = CATALOG
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if cache.generation == generation {
+            cache.entries = Some(apps.clone());
+        }
+        apps
+    });
+    let mut apps = entries.as_ref().clone();
     let hidden = read_hidden();
     for app in &mut apps {
         app.hidden = hidden.contains(&app.id);

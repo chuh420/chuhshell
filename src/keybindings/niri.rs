@@ -279,45 +279,9 @@ impl Catalog {
 
     pub fn save(&self, binding: &Binding, key: &str) -> Result<(), String> {
         let replacement = self.replacement(binding, key)?;
-        let staging = TemporaryDirectory::new()?;
-        let paths: BTreeMap<_, _> = self
-            .files
-            .keys()
-            .enumerate()
-            .map(|(i, path)| (path.clone(), staging.0.join(format!("{i}.kdl"))))
-            .collect();
-        for (path, contents) in &self.files {
-            let text = if path == &binding.path {
-                &replacement
-            } else {
-                contents
-            };
-            let mut doc = document(text)?;
-            for node in doc.nodes_mut() {
-                if node.name().value() == "include"
-                    && let Some(name) = string(node, 0)
-                {
-                    let original = include_path(path, name);
-                    let target = std::fs::canonicalize(&original)
-                        .ok()
-                        .and_then(|p| paths.get(&p))
-                        .unwrap_or(&original);
-                    let entry = node.get_mut(0).unwrap();
-                    entry.set_value(target.to_string_lossy().to_string());
-                    entry.clear_fmt();
-                }
-            }
-            std::fs::write(&paths[path], doc.to_string()).map_err(|e| e.to_string())?;
-        }
-        crate::process::run(
-            "niri",
-            &[
-                "validate",
-                "--config",
-                paths[&self.root].to_str().ok_or("Invalid config path")?,
-            ],
-        )
-        .map_err(|e| format!("Niri rejected this change; no files were changed. {e}"))?;
+        let mut files = self.files.clone();
+        files.insert(binding.path.clone(), replacement.clone());
+        validate_files(&self.root, &files)?;
         for (path, original) in &self.files {
             if std::fs::read_to_string(path).map_err(|e| io_error(path, e))? != *original {
                 return Err("Configuration changed elsewhere. Refresh before saving.".into());
@@ -326,6 +290,121 @@ impl Catalog {
         atomic_write(&binding.path, &replacement)?;
         Ok(())
     }
+}
+
+pub fn installation_plan(
+    destination: &Path,
+    root: Option<&Path>,
+    preserve: bool,
+) -> Result<serde_json::Value, String> {
+    let root = root.map(Path::to_path_buf).unwrap_or_else(config_path);
+    if !root.exists() {
+        if root == Path::new("/etc/niri/config.kdl") {
+            return Ok(serde_json::json!([]));
+        }
+        return Err(format!(
+            "Niri configuration does not exist: {}",
+            root.display()
+        ));
+    }
+    let catalog = Catalog::load(&root)?;
+    let mut replacements = BTreeMap::new();
+    let startup = "spawn-at-startup \"systemctl\" \"--user\" \"start\" \"chuhshell.service\"\n";
+    let startup_doc = document(startup)?;
+    let mut has_startup = false;
+    for (path, text) in &catalog.files {
+        let mut doc = document(text)?;
+        let mut changed = false;
+        for node in doc.nodes_mut() {
+            if !preserve
+                && node.name().value() == "binds"
+                && let Some(bindings) = node.children_mut()
+            {
+                let old = bindings.nodes().len();
+                bindings.nodes_mut().retain(|binding| {
+                    !["Mod+Space", "Mod+C", "Mod+Shift+D"].iter().any(|key| {
+                        normalize(key, &catalog.mod_key)
+                            == normalize(binding.name().value(), &catalog.mod_key)
+                    })
+                });
+                changed |= old != bindings.nodes().len();
+            }
+            if node.name().value() == "spawn-at-startup" {
+                if string(node, 0) == Some("systemctl")
+                    && string(node, 1) == Some("--user")
+                    && string(node, 2) == Some("start")
+                    && string(node, 3) == Some("chuhshell.service")
+                {
+                    has_startup = true;
+                } else if string(node, 0)
+                    .is_some_and(|s| Path::new(s).file_name().is_some_and(|s| s == "chuhshell"))
+                    && node.entries().len() == 1
+                {
+                    *node = startup_doc.nodes()[0].clone();
+                    has_startup = true;
+                    changed = true;
+                }
+            }
+        }
+        replacements.insert(
+            path.clone(),
+            if changed {
+                doc.to_string()
+            } else {
+                text.clone()
+            },
+        );
+    }
+    let text = replacements
+        .get_mut(&catalog.root)
+        .ok_or("Missing root config")?;
+    if !preserve {
+        let executable = kdl::KdlValue::String(destination.to_string_lossy().into_owned());
+        text.push_str(&format!("\nbinds {{\n    Mod+Space hotkey-overlay-title=\"chuh menu\" {{ spawn {executable} \"menu\"; }}\n    Mod+C hotkey-overlay-title=\"clipboard history\" {{ spawn {executable} \"clipboard\"; }}\n}}\n"));
+    }
+    if !has_startup {
+        text.push_str(&format!("\n{startup}"));
+    }
+    validate_files(&catalog.root, &replacements)?;
+    Ok(serde_json::Value::Array(catalog.files.iter().map(|(path, before)| serde_json::json!({"path": path, "before": before, "text": replacements[path]})).collect()))
+}
+
+fn validate_files(root: &Path, files: &BTreeMap<PathBuf, String>) -> Result<(), String> {
+    let staging = TemporaryDirectory::new()?;
+    let paths: BTreeMap<_, _> = files
+        .keys()
+        .enumerate()
+        .map(|(i, path)| (path.clone(), staging.0.join(format!("{i}.kdl"))))
+        .collect();
+    for (path, text) in files {
+        let mut doc = document(text)?;
+        for node in doc.nodes_mut() {
+            if node.name().value() == "include"
+                && let Some(name) = string(node, 0)
+            {
+                let original = include_path(path, name);
+                let target = std::fs::canonicalize(&original)
+                    .ok()
+                    .and_then(|p| paths.get(&p))
+                    .unwrap_or(&original);
+                node.get_mut(0)
+                    .ok_or("Missing include path")?
+                    .set_value(target.to_string_lossy().into_owned());
+                node.get_mut(0).ok_or("Missing include path")?.clear_fmt();
+            }
+        }
+        std::fs::write(&paths[path], doc.to_string()).map_err(|e| e.to_string())?;
+    }
+    crate::process::run(
+        "niri",
+        &[
+            "validate",
+            "--config",
+            paths[root].to_str().ok_or("Invalid config path")?,
+        ],
+    )
+    .map_err(|e| format!("Niri rejected this change; no files were changed. {e}"))?;
+    Ok(())
 }
 
 fn arguments(node: &KdlNode) -> String {
@@ -430,27 +509,7 @@ fn normalize(key: &str, mod_key: &str) -> String {
 }
 
 pub fn atomic_write(path: &Path, text: &str) -> Result<(), String> {
-    use std::io::Write;
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let temporary = path.with_file_name(format!(
-        ".chuhshell-{}-{}.tmp",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    let result = (|| {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
-        file.set_permissions(std::fs::metadata(path)?.permissions())?;
-        file.write_all(text.as_bytes())?;
-        file.sync_all()?;
-        std::fs::rename(&temporary, path)
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-    }
-    result.map_err(|e| io_error(path, e))
+    crate::storage::atomic_write(path, text.as_bytes()).map_err(|e| io_error(path, e))
 }
 
 struct TemporaryDirectory(PathBuf);
@@ -486,6 +545,36 @@ mod tests {
         let path = root.join("config.kdl");
         std::fs::write(&path, text).unwrap();
         path
+    }
+
+    #[test]
+    fn installation_plan_handles_inline_bindings_and_includes_without_writing() {
+        if crate::process::run("niri", &["--version"]).is_err() {
+            return;
+        }
+        let dir = TemporaryDirectory::new().unwrap();
+        let root = dir.0.join("config.kdl");
+        let included = dir.0.join("keys.kdl");
+        let source = "binds { Mod+Space { spawn \"old\"; }; Mod+C { spawn \"old-clipboard\"; }; Alt+F4 { close-window; }; }\n";
+        std::fs::write(&included, source).unwrap();
+        std::fs::write(&root, "include \"keys.kdl\"\n").unwrap();
+        let plan = installation_plan(Path::new("/usr/bin/chuhshell"), Some(&root), false).unwrap();
+        assert_eq!(std::fs::read_to_string(&included).unwrap(), source);
+        for entry in plan.as_array().unwrap() {
+            let text = entry["text"].as_str().unwrap();
+            assert!(!text.contains("old-clipboard"));
+            if entry["path"].as_str() == included.to_str() {
+                assert!(text.contains("Alt+F4"));
+            }
+            std::fs::write(entry["path"].as_str().unwrap(), text).unwrap();
+        }
+        let next = installation_plan(Path::new("/usr/bin/chuhshell"), Some(&root), true).unwrap();
+        assert!(
+            next.as_array()
+                .unwrap()
+                .iter()
+                .all(|entry| entry["before"] == entry["text"])
+        );
     }
 
     #[test]

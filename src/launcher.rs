@@ -607,6 +607,92 @@ pub fn regression_checks(app: &gtk::Application) {
 }
 
 #[cfg(test)]
+pub fn profile(app: &gtk::Application) {
+    use std::time::{Duration, Instant};
+    if std::env::var_os("CHUHSHELL_PROFILE").is_none() {
+        return;
+    }
+    let state = Rc::new(AppState::default());
+    let entries: Vec<_> = (0..100)
+        .map(|index| {
+            apps::parse_entry(
+                &format!("profile-{index}.desktop"),
+                &format!(
+                    "[Desktop Entry]\nType=Application\nName=Application {index}\nExec=/bin/true\n"
+                ),
+                false,
+            )
+            .unwrap()
+        })
+        .collect();
+    let maximum_gap = Rc::new(std::cell::Cell::new(Duration::ZERO));
+    let previous = Rc::new(std::cell::Cell::new(Instant::now()));
+    let timer = glib::timeout_add_local(Duration::from_millis(5), {
+        let maximum_gap = maximum_gap.clone();
+        move || {
+            let now = Instant::now();
+            maximum_gap.set(
+                maximum_gap
+                    .get()
+                    .max(now.duration_since(previous.replace(now))),
+            );
+            glib::ControlFlow::Continue
+        }
+    });
+    let rss = || {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find(|line| line.starts_with("VmRSS:"))
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .and_then(|n| n.parse::<u64>().ok())
+            })
+            .unwrap_or(0)
+    };
+    let mut samples = Vec::new();
+    let mut baseline = 0;
+    for iteration in 0..25 {
+        let start = Instant::now();
+        let window = create(
+            app,
+            &state,
+            LauncherMode::Normal,
+            entries.clone(),
+            HashMap::new(),
+            false,
+        );
+        while window.width() <= 0 && start.elapsed() < Duration::from_secs(5) {
+            crate::ui_tests::pump(1);
+        }
+        assert!(window.width() > 0);
+        if iteration >= 5 {
+            samples.push(start.elapsed().as_micros());
+        }
+        window.close();
+        drop(window);
+        crate::menu::show(app, &state);
+        crate::ui_tests::pump(5);
+        crate::menu::close(&state);
+        crate::ui_tests::pump(5);
+        if iteration == 4 {
+            baseline = rss();
+            maximum_gap.set(Duration::ZERO);
+        }
+    }
+    timer.remove();
+    samples.sort();
+    println!(
+        "CHUHSHELL_PROFILE {{\"apps\":100,\"iterations\":20,\"launcher_median_us\":{},\"launcher_p95_us\":{},\"main_loop_max_gap_us\":{},\"rss_warm_kib\":{},\"rss_final_kib\":{}}}",
+        samples[samples.len() / 2],
+        samples[samples.len() - 2],
+        maximum_gap.get().as_micros(),
+        baseline,
+        rss()
+    );
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     #[test]

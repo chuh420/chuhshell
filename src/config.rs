@@ -82,8 +82,17 @@ pub fn get() -> &'static Config {
 }
 
 pub fn save_value(key: &str, setting: serde_json::Value) -> Result<(), String> {
-    let path = path();
-    let mut value: serde_json::Value = match std::fs::read_to_string(&path) {
+    save_value_at(&path(), key, setting)
+}
+
+fn save_value_at(
+    path: &std::path::Path,
+    key: &str,
+    setting: serde_json::Value,
+) -> Result<(), String> {
+    static SAVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = SAVE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut value: serde_json::Value = match std::fs::read_to_string(path) {
         Ok(contents) => {
             serde_json::from_str(&contents).map_err(|e| format!("Could not read settings: {e}"))?
         }
@@ -94,12 +103,33 @@ pub fn save_value(key: &str, setting: serde_json::Value) -> Result<(), String> {
         .as_object_mut()
         .ok_or("Settings must be a JSON object")?
         .insert(key.into(), setting);
-    let write = || -> Result<(), Box<dyn std::error::Error>> {
-        std::fs::create_dir_all(path.parent().ok_or("Invalid settings path")?)?;
-        let temporary = path.with_extension("json.tmp");
-        std::fs::write(&temporary, serde_json::to_vec_pretty(&value)?)?;
-        std::fs::rename(temporary, &path)?;
-        Ok(())
-    };
-    write().map_err(|e| format!("Could not save settings: {e}"))
+    crate::storage::atomic_write(
+        path,
+        &serde_json::to_vec_pretty(&value).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("Could not save settings: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn concurrent_settings_updates_preserve_other_fields_and_invalid_json() {
+        let path =
+            std::env::temp_dir().join(format!("chuhshell-settings-{}.json", std::process::id()));
+        std::fs::write(&path, r#"{"existing":true}"#).unwrap();
+        std::thread::scope(|scope| {
+            for key in ["one", "two", "three"] {
+                let path = &path;
+                scope.spawn(move || save_value_at(path, key, true.into()).unwrap());
+            }
+        });
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value.as_object().unwrap().len(), 4);
+        std::fs::write(&path, b"invalid").unwrap();
+        assert!(save_value_at(&path, "one", false.into()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"invalid");
+        std::fs::remove_file(path).unwrap();
+    }
 }

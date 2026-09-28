@@ -18,6 +18,7 @@ pub struct SystemState {
 type Listener = Box<dyn Fn(&SystemState) -> bool>;
 
 pub struct Services {
+    pub network: Rc<crate::network::service::Service>,
     data: RefCell<SystemState>,
     listeners: RefCell<Vec<Listener>>,
     _catalog: gio::AppInfoMonitor,
@@ -26,6 +27,7 @@ pub struct Services {
 impl Services {
     pub fn new(state: &Rc<AppState>) -> Rc<Self> {
         let services = Rc::new(Self {
+            network: crate::network::service::Service::new(),
             data: RefCell::new(SystemState::default()),
             listeners: RefCell::new(Vec::new()),
             _catalog: crate::apps::watch(),
@@ -41,6 +43,11 @@ impl Services {
                     break;
                 };
                 let old = services.data.borrow().niri.clone();
+                if old.workspaces != snapshot.workspaces
+                    && let Some(manager) = state.background_manager.borrow().as_ref()
+                {
+                    manager.request_refresh();
+                }
                 *state.workspaces.borrow_mut() = snapshot.workspaces.clone();
                 *state.layout_names.borrow_mut() = snapshot.layouts.names.clone();
                 state.current_layout.set(snapshot.layouts.current_idx);
@@ -77,40 +84,37 @@ impl Services {
         let (tx, rx) = async_channel::bounded(1);
         modules::spawn_temperature_poller(tx);
         Self::consume(&services, rx, |data, value| data.temperature = value);
-        let (tx, rx) = async_channel::bounded(1);
-        modules::spawn_network_poller(tx);
         let weak = Rc::downgrade(&services);
         let state = osd_state.clone();
-        glib::MainContext::default().spawn_local(async move {
-            while let Ok(info) = rx.recv().await {
-                let (Some(services), Some(state)) = (weak.upgrade(), state.upgrade()) else {
-                    break;
-                };
-                let old = services.data.borrow().network.clone();
-                let previous = old
-                    .filter(|v| v.status != "unavailable")
-                    .map(|v| (v.status == "connected", v.ssid));
-                if info.status != "unavailable" {
-                    let notice = match notifications::network_transition(
-                        previous.as_ref(),
-                        info.status == "connected",
-                        info.ssid.as_deref(),
-                    ) {
-                        Some(ConnectionNotice::Connected(ssid)) => Some(
-                            Notice::transient(NoticeKind::Network, "Wi-Fi connected")
-                                .with_detail(ssid),
-                        ),
-                        Some(ConnectionNotice::Disconnected) => {
-                            Some(Notice::transient(NoticeKind::Network, "Wi-Fi disconnected"))
-                        }
-                        None => None,
-                    };
-                    if let Some(notice) = notice {
-                        notifications::show(&state, notice);
+        services.network.subscribe(move |result| {
+            let info = crate::network::service::panel_info(result);
+            let (Some(services), Some(state)) = (weak.upgrade(), state.upgrade()) else {
+                return false;
+            };
+            let old = services.data.borrow().network.clone();
+            let previous = old
+                .filter(|v| v.status != "unavailable")
+                .map(|v| (v.status == "connected", v.ssid));
+            if info.status != "unavailable" {
+                let notice = match notifications::network_transition(
+                    previous.as_ref(),
+                    info.status == "connected",
+                    info.ssid.as_deref(),
+                ) {
+                    Some(ConnectionNotice::Connected(ssid)) => Some(
+                        Notice::transient(NoticeKind::Network, "Wi-Fi connected").with_detail(ssid),
+                    ),
+                    Some(ConnectionNotice::Disconnected) => {
+                        Some(Notice::transient(NoticeKind::Network, "Wi-Fi disconnected"))
                     }
+                    None => None,
+                };
+                if let Some(notice) = notice {
+                    notifications::show(&state, notice);
                 }
-                services.update(|data| data.network = Some(info));
             }
+            services.update(|data| data.network = Some(info));
+            true
         });
         let (hardware_tx, hardware_rx) = async_channel::bounded(1);
         let (refresh_tx, refresh_rx) = std::sync::mpsc::sync_channel(1);

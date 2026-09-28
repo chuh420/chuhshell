@@ -612,12 +612,7 @@ impl NotificationCenter {
         });
     }
     pub fn toggle_drawer(self: &Rc<Self>) {
-        let button = self
-            .buttons
-            .borrow()
-            .iter()
-            .filter_map(|b| b.upgrade())
-            .find(|b| b.is_visible());
+        let button = crate::ui::active_button(&self.buttons.borrow());
         if let Some(button) = button {
             self.toggle_at(&button);
         }

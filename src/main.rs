@@ -21,6 +21,7 @@ mod notification_center;
 mod notifications;
 mod process;
 mod services;
+mod storage;
 mod ui;
 #[cfg(test)]
 mod ui_tests;
@@ -52,7 +53,6 @@ fn doctor() -> glib::ExitCode {
     for program in [
         "wpctl",
         "pactl",
-        "nmcli",
         "brightnessctl",
         "udevadm",
         "foot",
@@ -100,6 +100,40 @@ fn doctor() -> glib::ExitCode {
 
 fn main() -> glib::ExitCode {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
+    if arguments.first().is_some_and(|s| s == "installation-plan") {
+        let result = (|| {
+            let destination = arguments.get(1).ok_or("Missing installation destination")?;
+            let mut root = None;
+            let mut preserve = false;
+            let mut options = arguments[2..].iter();
+            while let Some(option) = options.next() {
+                match option.as_str() {
+                    "--preserve" => preserve = true,
+                    "--config" => {
+                        root = Some(std::path::Path::new(
+                            options.next().ok_or("Missing config path")?,
+                        ))
+                    }
+                    _ => return Err("Unknown installation option".to_string()),
+                }
+            }
+            crate::keybindings::niri::installation_plan(
+                std::path::Path::new(destination),
+                root,
+                preserve,
+            )
+        })();
+        return match result {
+            Ok(plan) => {
+                println!("{plan}");
+                glib::ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                glib::ExitCode::FAILURE
+            }
+        };
+    }
     if arguments.as_slice() == ["clipboard-capture"] {
         clipboard::capture();
         return glib::ExitCode::SUCCESS;

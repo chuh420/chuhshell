@@ -211,8 +211,25 @@ fn profile_security(settings: &Settings) -> Security {
     }
 }
 
+fn profile_matches(settings: &Settings, ssid: &[u8], security: Security, interface: &str) -> bool {
+    let Some(wifi) = settings.get("802-11-wireless") else {
+        return false;
+    };
+    let assigned = settings
+        .get("connection")
+        .map(|p| value::<String>(p, "interface-name"))
+        .unwrap_or_default();
+    value::<Vec<u8>>(wifi, "ssid") == ssid
+        && value::<String>(wifi, "mode") != "ap"
+        && security.compatible(profile_security(settings))
+        && (assigned.is_empty() || assigned == interface)
+}
+
 pub fn snapshot(preferred: Option<&str>) -> Result<Snapshot, String> {
-    let client = Client::new(12)?;
+    snapshot_with(&Client::new(12)?, preferred)
+}
+
+fn snapshot_with(client: &Client, preferred: Option<&str>) -> Result<Snapshot, String> {
     let manager = client.properties(ROOT, NM)?;
     let mut adapters = Vec::new();
     let mut devices = HashMap::new();
@@ -366,7 +383,10 @@ pub fn snapshot(preferred: Option<&str>) -> Result<Snapshot, String> {
 }
 
 pub fn perform(action: Action) -> Result<String, String> {
-    let client = Client::new(55)?;
+    perform_with(&Client::new(55)?, action)
+}
+
+fn perform_with(client: &Client, action: Action) -> Result<String, String> {
     match action {
         Action::Radio(enabled) => {
             client.call(
@@ -428,18 +448,7 @@ pub fn perform(action: Action) -> Result<String, String> {
                     let Ok(settings) = client.settings(profile.as_str()) else {
                         continue;
                     };
-                    let Some(wifi) = settings.get("802-11-wireless") else {
-                        continue;
-                    };
-                    let assigned: String = settings
-                        .get("connection")
-                        .map(|p| value(p, "interface-name"))
-                        .unwrap_or_default();
-                    if value::<Vec<u8>>(wifi, "ssid") == network.ssid
-                        && value::<String>(wifi, "mode") != "ap"
-                        && network.security.compatible(profile_security(&settings))
-                        && (assigned.is_empty() || assigned == interface)
-                    {
+                    if profile_matches(&settings, &network.ssid, network.security, &interface) {
                         network.profile = Some(profile.to_string());
                         break;
                     }
@@ -547,6 +556,213 @@ pub fn perform(action: Action) -> Result<String, String> {
                 }
                 crate::process::pause(Duration::from_millis(400));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+pub fn regression_checks() {
+    let bus = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE).unwrap();
+    bus.call_sync(
+        Some("org.freedesktop.DBus"),
+        "/org/freedesktop/DBus",
+        "org.freedesktop.DBus",
+        "RequestName",
+        Some(&(NM, 0u32).to_variant()),
+        None,
+        gio::DBusCallFlags::NONE,
+        1000,
+        gio::Cancellable::NONE,
+    )
+    .unwrap();
+    let xml = format!(
+        r#"<node><interface name="{NM}"><method name="GetDevices"><arg type="ao" direction="out"/></method><property name="WirelessEnabled" type="b" access="read"/><property name="WirelessHardwareEnabled" type="b" access="read"/></interface><interface name="{DEVICE}"><property name="DeviceType" type="u" access="read"/><property name="State" type="u" access="read"/><property name="Interface" type="s" access="read"/></interface><interface name="{WIRELESS}"><method name="GetAllAccessPoints"><arg type="ao" direction="out"/></method><method name="RequestScan"><arg type="a{{sv}}" direction="in"/></method></interface><interface name="org.freedesktop.NetworkManager.Settings"><method name="ListConnections"><arg type="ao" direction="out"/></method></interface></node>"#
+    );
+    let info = gio::DBusNodeInfo::for_xml(&xml).unwrap();
+    let device = format!("{ROOT}/Devices/1");
+    let other = format!("{ROOT}/Devices/2");
+    let mut registrations = Vec::new();
+    for (path, interface) in [
+        (ROOT.to_string(), NM),
+        (device.clone(), DEVICE),
+        (device.clone(), WIRELESS),
+        (other.clone(), DEVICE),
+        (other.clone(), WIRELESS),
+        (
+            format!("{ROOT}/Settings"),
+            "org.freedesktop.NetworkManager.Settings",
+        ),
+    ] {
+        let devices = vec![object(&device).unwrap(), object(&other).unwrap()];
+        registrations.push(
+            bus.register_object(&path, &info.lookup_interface(interface).unwrap())
+                .method_call(move |_, _, _, _, method, _, invocation| match method {
+                    "GetDevices" => invocation.return_value(Some(&(devices.clone(),).to_variant())),
+                    "RequestScan" => invocation.return_dbus_error(
+                        "org.freedesktop.NetworkManager.Device.NotAllowed",
+                        "Scanning denied by test service",
+                    ),
+                    _ => invocation.return_value(Some(&(Vec::<ObjectPath>::new(),).to_variant())),
+                })
+                .property(|_, _, path, _, property| match property {
+                    "WirelessEnabled" | "WirelessHardwareEnabled" => true.to_variant(),
+                    "DeviceType" => 2u32.to_variant(),
+                    "State" => (if path.ends_with("/2") { 100u32 } else { 30u32 }).to_variant(),
+                    "Interface" => (if path.ends_with("/2") {
+                        "wlan1"
+                    } else {
+                        "wlan0"
+                    })
+                    .to_variant(),
+                    _ => false.to_variant(),
+                })
+                .build()
+                .unwrap(),
+        );
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let client_bus = bus.clone();
+    std::thread::spawn(move || {
+        let client = Client {
+            bus: client_bus,
+            deadline: Instant::now() + Duration::from_secs(4),
+        };
+        let automatic = snapshot_with(&client, None).unwrap();
+        assert_eq!(automatic.device.unwrap().name, "wlan1");
+        let selected = snapshot_with(&client, Some("wlan0")).unwrap();
+        assert_eq!(selected.device.unwrap().name, "wlan0");
+        let error = perform_with(&client, Action::Scan(device)).unwrap_err();
+        assert!(error.contains("Scanning denied"));
+        let expired = Client {
+            bus: client.bus,
+            deadline: Instant::now(),
+        };
+        assert!(
+            snapshot_with(&expired, None)
+                .unwrap_err()
+                .contains("timed out")
+        );
+        tx.send(()).unwrap();
+    });
+    let deadline = Instant::now() + Duration::from_secs(6);
+    loop {
+        match rx.try_recv() {
+            Ok(()) => break,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                panic!("Network regression worker failed")
+            }
+            Err(_) => {
+                assert!(Instant::now() < deadline);
+                crate::ui_tests::pump(5);
+            }
+        }
+    }
+    for registration in registrations {
+        bus.unregister_object(registration).unwrap();
+    }
+    bus.call_sync(
+        Some("org.freedesktop.DBus"),
+        "/org/freedesktop/DBus",
+        "org.freedesktop.DBus",
+        "ReleaseName",
+        Some(&(NM,).to_variant()),
+        None,
+        gio::DBusCallFlags::NONE,
+        1000,
+        gio::Cancellable::NONE,
+    )
+    .unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_selection_respects_ssid_security_interface_and_mode() {
+        let mut settings = Settings::from([
+            (
+                "802-11-wireless".into(),
+                Properties::from([("ssid".into(), vec![255u8, 0, 65].to_variant())]),
+            ),
+            (
+                "802-11-wireless-security".into(),
+                Properties::from([("key-mgmt".into(), "wpa-psk".to_variant())]),
+            ),
+            (
+                "connection".into(),
+                Properties::from([("interface-name".into(), "wlan0".to_variant())]),
+            ),
+        ]);
+        assert!(profile_matches(
+            &settings,
+            &[255, 0, 65],
+            Security::Personal,
+            "wlan0"
+        ));
+        assert!(!profile_matches(
+            &settings,
+            &[255, 0, 65],
+            Security::Personal,
+            "wlan1"
+        ));
+        assert!(!profile_matches(
+            &settings,
+            &[255, 0, 65],
+            Security::Open,
+            "wlan0"
+        ));
+        assert!(!profile_matches(
+            &settings,
+            b"different",
+            Security::Personal,
+            "wlan0"
+        ));
+        settings
+            .get_mut("802-11-wireless")
+            .unwrap()
+            .insert("mode".into(), "ap".to_variant());
+        assert!(!profile_matches(
+            &settings,
+            &[255, 0, 65],
+            Security::Personal,
+            "wlan0"
+        ));
+    }
+
+    #[test]
+    fn security_flags_and_profiles_keep_enterprise_and_open_separate() {
+        for (flags, expected) in [
+            (0u32, Security::Open),
+            (0x100, Security::Personal),
+            (0x400, Security::Sae),
+            (0x800, Security::Enhanced),
+            (0x200, Security::Enterprise),
+            (0x2100, Security::Enterprise),
+        ] {
+            assert_eq!(
+                ap_security(&Properties::from([("RsnFlags".into(), flags.to_variant())])),
+                expected
+            );
+        }
+        assert_eq!(
+            ap_security(&Properties::from([("Flags".into(), 1u32.to_variant())])),
+            Security::Legacy
+        );
+        assert!(!Security::Open.compatible(Security::Personal));
+        assert!(!Security::Enterprise.compatible(Security::Personal));
+        for (key, expected) in [
+            ("wpa-psk", Security::Personal),
+            ("sae", Security::Sae),
+            ("owe", Security::Enhanced),
+            ("wpa-eap", Security::Enterprise),
+            ("none", Security::Legacy),
+        ] {
+            let settings = Settings::from([(
+                "802-11-wireless-security".into(),
+                Properties::from([("key-mgmt".into(), key.to_variant())]),
+            )]);
+            assert_eq!(profile_security(&settings), expected);
         }
     }
 }

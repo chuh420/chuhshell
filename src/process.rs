@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 use std::io::Read;
+use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -92,20 +94,21 @@ pub fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> Resu
     command
         .args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     let mut child = ManagedChild::spawn(&mut command).map_err(|e| format!("{program}: {e}"))?;
     let stdout = child
         .0
         .stdout
         .take()
         .ok_or("Could not read command output")?;
-    let reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stdout
-            .take(OUTPUT_LIMIT + 1)
-            .read_to_end(&mut bytes)
-            .map(|_| bytes)
-    });
+    let stderr = child
+        .0
+        .stderr
+        .take()
+        .ok_or("Could not read command errors")?;
+    let finished = Arc::new(AtomicBool::new(false));
+    let reader = read_output(stdout, finished.clone());
+    let errors = read_output(stderr, finished.clone());
     let deadline = Instant::now() + timeout;
     let result = loop {
         if stopped() || Instant::now() >= deadline {
@@ -136,15 +139,64 @@ pub fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> Resu
         std::thread::sleep(Duration::from_millis(10));
     };
     drop(child);
+    finished.store(true, Ordering::Release);
     let bytes = reader
         .join()
         .map_err(|_| "Output reader failed")?
         .map_err(|e| e.to_string())?;
-    result?;
+    let errors = errors
+        .join()
+        .map_err(|_| "Error reader failed")?
+        .map_err(|e| e.to_string())?;
+    if let Err(error) = result {
+        let detail = String::from_utf8_lossy(&errors);
+        let detail = detail.trim();
+        return Err(if detail.is_empty() {
+            error
+        } else {
+            format!("{error}: {detail}")
+        });
+    }
     if bytes.len() > OUTPUT_LIMIT as usize {
         return Err(format!("{program}: excessive output"));
     }
     Ok(String::from_utf8_lossy(&bytes).trim().to_owned())
+}
+
+fn read_output(
+    mut stream: impl Read + AsRawFd + Send + 'static,
+    finished: Arc<AtomicBool>,
+) -> std::thread::JoinHandle<std::io::Result<Vec<u8>>> {
+    std::thread::spawn(move || {
+        let fd = stream.as_raw_fd();
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut bytes = Vec::new();
+        let mut buffer = [0; 8192];
+        loop {
+            match stream.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(size) => {
+                    let keep = size.min((OUTPUT_LIMIT as usize + 1).saturating_sub(bytes.len()));
+                    bytes.extend_from_slice(&buffer[..keep]);
+                    if finished.load(Ordering::Acquire) && bytes.len() > OUTPUT_LIMIT as usize {
+                        break;
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if finished.load(Ordering::Acquire) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(bytes)
+    })
 }
 
 #[cfg(test)]
@@ -157,6 +209,13 @@ mod tests {
         let start = Instant::now();
         assert!(run_with_timeout("sleep", &["5"], Duration::from_millis(50)).is_err());
         assert!(start.elapsed() < Duration::from_secs(2));
+    }
+    #[test]
+    fn failures_include_bounded_stderr_without_deadlock() {
+        let error = run("sh", &["-c", "printf 'validation detail' >&2; exit 7"]).unwrap_err();
+        assert!(error.contains("validation detail"));
+        let error = run("sh", &["-c", "head -c 400000 /dev/zero >&2; exit 1"]).unwrap_err();
+        assert!(error.len() < OUTPUT_LIMIT as usize + 200);
     }
     #[test]
     fn command_locale_is_predictable() {

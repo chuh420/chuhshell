@@ -228,106 +228,12 @@ pub fn battery_status() -> BatteryStatus {
     }
 }
 
-fn split_terse(line: &str) -> Vec<String> {
-    let mut fields = Vec::new();
-    let mut current = String::new();
-    let mut escaped = false;
-    for ch in line.chars() {
-        if escaped {
-            current.push(ch);
-            escaped = false;
-        } else if ch == '\\' {
-            escaped = true;
-        } else if ch == ':' {
-            fields.push(std::mem::take(&mut current));
-        } else {
-            current.push(ch);
-        }
-    }
-    fields.push(current);
-    fields
-}
-
-fn signal_icon(signal: u8) -> &'static str {
+pub fn signal_icon(signal: u8) -> &'static str {
     match signal {
         0..=24 => "󰤟",
         25..=49 => "󰤢",
         50..=74 => "󰤥",
         _ => "󰤨",
-    }
-}
-
-pub fn network_info() -> NetworkInfo {
-    let unavailable = |status: &str| NetworkInfo {
-        text: "󰖪".into(),
-        tooltip: format!("Wi-Fi: {status}"),
-        status: status.into(),
-        ssid: None,
-    };
-    let Some(data) = child_process(
-        "nmcli",
-        &["-t", "-f", "DEVICE,TYPE,STATE", "device", "status"],
-    ) else {
-        return unavailable("unavailable");
-    };
-    let candidates: Vec<_> = data
-        .lines()
-        .map(split_terse)
-        .filter(|fields| fields.get(1).is_some_and(|kind| kind == "wifi"))
-        .filter(|fields| {
-            config::get()
-                .wifi
-                .as_ref()
-                .is_none_or(|name| fields.first() == Some(name))
-        })
-        .collect();
-    if candidates.is_empty() {
-        return unavailable("unavailable");
-    }
-    let Some(interface) = candidates
-        .iter()
-        .find(|fields| fields.get(2).is_some_and(|state| state == "connected"))
-        .and_then(|fields| fields.first())
-    else {
-        let disabled = child_process("nmcli", &["radio", "wifi"]).as_deref() == Some("disabled");
-        return unavailable(if disabled { "disabled" } else { "disconnected" });
-    };
-    let Some(data) = child_process(
-        "nmcli",
-        &[
-            "-t",
-            "-f",
-            "ACTIVE,SSID,SIGNAL",
-            "device",
-            "wifi",
-            "list",
-            "ifname",
-            interface,
-            "--rescan",
-            "no",
-        ],
-    ) else {
-        return unavailable("unavailable");
-    };
-    let Some(fields) = data
-        .lines()
-        .map(split_terse)
-        .find(|fields| fields.first().is_some_and(|value| value == "yes"))
-    else {
-        return unavailable("unavailable");
-    };
-    let ssid = fields.get(1).cloned().filter(|value| !value.is_empty());
-    let signal = fields
-        .get(2)
-        .and_then(|value| value.parse::<u8>().ok())
-        .unwrap_or(0);
-    let ip = child_process("nmcli", &["-g", "IP4.ADDRESS", "device", "show", interface])
-        .unwrap_or_default();
-    NetworkInfo {
-        text: signal_icon(signal).into(),
-        tooltip: format!("{}\n{signal}% • {ip}", ssid.as_deref().unwrap_or("Wi-Fi")),
-        status: "connected".into(),
-        ssid,
     }
 }
 
@@ -412,18 +318,6 @@ pub fn spawn_temperature_poller(sender: Sender<Option<i64>>) {
                 sensor = None;
             }
             if sender.send_blocking(value).is_err() || !process::pause(Duration::from_secs(3)) {
-                return;
-            }
-        }
-    });
-}
-
-pub fn spawn_network_poller(sender: Sender<NetworkInfo>) {
-    thread::spawn(move || {
-        loop {
-            if sender.send_blocking(network_info()).is_err()
-                || !process::pause(Duration::from_secs(5))
-            {
                 return;
             }
         }
@@ -521,16 +415,6 @@ fn parse_udev_usb_event(properties: &[(String, String)]) -> Option<(bool, String
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn splits_terse_output_on_unescaped_colons() {
-        assert_eq!(
-            split_terse("yes:My Network:74"),
-            ["yes", "My Network", "74"]
-        );
-        assert_eq!(split_terse(r"yes:Net\:work:50"), ["yes", "Net:work", "50"]);
-        assert_eq!(split_terse("no::0"), ["no", "", "0"]);
-    }
 
     #[test]
     fn maps_signal_strength_to_icon() {

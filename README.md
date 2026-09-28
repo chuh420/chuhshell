@@ -18,7 +18,7 @@ settings contains bluetooth controls for power, scanning, pairing, connections a
 
 info contains weather, a monthly calendar and clipboard history. weather starts in aktobe; search for another city or use the city from the system timezone. temperature units follow the system locale, with celsius and fahrenheit overrides. forecasts come from open-meteo. the timezone city is approximate. the calendar lets you browse months and return to today.
 
-mod and c opens clipboard history. it keeps up to 100 text and png entries in memory for the current session (2 mib per item, 20 mib total). search and press enter to copy an item and close the menu. press delete to remove an item, or use the buttons to pause recording and clear history. clipboard contents are never saved to disk.
+mod and c opens clipboard history. it keeps up to 100 text and png entries in memory for the current session (2 mib per item, 20 mib for retained contents and search data). search and press enter to copy an item and close the menu. press delete to remove an item, or use the buttons to pause recording and clear history. clipboard contents are never saved to disk.
 
 under bar, configure lets you arrange modules in the left, center and right groups. drag a module from the panel to a + slot, or select its name and then a slot. the panel’s size and position are fixed, and the module order applies to every monitor.
 
@@ -34,7 +34,9 @@ to build on arch, you need rust, pkgconf, gtk4, gtk4-layer-shell and glib 2.80 o
 
 run `scripts/install.sh` from the project directory inside your niri session. it builds and installs chuhshell, sets up the user service and notifications, and sets mod and space for the menu and mod and c for clipboard history. on the first install, these replace any existing actions on those shortcuts. reinstalling preserves your niri bindings. the old mod and shift and d binding is removed. mod and d should run `chuhshell launcher`.
 
-run `scripts/uninstall.sh` to restore installation backups. autologin is optional and has its own script, `scripts/setup-autologin.sh`.
+the installer discovers the active niri config and validates all changed includes before writing. use `scripts/install.sh --config /path/to/config.kdl` to select a config explicitly. interrupted installations are recovered on the next install or uninstall; later user edits are preserved.
+
+run `scripts/uninstall.sh` to restore installation backups. autologin is optional: `scripts/setup-autologin.sh` enables passwordless local login on tty1, and `scripts/setup-autologin.sh --undo` restores the previous configuration. the script reads the current account name; it never reads or stores the account password. its local recovery journal also supports interrupted setup.
 
 ## settings
 
@@ -45,3 +47,6 @@ settings live in `~/.config/chuhshell/config.json`, or under your config home if
 for available commands, run `chuhshell --help`. `chuhshell doctor` checks the main integrations. service logs are available through `journalctl --user -u chuhshell.service`.
 
 for development, use `cargo fmt --check`, `cargo clippy --locked --all-targets` and `cargo test --locked --all-targets`. installer checks run with `python scripts/test_install.py`. `scripts/check-headless.sh` checks the interface in an isolated session and needs labwc and dbus-run-session.
+
+
+use `CHUHSHELL_PROFILE=1 CHUHSHELL_TEST_RELEASE=1 scripts/check-headless.sh` to measure a synthetic 100-app launcher, main-loop gaps and rss over repeated launcher/menu cycles. results are printed as json after five warmup cycles; timing depends on the renderer and machine.

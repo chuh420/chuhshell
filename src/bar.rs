@@ -36,7 +36,9 @@ pub fn create(app: &gtk::Application, state: &Rc<AppState>, center: &Rc<Notifica
     }
     *state.services.borrow_mut() = Some(Services::new(state));
     *state.background_manager.borrow_mut() = Some(BackgroundManager::new(app));
-    *state.network_menu.borrow_mut() = Some(crate::network::NetworkMenu::new());
+    *state.network_menu.borrow_mut() = Some(crate::network::NetworkMenu::new(
+        state.services.borrow().as_ref().unwrap().network.clone(),
+    ));
     let Some(display) = gtk::gdk::Display::default() else {
         return;
     };
@@ -214,45 +216,168 @@ fn build(
     battery.set_focusable(false);
     let output = monitor.connector().map(|s| s.to_string());
     let old_workspaces = RefCell::new(Vec::new());
+    let workspace_buttons = RefCell::new(std::collections::HashMap::<u64, gtk::Button>::new());
     let weak_window = window.downgrade();
     window.set_child(Some(&layout));
     window.present();
-    state.services.borrow().as_ref().unwrap().subscribe(move |data| {
-        if weak_window.upgrade().is_none_or(|window| !window.is_visible()) { return false; }
-        if *old_workspaces.borrow() != data.niri.workspaces {
-            *old_workspaces.borrow_mut() = data.niri.workspaces.clone();
-            while let Some(child) = left.first_child() { left.remove(&child); }
-            let mut workspaces = data.niri.workspaces.clone();
-            workspaces.sort_by_key(|w| w.idx);
-            for workspace in workspaces.iter().filter(|w| w.output == output) {
-                let text = workspace.name.clone().unwrap_or_else(|| if workspace.is_active { "●" } else { "○" }.into());
-                let button = gtk::Button::with_label(&text);
-                button.add_css_class("workspace");
-                button.set_valign(gtk::Align::Center);
-                for (enabled, class) in [(workspace.active_window_id.is_none(), "empty"), (workspace.is_active, "active"), (workspace.is_focused, "focused"), (workspace.is_urgent, "urgent")] { if enabled { button.add_css_class(class); } }
-                button.set_tooltip_text(Some(&format!("Workspace {}", workspace.idx)));
-                let id = workspace.id;
-                button.connect_clicked(move |_| { std::thread::spawn(move || { if !niri::command(&format!("{{\"Action\":{{\"FocusWorkspace\":{{\"reference\":{{\"Id\":{id}}}}}}}}}")) { eprintln!("chuhshell: could not focus workspace"); } }); });
-                left.append(&button);
+    state
+        .services
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .subscribe(move |data| {
+            if weak_window
+                .upgrade()
+                .is_none_or(|window| !window.is_visible())
+            {
+                return false;
+            }
+            if *old_workspaces.borrow() != data.niri.workspaces {
+                *old_workspaces.borrow_mut() = data.niri.workspaces.clone();
+                update_workspaces(&left, &workspace_buttons, &data.niri.workspaces, &output);
+            }
+            if let Some(text) = &data.audio {
+                let muted = text.contains("MUTED");
+                let percent = text
+                    .split_whitespace()
+                    .nth(1)
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .unwrap_or(0.0)
+                    * 100.0;
+                audio.set_label(&format!(
+                    "{} {:.0}%",
+                    if muted { "󰝟" } else { "󰕾" },
+                    percent
+                ));
+                audio.set_tooltip_text(Some(if muted { "Audio muted" } else { "Audio volume" }));
+            } else {
+                audio.set_label("󰝟 --");
+                audio.set_tooltip_text(Some("Audio unavailable"));
+            }
+            brightness.set_label(
+                &data
+                    .brightness
+                    .map_or_else(|| "--".into(), |(p, icon)| format!("{icon} {p}%")),
+            );
+            brightness.set_tooltip_text(Some(if data.brightness.is_some() {
+                "Screen brightness — scroll to adjust"
+            } else {
+                "Screen brightness unavailable"
+            }));
+            temperature.set_label(
+                &data
+                    .temperature
+                    .map_or_else(|| "󰔏 --°C".into(), |t| format!("󰔏 {}°C", t / 1000)),
+            );
+            let name = data.niri.layouts.names.get(data.niri.layouts.current_idx);
+            language.set_label(&name.map_or_else(
+                || "󰌌 --".into(),
+                |s| format!("󰌌 {}", notifications::layout_label(s)),
+            ));
+            if let Some(info) = &data.network {
+                network.set_label(&info.text);
+                network.set_tooltip_text(Some(&info.tooltip));
+            }
+            battery.set_label(&data.battery.text);
+            battery.set_tooltip_text(Some(&data.battery.tooltip));
+            battery.set_visible(!data.battery.text.is_empty());
+            for class in ["warning", "critical"] {
+                if data.battery.level == class {
+                    battery.add_css_class(class);
+                } else {
+                    battery.remove_css_class(class);
+                }
+            }
+            true
+        });
+    window.upcast()
+}
+
+fn update_workspaces(
+    left: &gtk::Box,
+    workspace_buttons: &RefCell<std::collections::HashMap<u64, gtk::Button>>,
+    workspaces: &[niri::Workspace],
+    output: &Option<String>,
+) {
+    let mut workspaces: Vec<_> = workspaces.iter().filter(|w| &w.output == output).collect();
+    workspaces.sort_by_key(|w| w.idx);
+    let mut buttons = workspace_buttons.borrow_mut();
+    buttons.retain(|id, button| {
+        if workspaces.iter().any(|w| w.id == *id) {
+            true
+        } else {
+            left.remove(button);
+            false
+        }
+    });
+    let mut previous: Option<gtk::Button> = None;
+    for workspace in workspaces {
+        let button = buttons.entry(workspace.id).or_insert_with(|| {
+            let button = gtk::Button::new();
+            button.add_css_class("workspace");
+            button.set_valign(gtk::Align::Center);
+            let id = workspace.id;
+            button.connect_clicked(move |_| {
+                std::thread::spawn(move || {
+                    if !niri::command(
+                        &serde_json::json!({"Action":{"FocusWorkspace":{"reference":{"Id":id}}}})
+                            .to_string(),
+                    ) {
+                        eprintln!("chuhshell: could not focus workspace");
+                    }
+                });
+            });
+            left.append(&button);
+            button
+        });
+        button.set_label(workspace.name.as_deref().unwrap_or(if workspace.is_active {
+            "●"
+        } else {
+            "○"
+        }));
+        for (enabled, class) in [
+            (workspace.active_window_id.is_none(), "empty"),
+            (workspace.is_active, "active"),
+            (workspace.is_focused, "focused"),
+            (workspace.is_urgent, "urgent"),
+        ] {
+            if enabled {
+                button.add_css_class(class);
+            } else {
+                button.remove_css_class(class);
             }
         }
-        if let Some(text) = &data.audio {
-            let muted = text.contains("MUTED");
-            let percent = text.split_whitespace().nth(1).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0) * 100.0;
-            audio.set_label(&format!("{} {:.0}%", if muted { "󰝟" } else { "󰕾" }, percent));
-            audio.set_tooltip_text(Some(if muted { "Audio muted" } else { "Audio volume" }));
-        } else { audio.set_label("󰝟 --"); audio.set_tooltip_text(Some("Audio unavailable")); }
-        brightness.set_label(&data.brightness.map_or_else(|| "--".into(), |(p, icon)| format!("{icon} {p}%")));
-        brightness.set_tooltip_text(Some(if data.brightness.is_some() { "Screen brightness — scroll to adjust" } else { "Screen brightness unavailable" }));
-        temperature.set_label(&data.temperature.map_or_else(|| "󰔏 --°C".into(), |t| format!("󰔏 {}°C", t / 1000)));
-        let name = data.niri.layouts.names.get(data.niri.layouts.current_idx);
-        language.set_label(&name.map_or_else(|| "󰌌 --".into(), |s| format!("󰌌 {}", notifications::layout_label(s))));
-        if let Some(info) = &data.network { network.set_label(&info.text); network.set_tooltip_text(Some(&info.tooltip)); }
-        battery.set_label(&data.battery.text); battery.set_tooltip_text(Some(&data.battery.tooltip)); battery.set_visible(!data.battery.text.is_empty());
-        for class in ["warning", "critical"] { if data.battery.level == class { battery.add_css_class(class); } else { battery.remove_css_class(class); } }
-        true
-    });
-    window.upcast()
+        button.set_tooltip_text(Some(&format!("Workspace {}", workspace.idx)));
+        left.reorder_child_after(button, previous.as_ref());
+        previous = Some(button.clone());
+    }
+}
+
+#[cfg(test)]
+pub fn regression_checks() {
+    let container = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    let buttons = RefCell::new(std::collections::HashMap::new());
+    let output = Some("test".to_owned());
+    let mut workspaces = vec![niri::Workspace {
+        id: 1,
+        idx: 1,
+        name: None,
+        output: output.clone(),
+        is_urgent: false,
+        is_active: false,
+        is_focused: false,
+        active_window_id: None,
+    }];
+    update_workspaces(&container, &buttons, &workspaces, &output);
+    let button = buttons.borrow()[&1].clone();
+    workspaces[0].is_active = true;
+    workspaces[0].active_window_id = Some(42);
+    update_workspaces(&container, &buttons, &workspaces, &output);
+    assert_eq!(button, buttons.borrow()[&1]);
+    assert!(button.has_css_class("active"));
+    assert!(!button.has_css_class("empty"));
+    update_workspaces(&container, &buttons, &[], &output);
+    assert!(container.first_child().is_none());
 }
 
 fn update_clock(clock: &gtk::Button, date: bool) {

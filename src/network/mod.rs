@@ -1,10 +1,10 @@
 mod backend;
+pub mod service;
 
 use backend::{Action, Network, Security, Snapshot};
 use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::time::Duration;
 
 #[derive(Clone)]
 struct View {
@@ -21,16 +21,13 @@ struct View {
     spinner: gtk::Spinner,
 }
 
-#[derive(Default)]
 pub struct NetworkMenu {
+    service: Rc<service::Service>,
     view: RefCell<Option<View>>,
     snapshot: RefCell<Option<Snapshot>>,
-    preferred: RefCell<Option<String>>,
+    service_error: RefCell<Option<String>>,
     busy: Cell<bool>,
-    loading: Cell<bool>,
     updating: Cell<bool>,
-    generation: Cell<u64>,
-    revision: Cell<u64>,
 }
 
 fn label(text: &str, class: &str) -> gtk::Label {
@@ -50,11 +47,39 @@ fn button(text: &str) -> gtk::Button {
 }
 
 impl NetworkMenu {
-    pub fn new() -> Rc<Self> {
-        Rc::new(Self {
-            preferred: RefCell::new(crate::config::get().wifi.clone()),
-            ..Self::default()
-        })
+    pub fn new(service: Rc<service::Service>) -> Rc<Self> {
+        let menu = Rc::new(Self {
+            service: service.clone(),
+            view: RefCell::new(None),
+            snapshot: RefCell::new(None),
+            service_error: RefCell::new(None),
+            busy: Cell::new(false),
+            updating: Cell::new(false),
+        });
+        let weak = Rc::downgrade(&menu);
+        service.subscribe(move |result| {
+            let Some(menu) = weak.upgrade() else {
+                return false;
+            };
+            match result {
+                Ok(snapshot) => {
+                    let initial = menu.snapshot.borrow().is_none();
+                    *menu.snapshot.borrow_mut() = Some(snapshot.clone());
+                    menu.update_header();
+                    menu.render_list();
+                    let recovered = menu.service_error.borrow_mut().take().is_some();
+                    if initial || recovered {
+                        menu.message("Select a network to manage it", false);
+                    }
+                }
+                Err(error) => {
+                    *menu.service_error.borrow_mut() = Some(error.clone());
+                    menu.message(error, true);
+                }
+            }
+            true
+        });
+        menu
     }
 
     pub fn toggle(self: &Rc<Self>, anchor: &gtk::Button) {
@@ -63,8 +88,6 @@ impl NetworkMenu {
             previous.popdown();
             return;
         }
-        let generation = self.generation.get().wrapping_add(1);
-        self.generation.set(generation);
         let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
         root.add_css_class("network-content");
         let controls = gtk::Box::new(gtk::Orientation::Vertical, 12);
@@ -133,7 +156,6 @@ impl NetworkMenu {
         let weak = Rc::downgrade(self);
         popover.connect_closed(move |_| {
             if let Some(menu) = weak.upgrade() {
-                menu.generation.set(menu.generation.get().wrapping_add(1));
                 menu.view.borrow_mut().take();
             }
         });
@@ -174,8 +196,7 @@ impl NetworkMenu {
                     .as_ref()
                     .and_then(|s| s.adapters.get(dropdown.selected() as usize))
                     .map(|a| a.name.clone());
-                *menu.preferred.borrow_mut() = name;
-                menu.revision.set(menu.revision.get().wrapping_add(1));
+                menu.service.select(name);
                 menu.refresh();
             }
         });
@@ -191,23 +212,14 @@ impl NetworkMenu {
         self.set_busy(self.busy.get());
         if self.busy.get() {
             self.message("Network operation in progress…", false);
+        } else if let Some(error) = self.service_error.borrow().as_ref() {
+            self.message(error, true);
         } else if self.snapshot.borrow().is_some() {
             self.message("Select a network to manage it", false);
         }
         popover.popup();
         view.search.grab_focus();
         self.refresh();
-        let weak = Rc::downgrade(self);
-        glib::timeout_add_local(Duration::from_secs(4), move || {
-            let Some(menu) = weak.upgrade() else {
-                return glib::ControlFlow::Break;
-            };
-            if menu.view.borrow().is_none() || menu.generation.get() != generation {
-                return glib::ControlFlow::Break;
-            }
-            menu.refresh();
-            glib::ControlFlow::Continue
-        });
     }
 
     fn device(&self) -> Option<String> {
@@ -238,54 +250,14 @@ impl NetworkMenu {
         }
     }
 
-    fn refresh(self: &Rc<Self>) {
-        if self.busy.get() || self.loading.replace(true) {
-            return;
-        }
-        let preferred = self.preferred.borrow().clone();
-        let revision = self.revision.get();
-        let generation = self.generation.get();
-        let (tx, rx) = async_channel::bounded(1);
-        std::thread::spawn(move || {
-            let _ = tx.send_blocking(backend::snapshot(preferred.as_deref()));
-        });
-        let weak = Rc::downgrade(self);
-        glib::MainContext::default().spawn_local(async move {
-            let result = rx.recv().await;
-            let Some(menu) = weak.upgrade() else {
-                return;
-            };
-            menu.loading.set(false);
-            if revision != menu.revision.get() || generation != menu.generation.get() {
-                if menu.view.borrow().is_some() {
-                    menu.refresh();
-                }
-                return;
-            }
-            match result {
-                Ok(Ok(snapshot)) => {
-                    let initial = menu.snapshot.borrow().is_none();
-                    let changed = menu.snapshot.borrow().as_ref() != Some(&snapshot);
-                    *menu.snapshot.borrow_mut() = Some(snapshot);
-                    if changed {
-                        menu.update_header();
-                        menu.render_list();
-                    }
-                    if initial {
-                        menu.message("Select a network to manage it", false);
-                    }
-                }
-                Ok(Err(error)) => menu.message(&error, true),
-                Err(_) => menu.message("Network service unavailable", true),
-            }
-        });
+    fn refresh(&self) {
+        self.service.refresh();
     }
 
     fn run(self: &Rc<Self>, action: Action, message: &str) {
         if self.busy.get() {
             return;
         }
-        self.revision.set(self.revision.get().wrapping_add(1));
         self.set_busy(true);
         self.message(message, false);
         let (tx, rx) = async_channel::bounded(1);
@@ -667,4 +639,9 @@ impl NetworkMenu {
         view.detail.append(&connect);
         name.grab_focus();
     }
+}
+
+#[cfg(test)]
+pub fn regression_checks() {
+    backend::regression_checks();
 }

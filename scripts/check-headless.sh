@@ -21,8 +21,7 @@ for helper in pactl udevadm; do
     chmod +x "$test_dir/bin/$helper"
 done
 printf '#!/bin/sh\nprintf "Volume: 0.4\\n"\n' > "$test_dir/bin/wpctl"
-printf '#!/bin/sh\nexit 1\n' > "$test_dir/bin/nmcli"
-chmod +x "$test_dir/bin/wpctl" "$test_dir/bin/nmcli"
+chmod +x "$test_dir/bin/wpctl"
 export PATH="$test_dir/bin:$PATH"
 export GSETTINGS_SCHEMA_DIR=/usr/share/glib-2.0/schemas GTK_A11Y=none GDK_DEBUG=no-portals
 export WLR_BACKENDS=headless WLR_HEADLESS_OUTPUTS=2 WLR_RENDERER=pixman GSK_RENDERER=cairo
@@ -36,4 +35,6 @@ for attempt in $(seq 1 100); do
 done
 export WAYLAND_DISPLAY=wayland-0
 cd "$repo_dir"
-dbus-run-session -- cargo test --locked -- ui_regressions --ignored --test-threads=1 --nocapture
+test_args=()
+if [[ "${CHUHSHELL_TEST_RELEASE:-0}" == 1 ]]; then test_args+=(--release); fi
+dbus-run-session -- cargo test --locked "${test_args[@]}" -- ui_regressions --ignored --test-threads=1 --nocapture

@@ -83,18 +83,111 @@ pub fn image(icon: &str, size: i32) -> gtk::Image {
         None
     };
     if let Some(path) = path {
-        if path
-            .metadata()
-            .is_ok_and(|meta| meta.is_file() && meta.len() <= 2 * 1024 * 1024)
-            && let Ok(pixbuf) = gtk::gdk_pixbuf::Pixbuf::from_file_at_scale(path, size, size, true)
+        let image = gtk::Image::from_icon_name("application-x-executable-symbolic");
+        image.set_pixel_size(size);
+        let (reply, result) = async_channel::bounded(1);
+        if icon_worker()
+            .try_send(IconRequest { path, size, reply })
+            .is_ok()
         {
-            return gtk::Image::from_pixbuf(Some(&pixbuf));
+            let weak = image.downgrade();
+            glib::MainContext::default().spawn_local(async move {
+                if let Ok(Some(pixels)) = result.recv().await
+                    && let Some(image) = weak.upgrade()
+                {
+                    let bytes = glib::Bytes::from(pixels.bytes.as_slice());
+                    let pixbuf = gtk::gdk_pixbuf::Pixbuf::from_bytes(
+                        &bytes,
+                        gtk::gdk_pixbuf::Colorspace::Rgb,
+                        pixels.alpha,
+                        8,
+                        pixels.width,
+                        pixels.height,
+                        pixels.stride,
+                    );
+                    image.set_from_pixbuf(Some(&pixbuf));
+                }
+            });
         }
-        return gtk::Image::from_icon_name("application-x-executable-symbolic");
+        return image;
     }
     gtk::Image::from_icon_name(if icon.is_empty() {
         "application-x-executable-symbolic"
     } else {
         icon
     })
+}
+
+struct IconPixels {
+    bytes: Vec<u8>,
+    width: i32,
+    height: i32,
+    stride: i32,
+    alpha: bool,
+}
+struct IconRequest {
+    path: std::path::PathBuf,
+    size: i32,
+    reply: async_channel::Sender<Option<std::sync::Arc<IconPixels>>>,
+}
+fn icon_worker() -> &'static async_channel::Sender<IconRequest> {
+    static WORKER: std::sync::OnceLock<async_channel::Sender<IconRequest>> =
+        std::sync::OnceLock::new();
+    WORKER.get_or_init(|| {
+        let (tx, rx) = async_channel::bounded::<IconRequest>(128);
+        std::thread::spawn(move || {
+            let mut cache = std::collections::VecDeque::new();
+            while let Ok(request) = rx.recv_blocking() {
+                let key = (request.path.clone(), request.size);
+                let cached = cache
+                    .iter()
+                    .find(|(old, time, _): &&(_, std::time::Instant, _)| {
+                        old == &key && time.elapsed().as_secs() < 60
+                    })
+                    .map(|(_, _, pixels)| std::sync::Arc::clone(pixels));
+                let pixels = cached.or_else(|| {
+                    let metadata = request.path.metadata().ok()?;
+                    if !metadata.is_file() || metadata.len() > 2 * 1024 * 1024 {
+                        return None;
+                    }
+                    let pixbuf = gtk::gdk_pixbuf::Pixbuf::from_file_at_scale(
+                        &request.path,
+                        request.size,
+                        request.size,
+                        true,
+                    )
+                    .ok()?;
+                    let pixels = std::sync::Arc::new(IconPixels {
+                        bytes: pixbuf.read_pixel_bytes().as_ref().to_vec(),
+                        width: pixbuf.width(),
+                        height: pixbuf.height(),
+                        stride: pixbuf.rowstride(),
+                        alpha: pixbuf.has_alpha(),
+                    });
+                    cache.retain(|(old, _, _)| old != &key);
+                    if cache.len() >= 128 {
+                        cache.pop_front();
+                    }
+                    cache.push_back((key, std::time::Instant::now(), pixels.clone()));
+                    Some(pixels)
+                });
+                let _ = request.reply.try_send(pixels);
+            }
+        });
+        tx
+    })
+}
+
+pub fn active_button(buttons: &[glib::WeakRef<gtk::Button>]) -> Option<gtk::Button> {
+    let active = active_monitor();
+    let visible: Vec<_> = buttons
+        .iter()
+        .filter_map(|b| b.upgrade())
+        .filter(|b| b.is_visible() && b.is_mapped())
+        .collect();
+    visible
+        .iter()
+        .find(|button| widget_monitor(*button) == active)
+        .cloned()
+        .or_else(|| visible.first().cloned())
 }

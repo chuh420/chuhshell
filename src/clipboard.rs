@@ -12,7 +12,29 @@ const TOTAL_LIMIT: usize = 20 * 1024 * 1024;
 #[derive(Clone, PartialEq, Eq)]
 struct Entry {
     mime: &'static str,
-    data: Vec<u8>,
+    data: Arc<[u8]>,
+    search: Arc<str>,
+    preview: Arc<str>,
+}
+
+impl Entry {
+    fn new(mime: &'static str, data: Vec<u8>) -> Self {
+        let (search, preview) = if mime == "text" {
+            let text = String::from_utf8_lossy(&data);
+            (
+                text.to_lowercase(),
+                text.chars().take(180).collect::<String>(),
+            )
+        } else {
+            (String::new(), format!("Image · {} KB", data.len() / 1024))
+        };
+        Self {
+            mime,
+            data: data.into(),
+            search: search.into(),
+            preview: preview.into(),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -51,7 +73,7 @@ fn insert(entries: &mut Vec<Entry>, entry: Entry) {
     entries.truncate(100);
     let mut total = 0;
     entries.retain(|entry| {
-        total += entry.data.len();
+        total += entry.data.len() + entry.search.len() + entry.preview.len();
         total <= TOTAL_LIMIT
     });
 }
@@ -97,7 +119,7 @@ impl History {
                                 || (!data.contains(&0) && std::str::from_utf8(&data).is_ok())
                             {
                                 let record = !paused.load(Ordering::Relaxed);
-                                let _ = tx.try_send(Ok((Entry { mime, data }, record)));
+                                let _ = tx.try_send(Ok((Entry::new(mime, data), record)));
                             }
                         }
                     })();
@@ -199,11 +221,7 @@ impl History {
                     .borrow()
                     .iter()
                     .filter(|entry| {
-                        query.is_empty()
-                            || (entry.mime == "text"
-                                && String::from_utf8_lossy(&entry.data)
-                                    .to_lowercase()
-                                    .contains(&query))
+                        query.is_empty() || (entry.mime == "text" && entry.search.contains(&query))
                     })
                     .cloned()
                     .collect();
@@ -228,15 +246,7 @@ impl History {
                     if entry.mime == "image/png" {
                         row.append(&crate::info::label("▧", "clipboard-image"));
                     }
-                    let text = if entry.mime == "text" {
-                        String::from_utf8_lossy(&entry.data)
-                            .chars()
-                            .take(180)
-                            .collect()
-                    } else {
-                        format!("Image · {} KB", entry.data.len() / 1024)
-                    };
-                    let label = crate::info::label(&text, "clipboard-preview");
+                    let label = crate::info::label(&entry.preview, "clipboard-preview");
                     label.set_lines(3);
                     label.set_ellipsize(gtk::pango::EllipsizeMode::End);
                     label.set_hexpand(true);
@@ -285,7 +295,7 @@ impl History {
                         list.clipboard()
                             .set_content(Some(&gtk::gdk::ContentProvider::for_bytes(
                                 entry.mime,
-                                &glib::Bytes::from(&entry.data),
+                                &glib::Bytes::from(entry.data.as_ref()),
                             )))
                     };
                     if let Some(status) = status.upgrade() {
@@ -413,10 +423,7 @@ pub fn regression_checks(app: &gtk::Application) {
     for text in ["first item", "  второй\nitem\n"] {
         insert(
             &mut history.entries.borrow_mut(),
-            Entry {
-                mime: "text",
-                data: text.as_bytes().to_vec(),
-            },
+            Entry::new("text", text.as_bytes().to_vec()),
         );
     }
     let view = history.view(|| {});
@@ -490,10 +497,7 @@ pub fn regression_checks(app: &gtk::Application) {
     window.close();
     let state = Rc::new(crate::app::AppState::default());
     history.received(
-        Entry {
-            mime: "text",
-            data: b"private contents".to_vec(),
-        },
+        Entry::new("text", b"private contents".to_vec()),
         true,
         &state,
     );
@@ -510,14 +514,7 @@ pub fn regression_checks(app: &gtk::Application) {
     assert_eq!(title.text(), "Copied to clipboard");
     let count = history.entries.borrow().len();
     history.paused.store(true, Ordering::Relaxed);
-    history.received(
-        Entry {
-            mime: "image/png",
-            data: vec![1, 2, 3],
-        },
-        false,
-        &state,
-    );
+    history.received(Entry::new("image/png", vec![1, 2, 3]), false, &state);
     assert_eq!(history.entries.borrow().len(), count);
     assert_eq!(state.osd.borrow().as_ref(), Some(&osd));
     assert_eq!(title.text(), "Image copied");
@@ -532,32 +529,14 @@ mod tests {
     fn history_deduplicates_and_bounds_memory() {
         let mut entries = Vec::new();
         for i in 0..150 {
-            insert(
-                &mut entries,
-                Entry {
-                    mime: "text",
-                    data: vec![i],
-                },
-            );
+            insert(&mut entries, Entry::new("text", vec![i]));
         }
         assert_eq!(entries.len(), 100);
-        insert(
-            &mut entries,
-            Entry {
-                mime: "text",
-                data: vec![100],
-            },
-        );
+        insert(&mut entries, Entry::new("text", vec![100]));
         assert_eq!(entries.len(), 100);
-        assert_eq!(entries[0].data, vec![100]);
+        assert_eq!(entries[0].data.as_ref(), &[100]);
         for i in 0..15 {
-            insert(
-                &mut entries,
-                Entry {
-                    mime: "image/png",
-                    data: vec![i; ITEM_LIMIT],
-                },
-            );
+            insert(&mut entries, Entry::new("image/png", vec![i; ITEM_LIMIT]));
         }
         assert!(entries.iter().map(|entry| entry.data.len()).sum::<usize>() <= TOTAL_LIMIT);
     }

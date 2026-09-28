@@ -12,6 +12,6 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked --all-targets
-      - run: bash -n scripts/*.sh
+      - run: for script in scripts/*.sh; do bash -n "$script" || exit; done
       - run: python scripts/test_install.py
       - run: scripts/check-headless.sh

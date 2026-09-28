@@ -1,5 +1,5 @@
 mod local;
-mod niri;
+pub(crate) mod niri;
 
 use gtk::prelude::*;
 pub use local::{hint, is_default, remap};

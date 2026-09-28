@@ -289,12 +289,15 @@ pub fn submit(
     if state.commands.borrow().is_none() {
         let (tx, rx) = async_channel::bounded::<CommandRequest>(32);
         std::thread::spawn(move || {
-            while let Ok(request) = rx.recv_blocking() {
+            let mut pending = None;
+            while let Some(batch) = command_batch(&rx, &mut pending) {
                 if crate::process::stopped() {
                     break;
                 }
-                let result = execute(&request.command);
-                let _ = request.reply.send_blocking(result);
+                let result = execute(&batch[0].command, batch.len() as u32);
+                for request in batch {
+                    let _ = request.reply.try_send(result.clone());
+                }
             }
         });
         *state.commands.borrow_mut() = Some(tx);
@@ -315,6 +318,29 @@ pub fn submit(
         let _ = tx.try_send(Err("Too many pending system commands".into()));
     }
     rx
+}
+
+fn command_batch(
+    rx: &async_channel::Receiver<CommandRequest>,
+    pending: &mut Option<CommandRequest>,
+) -> Option<Vec<CommandRequest>> {
+    let first = pending.take().or_else(|| rx.recv_blocking().ok())?;
+    let merge = adjustment(&first.command).is_some();
+    let mut batch = vec![first];
+    if merge {
+        while batch.len() < 32 {
+            let Ok(next) = rx.try_recv() else {
+                break;
+            };
+            if next.command == batch[0].command {
+                batch.push(next);
+            } else {
+                *pending = Some(next);
+                break;
+            }
+        }
+    }
+    Some(batch)
 }
 
 pub fn handle_command(state: &Rc<AppState>, command: &str) -> bool {
@@ -343,7 +369,21 @@ pub fn handle_command(state: &Rc<AppState>, command: &str) -> bool {
     true
 }
 
-fn execute(command: &str) -> Result<Notice, String> {
+fn adjustment(command: &str) -> Option<(u32, char)> {
+    match command {
+        "volume-up" | "brightness-up" | "brightness-scroll-up" => Some((5, '+')),
+        "volume-down" | "brightness-down" | "brightness-scroll-down" => Some((5, '-')),
+        "brightness-key-up" => Some((10, '+')),
+        "brightness-key-down" => Some((10, '-')),
+        _ => None,
+    }
+}
+fn adjustment_value(command: &str, count: u32) -> Option<String> {
+    adjustment(command)
+        .map(|(step, direction)| format!("{}%{direction}", step.saturating_mul(count)))
+}
+
+fn execute(command: &str, count: u32) -> Result<Notice, String> {
     use crate::process::run;
     match command {
         "volume-up" | "volume-down" | "volume-mute" => {
@@ -357,7 +397,7 @@ fn execute(command: &str) -> Result<Notice, String> {
                         "-l",
                         "1.0",
                         "@DEFAULT_AUDIO_SINK@",
-                        if command == "volume-up" { "5%+" } else { "5%-" },
+                        &adjustment_value(command, count).ok_or("Invalid volume command")?,
                     ],
                 )?;
             }
@@ -390,13 +430,9 @@ fn execute(command: &str) -> Result<Notice, String> {
         }
         _ if is_command(command) => {
             let device = modules::backlight_device().ok_or("Backlight unavailable")?;
-            let adjustment = match command {
-                "brightness-key-up" => "10%+",
-                "brightness-key-down" => "10%-",
-                "brightness-up" | "brightness-scroll-up" => "5%+",
-                _ => "5%-",
-            };
-            run("brightnessctl", &["-d", &device, "set", adjustment])?;
+            let adjustment =
+                adjustment_value(command, count).ok_or("Invalid brightness command")?;
+            run("brightnessctl", &["-d", &device, "set", &adjustment])?;
             let (percent, _) =
                 modules::brightness_level(&device).ok_or("Could not read brightness")?;
             Ok(
@@ -419,6 +455,51 @@ fn parse_wpctl_volume(value: &str) -> Option<(u8, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_adjustments_merge_without_crossing_toggles_or_direction_changes() {
+        let (tx, rx) = async_channel::bounded(32);
+        for command in [
+            "volume-up",
+            "volume-up",
+            "volume-mute",
+            "volume-mute",
+            "volume-down",
+            "brightness-key-up",
+            "brightness-key-up",
+        ] {
+            let (reply, _) = async_channel::bounded(1);
+            tx.try_send(CommandRequest {
+                command: command.into(),
+                reply,
+            })
+            .unwrap();
+        }
+        drop(tx);
+        let mut pending = None;
+        let mut batches = Vec::new();
+        while let Some(batch) = command_batch(&rx, &mut pending) {
+            batches.push((batch[0].command.clone(), batch.len()));
+        }
+        assert_eq!(
+            batches,
+            vec![
+                ("volume-up".into(), 2),
+                ("volume-mute".into(), 1),
+                ("volume-mute".into(), 1),
+                ("volume-down".into(), 1),
+                ("brightness-key-up".into(), 2)
+            ]
+        );
+        assert_eq!(
+            adjustment_value("brightness-key-up", 2).as_deref(),
+            Some("20%+")
+        );
+        assert_eq!(
+            adjustment_value("volume-down", 32).as_deref(),
+            Some("160%-")
+        );
+    }
 
     #[test]
     fn progress_is_clamped() {

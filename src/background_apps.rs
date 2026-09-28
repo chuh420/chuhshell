@@ -19,6 +19,7 @@ struct ProcessIdentity {
     pid: u32,
     start_time: u64,
 }
+#[derive(Clone)]
 struct ProcessInfo {
     identity: ProcessIdentity,
     parent: u32,
@@ -56,15 +57,23 @@ impl BackgroundManager {
         });
         let (tx, rx) = async_channel::bounded(1);
         std::thread::spawn(move || {
+            let mut previous = None;
+            let mut delay = 4;
             while !process::stopped() {
                 let result = niri::window_processes()
                     .map(|windows| scan(&apps::load_apps(), &windows))
                     .ok_or("Niri is unavailable");
+                if previous.as_ref() == Some(&result) {
+                    delay = (delay * 2).min(30);
+                } else {
+                    delay = 4;
+                }
+                previous = Some(result.clone());
                 if tx.send_blocking(result).is_err() {
                     return;
                 }
                 if matches!(
-                    refresh.recv_timeout(Duration::from_secs(4)),
+                    refresh.recv_timeout(Duration::from_secs(delay)),
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
                 ) {
                     return;
@@ -98,17 +107,16 @@ impl BackgroundManager {
         manager
     }
 
+    pub fn request_refresh(&self) {
+        let _ = self.wake.try_send(());
+    }
+
     pub fn attach_button(&self, button: &gtk::Button) {
         self.buttons.borrow_mut().push(button.downgrade());
         self.refresh();
     }
     pub fn toggle(self: &Rc<Self>) {
-        let button = self
-            .buttons
-            .borrow()
-            .iter()
-            .filter_map(|b| b.upgrade())
-            .find(|b| b.is_visible());
+        let button = crate::ui::active_button(&self.buttons.borrow());
         if let Some(button) = button {
             self.toggle_at(&button);
         }
@@ -278,6 +286,11 @@ fn parse_stat(stat: &str) -> Option<(u32, u64)> {
     Some((fields.get(1)?.parse().ok()?, fields.get(19)?.parse().ok()?))
 }
 fn processes() -> HashMap<u32, ProcessInfo> {
+    static CACHE: OnceLock<Mutex<HashMap<ProcessIdentity, ProcessInfo>>> = OnceLock::new();
+    let mut cache = CACHE
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let mut result = HashMap::new();
     let Ok(uid) = fs::metadata("/proc/self").map(|m| m.uid()) else {
         return result;
@@ -295,6 +308,14 @@ fn processes() -> HashMap<u32, ProcessInfo> {
         let Ok(executable) = fs::read_link(format!("/proc/{pid}/exe")) else {
             continue;
         };
+        let identity = ProcessIdentity { pid, start_time };
+        if let Some(cached) = cache
+            .get(&identity)
+            .filter(|p| p.executable == executable && p.parent == parent)
+        {
+            result.insert(pid, cached.clone());
+            continue;
+        }
         let flatpak_id = fs::read_to_string(format!("/proc/{pid}/root/.flatpak-info"))
             .ok()
             .and_then(|text| {
@@ -336,9 +357,34 @@ fn processes() -> HashMap<u32, ProcessInfo> {
             },
         );
     }
+    *cache = result
+        .values()
+        .map(|p| (p.identity.clone(), p.clone()))
+        .collect();
     result
 }
 fn command_path(exec: &str) -> Option<PathBuf> {
+    type Entry = (std::time::Instant, Option<PathBuf>);
+    static CACHE: OnceLock<Mutex<HashMap<String, Entry>>> = OnceLock::new();
+    let mut cache = CACHE
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some((time, path)) = cache
+        .get(exec)
+        .filter(|(time, _)| time.elapsed().as_secs() < 60)
+    {
+        let _ = time;
+        return path.clone();
+    }
+    let path = resolve_command_path(exec);
+    if cache.len() >= 2048 {
+        cache.clear();
+    }
+    cache.insert(exec.to_owned(), (std::time::Instant::now(), path.clone()));
+    path
+}
+fn resolve_command_path(exec: &str) -> Option<PathBuf> {
     let args = glib::shell_parse_argv(exec).ok()?;
     let args: Vec<_> = args.iter().filter_map(|arg| arg.to_str()).collect();
     let mut index = 0;
