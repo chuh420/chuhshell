@@ -2,6 +2,7 @@ use crate::app::{AppState, LauncherMode};
 use gtk::gdk;
 use gtk::prelude::*;
 use gtk4_layer_shell::{KeyboardMode, Layer, LayerShell};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 #[derive(Clone, Copy)]
@@ -17,37 +18,53 @@ enum Page {
     Calendar,
     Clipboard,
     Keybindings,
+    Appearance,
+    Wallpaper,
+    SelectWallpaper,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Action {
     Page(Page),
     Launch(LauncherMode),
     Toggle(&'static str),
     Configure(bool),
+    NextWallpaper,
+    OpenWallpapersFolder,
+    SelectWallpaper(String),
+    Notice,
     Wip,
 }
 
-fn entries(page: Page) -> Vec<(&'static str, &'static str, Action)> {
+fn entries(page: Page) -> Vec<(String, String, Action)> {
     match page {
         Page::Home => vec![
             ("App launcher", "", Action::Page(Page::Launcher)),
             ("Bar", "", Action::Page(Page::Bar)),
             ("Settings", "", Action::Page(Page::Settings)),
             ("Info", "", Action::Page(Page::Info)),
-            ("Appearance", "WIP", Action::Wip),
+            ("Appearance", "", Action::Page(Page::Appearance)),
             ("Keybindings", "", Action::Page(Page::Keybindings)),
             ("System", "WIP", Action::Wip),
         ],
         Page::Settings => vec![("Bluetooth", "", Action::Page(Page::Bluetooth))],
+        Page::Appearance => vec![("Wallpaper", "", Action::Page(Page::Wallpaper))],
+        Page::Wallpaper => vec![
+            ("Next wallpaper", "", Action::NextWallpaper),
+            ("Select wallpaper", "", Action::Page(Page::SelectWallpaper)),
+            ("Open wallpapers folder", "", Action::OpenWallpapersFolder),
+        ],
         Page::Info => vec![
             ("Weather", "", Action::Page(Page::Weather)),
             ("Calendar", "", Action::Page(Page::Calendar)),
             ("Clipboard", "", Action::Page(Page::Clipboard)),
         ],
-        Page::Bluetooth | Page::Weather | Page::Calendar | Page::Clipboard | Page::Keybindings => {
-            Vec::new()
-        }
+        Page::Bluetooth
+        | Page::Weather
+        | Page::Calendar
+        | Page::Clipboard
+        | Page::Keybindings
+        | Page::SelectWallpaper => Vec::new(),
         Page::Launcher => vec![
             (
                 "Open app launcher",
@@ -66,6 +83,110 @@ fn entries(page: Page) -> Vec<(&'static str, &'static str, Action)> {
             .map(|&(id, title)| (title, "", Action::Toggle(id)))
             .collect(),
     }
+    .into_iter()
+    .map(|(title, hint, action)| (title.to_owned(), hint.to_owned(), action))
+    .collect()
+}
+
+fn wallpaper_folder() -> PathBuf {
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join("Pictures/Wallpapers")
+}
+
+fn wallpaper_script() -> PathBuf {
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/bin/wallpaper.sh")
+}
+
+fn wallpaper_files(folder: &Path) -> Result<Vec<String>, String> {
+    let mut files = std::fs::read_dir(folder)
+        .map_err(|error| format!("{}: {error}", folder.display()))?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            if !entry.file_type().ok()?.is_file() {
+                return None;
+            }
+            let name = entry.file_name().into_string().ok()?;
+            let extension = Path::new(&name).extension()?.to_str()?;
+            matches!(extension, "jpg" | "png" | "jpeg" | "webp").then_some(name)
+        })
+        .collect::<Vec<_>>();
+    files.sort_unstable();
+    Ok(files)
+}
+
+fn run_wallpaper_command(argument: Option<String>) -> Result<(), String> {
+    let mut command = std::process::Command::new(wallpaper_script());
+    if let Some(argument) = argument {
+        command.arg(argument);
+    }
+    let status = command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|error| format!("Wallpaper script: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("Wallpaper script exited with {status}"))
+    }
+}
+
+fn run_wallpaper_action(
+    action: Action,
+    message: glib::WeakRef<gtk::Label>,
+    list: glib::WeakRef<gtk::ListBox>,
+) {
+    if let Some(list) = list.upgrade() {
+        list.set_sensitive(false);
+    }
+    let (sender, receiver) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let result = match action {
+            Action::NextWallpaper => {
+                run_wallpaper_command(Some("--next".to_owned())).map(|()| "Wallpaper changed")
+            }
+            Action::SelectWallpaper(name) => {
+                run_wallpaper_command(Some(name)).map(|()| "Wallpaper selected")
+            }
+            Action::OpenWallpapersFolder => std::process::Command::new("xdg-open")
+                .arg(wallpaper_folder())
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map_err(|error| format!("Open wallpapers folder: {error}"))
+                .and_then(|status| {
+                    status
+                        .success()
+                        .then_some("Wallpapers folder opened")
+                        .ok_or_else(|| format!("Open wallpapers folder: {status}"))
+                }),
+            _ => return,
+        };
+        let _ = sender.send_blocking(result);
+    });
+    glib::MainContext::default().spawn_local(async move {
+        let result = receiver.recv().await;
+        if let Some(list) = list.upgrade() {
+            list.set_sensitive(true);
+        }
+        if let Ok(result) = result
+            && let Some(message) = message.upgrade()
+        {
+            match result {
+                Ok(text) => {
+                    message.remove_css_class("menu-error");
+                    message.set_text(text);
+                    message.set_visible(true);
+                }
+                Err(error) => {
+                    message.add_css_class("menu-error");
+                    message.set_text(&error);
+                    message.set_visible(true);
+                }
+            }
+        }
+    });
 }
 
 fn first_focusable(widget: &gtk::Widget) -> Option<gtk::Widget> {
@@ -156,15 +277,81 @@ fn show_page(app: &gtk::Application, state: &Rc<AppState>, page: Page) {
 }
 
 fn render(window: &gtk::ApplicationWindow, state: &Rc<AppState>, page: Page) {
+    if matches!(page, Page::SelectWallpaper) {
+        render_entries(
+            window,
+            state,
+            page,
+            vec![("Loading wallpapers…".into(), String::new(), Action::Notice)],
+        );
+        let current = window.child().map(|child| child.downgrade());
+        let weak_window = window.downgrade();
+        let weak_state = Rc::downgrade(state);
+        let (sender, receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = sender.send_blocking(wallpaper_files(&wallpaper_folder()));
+        });
+        glib::MainContext::default().spawn_local(async move {
+            let (Ok(result), Some(window), Some(state), Some(current)) = (
+                receiver.recv().await,
+                weak_window.upgrade(),
+                weak_state.upgrade(),
+                current.and_then(|child| child.upgrade()),
+            ) else {
+                return;
+            };
+            if window.child().as_ref() != Some(&current) {
+                return;
+            }
+            match result {
+                Ok(files) if !files.is_empty() => render_entries(
+                    &window,
+                    &state,
+                    page,
+                    files
+                        .into_iter()
+                        .map(|name| (name.clone(), String::new(), Action::SelectWallpaper(name)))
+                        .collect(),
+                ),
+                Ok(_) => render_entries(
+                    &window,
+                    &state,
+                    page,
+                    vec![("No wallpapers found".into(), String::new(), Action::Notice)],
+                ),
+                Err(error) => render_entries(
+                    &window,
+                    &state,
+                    page,
+                    vec![(error, String::new(), Action::Notice)],
+                ),
+            }
+        });
+    } else {
+        render_entries(window, state, page, entries(page));
+    }
+}
+
+fn render_entries(
+    window: &gtk::ApplicationWindow,
+    state: &Rc<AppState>,
+    page: Page,
+    page_entries: Vec<(String, String, Action)>,
+) {
     let outer = gtk::Box::new(gtk::Orientation::Vertical, 12);
     outer.add_css_class("menu-content");
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     header.add_css_class("menu-header");
     let parent = match page {
         Page::Home => None,
-        Page::Launcher | Page::Bar | Page::Settings | Page::Info | Page::Keybindings => {
-            Some(Page::Home)
-        }
+        Page::Launcher
+        | Page::Bar
+        | Page::Settings
+        | Page::Info
+        | Page::Keybindings
+        | Page::Appearance => Some(Page::Home),
+        Page::Wallpaper => Some(Page::Appearance),
+        Page::SelectWallpaper => Some(Page::Wallpaper),
         Page::Bluetooth => Some(Page::Settings),
         Page::Weather | Page::Calendar | Page::Clipboard => Some(Page::Info),
         Page::Modules => Some(Page::Bar),
@@ -196,6 +383,9 @@ fn render(window: &gtk::ApplicationWindow, state: &Rc<AppState>, page: Page) {
         Page::Launcher => "App launcher",
         Page::Bar => "Bar",
         Page::Modules => "Modules",
+        Page::Appearance => "Appearance",
+        Page::Wallpaper => "Wallpaper",
+        Page::SelectWallpaper => "Select wallpaper",
     }));
     window.set_title(Some(&title.text()));
     title.add_css_class("menu-heading");
@@ -283,7 +473,7 @@ fn render(window: &gtk::ApplicationWindow, state: &Rc<AppState>, page: Page) {
     let list = gtk::ListBox::new();
     list.add_css_class("menu-list");
     list.set_selection_mode(gtk::SelectionMode::Single);
-    let items = Rc::new(entries(page));
+    let items = Rc::new(page_entries);
     let mut statuses = Vec::new();
     for (title, hint, action) in items.iter() {
         let row = gtk::ListBoxRow::new();
@@ -311,6 +501,7 @@ fn render(window: &gtk::ApplicationWindow, state: &Rc<AppState>, page: Page) {
             }
             Action::Page(_) => "›",
             Action::Wip => "WIP",
+            Action::Notice => "",
             _ => "",
         }));
         status.add_css_class("menu-state");
@@ -341,6 +532,7 @@ fn render(window: &gtk::ApplicationWindow, state: &Rc<AppState>, page: Page) {
     message.add_css_class("menu-hint");
     message.set_wrap(true);
     outer.append(&message);
+    let weak_list = list.downgrade();
     list.connect_row_activated({
         let window = window.downgrade();
         let state = Rc::downgrade(state);
@@ -355,7 +547,7 @@ fn render(window: &gtk::ApplicationWindow, state: &Rc<AppState>, page: Page) {
             let Some((_, _, action)) = items.get(row.index() as usize) else {
                 return;
             };
-            match *action {
+            match action.clone() {
                 Action::Page(page) => render(&window, &state, page),
                 Action::Launch(mode) => {
                     if let Some(app) = window.application() {
@@ -391,7 +583,15 @@ fn render(window: &gtk::ApplicationWindow, state: &Rc<AppState>, page: Page) {
                         crate::layout::show(&app, &state, bar);
                     }
                 }
-                Action::Wip => {}
+                Action::Wip | Action::Notice => {}
+                action @ (Action::NextWallpaper
+                | Action::OpenWallpapersFolder
+                | Action::SelectWallpaper(_)) => {
+                    if let Some(message) = message.upgrade() {
+                        message.set_visible(false);
+                        run_wallpaper_action(action, message.downgrade(), weak_list.clone());
+                    }
+                }
             }
         }
     });
