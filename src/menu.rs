@@ -68,6 +68,29 @@ fn entries(page: Page) -> Vec<(&'static str, &'static str, Action)> {
     }
 }
 
+fn first_focusable(widget: &gtk::Widget) -> Option<gtk::Widget> {
+    if widget.is_focusable() && widget.is_visible() && widget.is_sensitive() {
+        return Some(widget.clone());
+    }
+    let mut child = widget.first_child();
+    while let Some(widget) = child {
+        if let Some(found) = first_focusable(&widget) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
+fn focus_is_within(focus: &gtk::Widget, widget: &gtk::Widget) -> bool {
+    focus == widget || focus.is_ancestor(widget)
+}
+
+fn back_is_focused(window: &impl IsA<gtk::Window>, back: &impl IsA<gtk::Widget>) -> bool {
+    gtk::prelude::GtkWindowExt::focus(window.as_ref())
+        .is_some_and(|focus| focus_is_within(&focus, back.as_ref()))
+}
+
 pub fn close(state: &AppState) {
     let old = state.menu.borrow_mut().take();
     if let Some(old) = old {
@@ -128,13 +151,15 @@ fn show_page(app: &gtk::Application, state: &Rc<AppState>, page: Page) {
     });
     render(&window, state, page);
     *state.menu.borrow_mut() = Some(window.clone().upcast());
+    crate::ui::animate_close(&window);
     window.present();
 }
 
 fn render(window: &gtk::ApplicationWindow, state: &Rc<AppState>, page: Page) {
-    let outer = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    let outer = gtk::Box::new(gtk::Orientation::Vertical, 12);
     outer.add_css_class("menu-content");
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    header.add_css_class("menu-header");
     let parent = match page {
         Page::Home => None,
         Page::Launcher | Page::Bar | Page::Settings | Page::Info | Page::Keybindings => {
@@ -144,7 +169,7 @@ fn render(window: &gtk::ApplicationWindow, state: &Rc<AppState>, page: Page) {
         Page::Weather | Page::Calendar | Page::Clipboard => Some(Page::Info),
         Page::Modules => Some(Page::Bar),
     };
-    if let Some(parent) = parent {
+    let back = parent.map(|parent| {
         let back = gtk::Button::with_label("←");
         back.add_css_class("network-action");
         back.add_css_class("menu-back");
@@ -157,7 +182,8 @@ fn render(window: &gtk::ApplicationWindow, state: &Rc<AppState>, page: Page) {
             }
         });
         header.append(&back);
-    }
+        back
+    });
     let title = gtk::Label::new(Some(match page {
         Page::Keybindings => "Keybindings",
         Page::Settings => "Settings",
@@ -195,28 +221,51 @@ fn render(window: &gtk::ApplicationWindow, state: &Rc<AppState>, page: Page) {
     if let Some(leaf) = leaf {
         outer.append(&leaf);
         let key = gtk::EventControllerKey::new();
+        key.set_propagation_phase(gtk::PropagationPhase::Capture);
         let weak_window = window.downgrade();
         let weak_state = Rc::downgrade(state);
-        key.connect_key_pressed(move |_, key, _, modifiers| {
-            let text_navigation = key == gdk::Key::Left;
-            let key = crate::keybindings::remap("menu", key, modifiers);
+        let weak_leaf = leaf.downgrade();
+        let weak_back = back.as_ref().map(|back| back.downgrade());
+        key.connect_key_pressed(move |_, raw_key, _, modifiers| {
+            let key = crate::keybindings::remap("menu", raw_key, modifiers);
             let (Some(window), Some(state)) = (weak_window.upgrade(), weak_state.upgrade()) else {
                 return glib::Propagation::Proceed;
             };
-            if key == gdk::Key::Escape {
+            if raw_key == gdk::Key::Escape || key == gdk::Key::Escape {
                 close(&state);
-            } else if key == gdk::Key::Left
-                && !(text_navigation
-                    && gtk::prelude::GtkWindowExt::focus(&window)
-                        .is_some_and(|focus| focus.is::<gtk::Text>() || focus.is::<gtk::Entry>()))
-            {
-                if let Some(parent) = parent {
-                    render(&window, &state, parent);
-                }
-            } else {
-                return glib::Propagation::Proceed;
+                return glib::Propagation::Stop;
             }
-            glib::Propagation::Stop
+            let Some(back) = weak_back.as_ref().and_then(|back| back.upgrade()) else {
+                return glib::Propagation::Proceed;
+            };
+            if key == gdk::Key::Home && raw_key != gdk::Key::Left && raw_key != gdk::Key::Right {
+                back.grab_focus();
+                return glib::Propagation::Stop;
+            }
+            if key == gdk::Key::Up
+                && let Some(leaf) = weak_leaf.upgrade()
+                && let Some(first) = first_focusable(leaf.upcast_ref())
+                && gtk::prelude::GtkWindowExt::focus(&window)
+                    .is_some_and(|focus| focus_is_within(&focus, &first))
+            {
+                back.grab_focus();
+                return glib::Propagation::Stop;
+            }
+            if key == gdk::Key::Down && back_is_focused(&window, &back) {
+                if let Some(leaf) = weak_leaf.upgrade()
+                    && let Some(first) = first_focusable(leaf.upcast_ref())
+                {
+                    first.grab_focus();
+                }
+                return glib::Propagation::Stop;
+            }
+            if (key == gdk::Key::Return || key == gdk::Key::KP_Enter)
+                && back_is_focused(&window, &back)
+            {
+                back.emit_clicked();
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
         });
         outer.add_controller(key);
         window.set_child(Some(&outer));
@@ -352,39 +401,79 @@ fn render(window: &gtk::ApplicationWindow, state: &Rc<AppState>, page: Page) {
         let list = list.downgrade();
         let window = window.downgrade();
         let state = Rc::downgrade(state);
-        move |_, key, _, modifiers| {
-            let default_key = crate::keybindings::is_default("menu", key);
-            let key = crate::keybindings::remap("menu", key, modifiers);
+        let back = back.as_ref().map(|back| back.downgrade());
+        move |_, raw_key, _, modifiers| {
+            let default_key = crate::keybindings::is_default("menu", raw_key);
+            let key = crate::keybindings::remap("menu", raw_key, modifiers);
             let (Some(window), Some(list), Some(state)) =
                 (window.upgrade(), list.upgrade(), state.upgrade())
             else {
                 return glib::Propagation::Proceed;
             };
+            if raw_key == gdk::Key::Escape || key == gdk::Key::Escape {
+                close(&state);
+                return glib::Propagation::Stop;
+            }
+            let back = back.as_ref().and_then(|back| back.upgrade());
+            if back
+                .as_ref()
+                .is_some_and(|back| back_is_focused(&window, back))
+            {
+                match key {
+                    gdk::Key::Down => {
+                        let rows = crate::launcher::visible_rows(&list);
+                        list.select_row(rows.first());
+                        list.grab_focus();
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::Return | gdk::Key::KP_Enter => {
+                        if let Some(back) = back {
+                            back.emit_clicked();
+                        }
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::Left | gdk::Key::Right | gdk::Key::Up => {
+                        return glib::Propagation::Stop;
+                    }
+                    _ => {}
+                }
+            }
+            if raw_key == gdk::Key::Left || raw_key == gdk::Key::Right {
+                return glib::Propagation::Stop;
+            }
             match key {
-                gdk::Key::Escape => close(&state),
-                gdk::Key::Left => {
-                    if let Some(parent) = parent {
-                        render(&window, &state, parent);
+                gdk::Key::Home => {
+                    if let Some(back) = back {
+                        list.unselect_all();
+                        back.grab_focus();
                     }
                 }
-                gdk::Key::Down | gdk::Key::Up | gdk::Key::Page_Down | gdk::Key::Page_Up => {
-                    let offset = match key {
-                        gdk::Key::Up => -1,
-                        gdk::Key::Page_Up => -5,
-                        gdk::Key::Page_Down => 5,
-                        _ => 1,
-                    };
+                gdk::Key::Up | gdk::Key::Down | gdk::Key::Page_Down | gdk::Key::Page_Up => {
                     let rows = crate::launcher::visible_rows(&list);
                     let selected = rows
                         .iter()
                         .position(|row| Some(row) == list.selected_row().as_ref());
-                    if let Some(index) =
-                        crate::launcher::selection_index(rows.len(), selected, offset)
+                    if key == gdk::Key::Up
+                        && selected == Some(0)
+                        && let Some(back) = back
                     {
-                        list.select_row(rows.get(index));
+                        list.unselect_all();
+                        back.grab_focus();
+                    } else {
+                        let offset = match key {
+                            gdk::Key::Up => -1,
+                            gdk::Key::Page_Up => -5,
+                            gdk::Key::Page_Down => 5,
+                            _ => 1,
+                        };
+                        if let Some(index) =
+                            crate::launcher::selection_index(rows.len(), selected, offset)
+                        {
+                            list.select_row(rows.get(index));
+                        }
                     }
                 }
-                gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::Right => {
+                gdk::Key::Return | gdk::Key::KP_Enter => {
                     if let Some(row) = list
                         .selected_row()
                         .filter(|row| row.is_child_visible() && row.is_visible())
@@ -438,6 +527,10 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
                 .item(i)
                 .and_downcast::<gtk::EventControllerKey>()
             {
+                assert_eq!(
+                    controller.propagation_phase(),
+                    gtk::PropagationPhase::Capture
+                );
                 controller.emit_by_name::<bool>(
                     "key-pressed",
                     &[&key, &0u32, &gdk::ModifierType::empty()],
@@ -464,13 +557,31 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
     crate::ui_tests::pump(100);
     let window = state.menu.borrow().as_ref().unwrap().clone();
     assert!(!window.is_anchor(gtk4_layer_shell::Edge::Top));
+    crate::ui_tests::capture("menu");
     assert_eq!(crate::launcher::visible_rows(&list(&window)).len(), 7);
     press(&window, gdk::Key::Right);
+    assert_eq!(window.title().as_deref(), Some("chuh menu"));
+    press(&window, gdk::Key::Return);
     crate::ui_tests::pump(100);
+    assert_eq!(window.title().as_deref(), Some("App launcher"));
     assert_eq!(crate::launcher::visible_rows(&list(&window)).len(), 3);
     press(&window, gdk::Key::Left);
+    assert_eq!(window.title().as_deref(), Some("App launcher"));
+    press(&window, gdk::Key::Up);
+    let back = find(window.upcast_ref(), "menu-back").unwrap();
+    assert!(back_is_focused(&window, &back));
     press(&window, gdk::Key::Down);
+    assert_eq!(list(&window).selected_row().unwrap().index(), 0);
+    press(&window, gdk::Key::Up);
+    assert!(back_is_focused(&window, &back));
+    press(&window, gdk::Key::Return);
+    crate::ui_tests::pump(100);
+    assert_eq!(window.title().as_deref(), Some("chuh menu"));
+    press(&window, gdk::Key::Down);
+    assert_eq!(list(&window).selected_row().unwrap().index(), 1);
     press(&window, gdk::Key::Right);
+    assert_eq!(window.title().as_deref(), Some("chuh menu"));
+    press(&window, gdk::Key::Return);
     crate::ui_tests::pump(100);
     assert_eq!(crate::launcher::visible_rows(&list(&window)).len(), 2);
     press(&window, gdk::Key::Return);
@@ -518,6 +629,14 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
     assert_eq!(list(&window).row_at_index(0).unwrap().index(), 0);
     assert_eq!(window.title().as_deref(), Some("Settings"));
     press(&window, gdk::Key::Left);
+    assert_eq!(window.title().as_deref(), Some("Settings"));
+    press(&window, gdk::Key::Up);
+    assert!(back_is_focused(
+        &window,
+        &find(window.upcast_ref(), "menu-back").unwrap()
+    ));
+    press(&window, gdk::Key::Return);
+    crate::ui_tests::pump(100);
     let menu = list(&window);
     menu.select_row(menu.row_at_index(3).as_ref());
     press(&window, gdk::Key::Return);
@@ -529,10 +648,38 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
     crate::ui_tests::pump(100);
     crate::ui_tests::capture("calendar");
     press(&window, gdk::Key::Left);
+    assert_eq!(window.title().as_deref(), Some("Calendar"));
+    let leaf = window.child().unwrap().last_child().unwrap();
+    first_focusable(&leaf).unwrap().grab_focus();
+    press(&window, gdk::Key::Up);
+    assert!(back_is_focused(
+        &window,
+        &find(window.upcast_ref(), "menu-back").unwrap()
+    ));
+    press(&window, gdk::Key::Return);
     assert_eq!(window.title().as_deref(), Some("Info"));
     show_clipboard(app, state);
     let window = state.menu.borrow().as_ref().unwrap().clone();
     assert_eq!(window.title().as_deref(), Some("Clipboard"));
+    let leaf = window.child().unwrap().last_child().unwrap();
+    first_focusable(&leaf).unwrap().grab_focus();
+    press(&window, gdk::Key::Up);
+    assert!(back_is_focused(
+        &window,
+        &find(window.upcast_ref(), "menu-back").unwrap()
+    ));
+    press(&window, gdk::Key::Down);
+    assert!(!back_is_focused(
+        &window,
+        &find(window.upcast_ref(), "menu-back").unwrap()
+    ));
+    press(&window, gdk::Key::Escape);
+    assert!(state.menu.borrow().is_none());
+    show_clipboard(app, state);
+    assert_eq!(
+        state.menu.borrow().as_ref().unwrap().title().as_deref(),
+        Some("Clipboard")
+    );
     show_clipboard(app, state);
     assert!(state.menu.borrow().is_none());
     show(app, state);
@@ -542,6 +689,18 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
     press(&window, gdk::Key::Return);
     assert_eq!(window.title().as_deref(), Some("Keybindings"));
     assert!(find(window.upcast_ref(), "keybinding-editor").is_some());
+    let leaf = window.child().unwrap().last_child().unwrap();
+    first_focusable(&leaf).unwrap().grab_focus();
+    press(&window, gdk::Key::Up);
+    assert!(back_is_focused(
+        &window,
+        &find(window.upcast_ref(), "menu-back").unwrap()
+    ));
+    press(&window, gdk::Key::Down);
+    assert!(!back_is_focused(
+        &window,
+        &find(window.upcast_ref(), "menu-back").unwrap()
+    ));
     press(&window, gdk::Key::Escape);
     assert!(state.menu.borrow().is_none());
     crate::launcher::show(app, state, LauncherMode::Manage);

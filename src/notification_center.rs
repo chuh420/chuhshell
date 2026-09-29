@@ -368,6 +368,7 @@ impl NotificationCenter {
             entry.popup = Some(window.clone());
         }
         window.set_monitor(crate::ui::active_monitor().as_ref());
+        crate::ui::animate_close(&window);
         window.present();
         self.position_popups();
     }

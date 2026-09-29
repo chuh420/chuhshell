@@ -141,7 +141,7 @@ fn create(
     );
 
     window.set_monitor(crate::ui::active_monitor().as_ref());
-    let outer = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    let outer = gtk::Box::new(gtk::Orientation::Vertical, 12);
     outer.add_css_class("launcher-box");
     outer.set_can_target(!editing);
     let search = gtk::SearchEntry::new();
@@ -424,6 +424,7 @@ fn create(
         }
     });
 
+    crate::ui::animate_close(&window);
     window.present();
     search.grab_focus();
     let window: gtk::Window = window.upcast();
@@ -513,8 +514,8 @@ fn append_app_row(list: &gtk::ListBox, entry: &AppEntry, mode: LauncherMode) {
         icon.add_css_class("app-icon");
         content.append(&icon);
     } else {
-        let icon = crate::ui::image(&entry.icon, 22);
-        icon.set_pixel_size(22);
+        let icon = crate::ui::image(&entry.icon, 28);
+        icon.set_pixel_size(28);
         icon.add_css_class("app-icon");
         content.append(&icon);
     }
@@ -522,6 +523,7 @@ fn append_app_row(list: &gtk::ListBox, entry: &AppEntry, mode: LauncherMode) {
     details.set_valign(gtk::Align::Center);
     details.set_hexpand(true);
     let name = gtk::Label::new(Some(&entry.name.to_lowercase()));
+    name.add_css_class("app-name");
     name.set_xalign(0.0);
     name.set_ellipsize(gtk::pango::EllipsizeMode::End);
     name.set_max_width_chars(40);
@@ -582,6 +584,8 @@ pub fn regression_checks(app: &gtk::Application) {
         .unwrap()
         .downcast::<gtk::ListBox>()
         .unwrap();
+    crate::ui_tests::pump(100);
+    crate::ui_tests::capture("launcher");
     search.set_text("no-such-application");
     search.emit_by_name::<()>("search-changed", &[]);
     assert!(list.selected_row().is_none());

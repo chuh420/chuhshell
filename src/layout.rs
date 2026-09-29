@@ -400,6 +400,7 @@ pub fn show_ready(app: &gtk::Application, state: &Rc<AppState>) {
     });
     window.set_child(Some(&overlay));
     *state.menu.borrow_mut() = Some(window.clone().upcast());
+    crate::ui::animate_close(&window);
     window.present();
 }
 

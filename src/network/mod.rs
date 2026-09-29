@@ -106,6 +106,9 @@ impl NetworkMenu {
         adapter.set_tooltip_text(Some("Wi-Fi adapter"));
         controls.append(&adapter);
         let stack = gtk::Stack::new();
+        stack.set_transition_type(gtk::StackTransitionType::SlideLeftRight);
+        stack.set_transition_duration(200);
+        stack.set_interpolate_size(true);
         stack.set_hhomogeneous(false);
         stack.set_vhomogeneous(false);
         let page = gtk::Box::new(gtk::Orientation::Vertical, 10);
@@ -140,6 +143,7 @@ impl NetworkMenu {
         footer.append(&status);
         root.append(&footer);
         let popover = crate::ui::popover(anchor, &root);
+        crate::ui::attach_to_bar(&popover, anchor);
         let view = View {
             popover: popover.clone(),
             controls,
@@ -402,12 +406,14 @@ impl NetworkMenu {
             };
             text.append(&label(&detail, "network-meta"));
             content.append(&text);
-            content.append(&label(
+            let signal = label(
                 &network
                     .strength
                     .map_or_else(|| "—".into(), |s| format!("{s}%")),
                 "network-signal",
-            ));
+            );
+            signal.set_wrap(false);
+            content.append(&signal);
             row.set_child(Some(&content));
             row.set_tooltip_text(Some(&network.name));
             let network = network.clone();

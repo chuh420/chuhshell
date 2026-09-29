@@ -19,8 +19,8 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut {
         id: "menu.back",
         scope: "menu",
-        description: "Go to the parent menu",
-        defaults: "Left",
+        description: "Focus the back button",
+        defaults: "Home",
     },
     Shortcut {
         id: "menu.next",
@@ -50,7 +50,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
         id: "menu.activate",
         scope: "menu",
         description: "Open the selected menu item",
-        defaults: "Return, KP_Enter, Right",
+        defaults: "Return, KP_Enter",
     },
     Shortcut {
         id: "launcher.close",

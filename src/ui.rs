@@ -64,14 +64,62 @@ pub fn close_popover() {
 pub fn popover(anchor: &gtk::Button, content: &impl IsA<gtk::Widget>) -> gtk::Popover {
     close_popover();
     let popover = gtk::Popover::new();
+    popover.add_css_class("shell-popover");
     popover.set_has_arrow(false);
     popover.set_position(gtk::PositionType::Bottom);
     popover.set_autohide(true);
     popover.set_parent(anchor);
     popover.set_child(Some(content));
-    popover.connect_closed(|popover| popover.unparent());
+    anchor.add_css_class("popup-open");
+    let weak_anchor = anchor.downgrade();
+    popover.connect_closed(move |popover| {
+        if let Some(anchor) = weak_anchor.upgrade() {
+            anchor.remove_css_class("popup-open");
+        }
+        popover.unparent();
+    });
     OPEN_MENU.with(|value| *value.borrow_mut() = Some(popover.downgrade()));
     popover
+}
+
+pub fn attach_to_bar(popover: &gtk::Popover, anchor: &gtk::Button) {
+    popover.add_css_class("bar-attached");
+    if let Some(root) = anchor.root().and_downcast::<gtk::Window>()
+        && let Some(origin) = anchor.compute_point(&root, &gtk::graphene::Point::new(0.0, 0.0))
+    {
+        let height = (root.height() as f32 - origin.y()).ceil() as i32;
+        popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(
+            0,
+            0,
+            anchor.width(),
+            height.max(anchor.height()),
+        )));
+        popover.set_offset(0, -1);
+    }
+}
+
+pub fn animate_close(window: &impl IsA<gtk::Window>) {
+    let window = window.as_ref();
+    window.connect_close_request(|window| {
+        if !window.is_mapped()
+            || !gtk::Settings::default().is_some_and(|settings| settings.is_gtk_enable_animations())
+        {
+            return glib::Propagation::Proceed;
+        }
+        if window.has_css_class("shell-closing") {
+            return glib::Propagation::Stop;
+        }
+        window.add_css_class("shell-closing");
+        window.set_can_target(false);
+        if window.is_layer_window() {
+            window.set_keyboard_mode(layer_shell::KeyboardMode::None);
+        }
+        let window = window.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(150), move || {
+            window.destroy();
+        });
+        glib::Propagation::Stop
+    });
 }
 
 pub fn image(icon: &str, size: i32) -> gtk::Image {

@@ -204,6 +204,7 @@ pub fn show(state: &Rc<AppState>, notice: Notice) {
             }
             glib::Propagation::Proceed
         });
+        crate::ui::animate_close(&window);
         *state.osd.borrow_mut() = Some(window.clone());
         window
     };
