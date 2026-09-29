@@ -32,16 +32,23 @@ window#launcher .app-meta { font-size: 12px; }
 .launcher-box { padding: 16px; }
 .search { background: #1f1d2e; color: @shell_text; border: 1px solid #403d52; border-radius: 8px; padding: 9px 12px; }
 .search:focus-within { border-color: #c4a7e7; outline: none; box-shadow: none; }
-window#launcher listbox row:focus { outline: none; }
+window#launcher .app-list row:focus { outline: none; }
 .app-list { background: transparent; }
-window#launcher listbox row { background: transparent; border-radius: 8px; padding: 0; margin-bottom: 4px; }
-window#launcher listbox row:hover { background: #26233a; }
-window#launcher listbox row:selected { background: #26233a; color: @shell_text; }
-window#launcher listbox row:selected label { color: @shell_text; }
-window#launcher listbox row.selected-row { background-color: #26233a; color: @shell_text; }
-window#launcher listbox row.selected-row label { color: @shell_text; }
+window#launcher .app-list row { background: transparent; border-radius: 8px; padding: 0; margin-bottom: 4px; }
+window#launcher .app-list row:hover { background: #26233a; }
+window#launcher .app-list row:selected { background: #26233a; color: @shell_text; }
+window#launcher .app-list row:selected label { color: @shell_text; }
+window#launcher .app-list row.selected-row { background-color: #26233a; color: @shell_text; }
+window#launcher .app-list row.selected-row label { color: @shell_text; }
 .app-row { background-color: #1f1d2e; color: @shell_text; border: 1px solid transparent; border-radius: 8px; padding: 10px 12px; min-height: 36px; }
-window#launcher listbox row.selected-row .app-row, window#launcher listbox row:selected .app-row { background-color: #26233a; border-color: #6e6a86; box-shadow: inset 3px 0 @shell_accent; }
+window#launcher .app-list row.selected-row .app-row, window#launcher .app-list row:selected .app-row { background-color: #26233a; border-color: #6e6a86; box-shadow: inset 3px 0 @shell_accent; }
+window#launcher button.app-pin, window#launcher button.launcher-sort { background: transparent; background-image: none; color: #908caa; border: 1px solid transparent; box-shadow: none; border-radius: 8px; padding: 6px 10px; min-height: 24px; }
+window#launcher button.launcher-sort { background: #26233a; border-color: #403d52; color: @shell_text; }
+window#launcher button.app-pin { margin-left: 12px; }
+window#launcher .app-list row button.app-pin label { font-size: 18px; color: #908caa; }
+window#launcher button.app-pin:hover, window#launcher button.launcher-sort:hover { background: #403d52; color: @shell_text; }
+window#launcher .app-list row button.app-pin.pinned label { color: @shell_accent; }
+window#launcher button.app-pin:focus, window#launcher button.launcher-sort:focus { background: #403d52; outline: 1px solid @shell_accent; outline-offset: -1px; }
 .app-row.hidden-app { color: #908caa; }
 .app-icon { margin-right: 12px; min-width: 28px; }
 .app-meta { color: #908caa; font-size: 11px; }
@@ -148,9 +155,9 @@ tooltip { background: #1f1d2e; color: @shell_text; border: 1px solid #403d52; bo
 .search, .network-search, .network-password { min-height: 24px; caret-color: @shell_accent; }
 .search image { color: #908caa; }
 entry selection, text selection { background: #403d52; color: @shell_text; }
-window#launcher listbox row:hover .app-row { background-color: #26233a; }
-window#launcher listbox row:selected .app-meta,
-window#launcher listbox row.selected-row .app-meta { color: #908caa; }
+window#launcher .app-list row:hover .app-row { background-color: #26233a; }
+window#launcher .app-list row:selected .app-meta,
+window#launcher .app-list row.selected-row .app-meta { color: #908caa; }
 .app-name { font-weight: 500; }
 .menu-header { padding-bottom: 12px; border-bottom: 1px solid #403d52; margin-bottom: 2px; }
 .menu-label, .network-name { font-weight: 500; }

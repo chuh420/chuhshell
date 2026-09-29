@@ -29,16 +29,20 @@ fn show_inner(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode, 
     state.launcher_generation.set(generation);
     let (tx, rx) = async_channel::bounded(1);
     std::thread::spawn(move || {
-        let _ = tx.send_blocking((apps::load_apps(), apps::read_launch_counts()));
+        let _ = tx.send_blocking((
+            apps::load_apps(),
+            apps::read_launch_counts(),
+            apps::read_launcher_preferences(),
+        ));
     });
     let state = Rc::downgrade(state);
     let app = app.downgrade();
     glib::MainContext::default().spawn_local(async move {
-        if let Ok((apps, counts)) = rx.recv().await
+        if let Ok((apps, counts, preferences)) = rx.recv().await
             && let (Some(app), Some(state)) = (app.upgrade(), state.upgrade())
             && state.launcher_generation.get() == generation
         {
-            let window = create(&app, &state, mode, apps, counts, editing);
+            let window = create(&app, &state, mode, apps, (counts, preferences), editing);
             if editing {
                 let app = app.downgrade();
                 let state = Rc::downgrade(&state);
@@ -104,7 +108,7 @@ fn create(
     state: &Rc<AppState>,
     mode: LauncherMode,
     entries: Vec<AppEntry>,
-    launch_counts: HashMap<String, u64>,
+    settings: (HashMap<String, u64>, apps::LauncherPreferences),
     editing: bool,
 ) -> gtk::Window {
     let old = state.launcher.borrow_mut().take();
@@ -172,8 +176,74 @@ fn create(
     }
     window.set_child(Some(&outer));
 
+    let preferences = Rc::new(RefCell::new(settings.1));
+    let (save_tx, save_rx) = async_channel::bounded::<apps::LauncherPreferences>(32);
+    let (error_tx, error_rx) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        while let Ok(preferences) = save_rx.recv_blocking() {
+            if let Err(error) = apps::write_launcher_preferences(&preferences) {
+                let _ = error_tx.try_send(error.to_string());
+            }
+        }
+    });
+    let save_error = gtk::Label::new(None);
+    save_error.add_css_class("app-meta");
+    save_error.set_wrap(true);
+    save_error.set_visible(false);
+    outer.append(&save_error);
+    let save_error = save_error.downgrade();
+    let error_window = window.downgrade();
+    glib::MainContext::default().spawn_local(async move {
+        while let Ok(error) = error_rx.recv().await {
+            if let Some(label) = save_error.upgrade() {
+                label.set_text(
+                    "Could not save launcher preferences. Changes may be lost after closing.",
+                );
+                label.set_visible(true);
+            }
+            if let Some(window) = error_window.upgrade() {
+                window.set_title(Some(&format!(
+                    "Failed to save launcher preferences: {error}"
+                )));
+            }
+            eprintln!("chuhshell: failed to save launcher preferences: {error}");
+        }
+    });
+    let sort = gtk::Button::new();
+    sort.add_css_class("launcher-sort");
+    sort.set_halign(gtk::Align::End);
+    sort.set_label(if preferences.borrow().alphabetical {
+        "sort: a–z"
+    } else {
+        "sort: most used"
+    });
+    sort.set_tooltip_text(Some("Switch application sorting"));
+    if mode == LauncherMode::Normal {
+        outer.append(&sort);
+    }
+    sort.connect_clicked({
+        let preferences = preferences.clone();
+        let save_tx = save_tx.clone();
+        let list = list.downgrade();
+        move |button| {
+            let mut next = preferences.borrow().clone();
+            next.alphabetical = !next.alphabetical;
+            if save_tx.try_send(next.clone()).is_err() {
+                return;
+            }
+            button.set_label(if next.alphabetical {
+                "sort: a–z"
+            } else {
+                "sort: most used"
+            });
+            *preferences.borrow_mut() = next;
+            if let Some(list) = list.upgrade() {
+                list.invalidate_sort();
+            }
+        }
+    });
     let scores = Rc::new(RefCell::new(HashMap::new()));
-    let counts = Rc::new(RefCell::new(launch_counts));
+    let counts = Rc::new(RefCell::new(settings.0));
     let searching = Rc::new(std::cell::Cell::new(false));
     let names: HashMap<String, (String, String)> = state
         .launcher_apps
@@ -190,10 +260,68 @@ fn create(
             )
         })
         .collect();
-    let names = Rc::new(names);
+    let search_names = Rc::new(names);
+    let names = Rc::new(
+        state
+            .launcher_apps
+            .borrow()
+            .iter()
+            .map(|app| {
+                (
+                    app.id.clone(),
+                    (app.name.to_lowercase(), app.id.to_lowercase()),
+                )
+            })
+            .collect::<HashMap<_, _>>(),
+    );
     for entry in state.launcher_apps.borrow().iter() {
         if mode == LauncherMode::Manage || !entry.hidden {
-            append_app_row(&list, entry, mode);
+            let row = append_app_row(&list, entry, mode);
+            if mode == LauncherMode::Normal {
+                let content = row.child().and_downcast::<gtk::Box>().unwrap();
+                let pin = gtk::Button::new();
+                pin.add_css_class("app-pin");
+                pin.set_valign(gtk::Align::Center);
+                update_pin(&pin, preferences.borrow().pinned.contains(&entry.id));
+                content.append(&pin);
+                pin.connect_has_focus_notify({
+                    let list = list.downgrade();
+                    let row = row.downgrade();
+                    move |button| {
+                        if button.has_focus()
+                            && let Some(list) = list.upgrade()
+                        {
+                            list.select_row(row.upgrade().as_ref());
+                        }
+                    }
+                });
+                pin.connect_clicked({
+                    let id = entry.id.clone();
+                    let preferences = preferences.clone();
+                    let save_tx = save_tx.clone();
+                    let list = list.downgrade();
+                    let row = row.downgrade();
+                    move |button| {
+                        let mut next = preferences.borrow().clone();
+                        if !next.pinned.remove(&id) {
+                            next.pinned.insert(id.clone());
+                        }
+                        if save_tx.try_send(next.clone()).is_err() {
+                            return;
+                        }
+                        let focused = button.is_focus();
+                        update_pin(button, next.pinned.contains(&id));
+                        *preferences.borrow_mut() = next;
+                        if let Some(list) = list.upgrade() {
+                            list.invalidate_sort();
+                            list.select_row(row.upgrade().as_ref());
+                            if focused {
+                                button.grab_focus();
+                            }
+                        }
+                    }
+                });
+            }
             scores.borrow_mut().insert(entry.id.clone(), 0_i64);
         }
     }
@@ -213,21 +341,38 @@ fn create(
         let names = Rc::clone(&names);
         let counts = Rc::clone(&counts);
         let searching = Rc::clone(&searching);
+        let preferences = preferences.clone();
         move |a, b| {
             let a_id = a.widget_name();
             let b_id = b.widget_name();
             let a_id = a_id.as_str().strip_prefix("app-").unwrap_or("");
             let b_id = b_id.as_str().strip_prefix("app-").unwrap_or("");
-            compare_apps(
-                a_id,
-                b_id,
-                &scores.borrow(),
-                &names,
-                &counts.borrow(),
-                mode,
-                searching.get(),
-            )
-            .into()
+            let preferences = preferences.borrow();
+            let pin_order = if mode == LauncherMode::Normal {
+                preferences
+                    .pinned
+                    .contains(b_id)
+                    .cmp(&preferences.pinned.contains(a_id))
+            } else {
+                Ordering::Equal
+            };
+            pin_order
+                .then_with(|| {
+                    compare_apps(
+                        a_id,
+                        b_id,
+                        &scores.borrow(),
+                        &names,
+                        &counts.borrow(),
+                        if preferences.alphabetical {
+                            LauncherMode::Manage
+                        } else {
+                            mode
+                        },
+                        searching.get(),
+                    )
+                })
+                .into()
         }
     });
     list.select_row(visible_rows(&list).first());
@@ -253,7 +398,7 @@ fn create(
             searching.set(!query.is_empty());
             let mut next = scores.borrow_mut();
             next.clear();
-            for (id, (name, lower_id)) in names.iter() {
+            for (id, (name, lower_id)) in search_names.iter() {
                 if let Some(score) = fuzzy::score_lowercase(name, &query)
                     .or_else(|| fuzzy::score_lowercase(lower_id, &query))
                 {
@@ -349,15 +494,28 @@ fn create(
     });
 
     let key = gtk::EventControllerKey::new();
+    key.set_name(Some("launcher-navigation"));
     key.set_propagation_phase(gtk::PropagationPhase::Capture);
     let list_keys = list.downgrade();
     let window_keys = window.downgrade();
+    let search_keys = search.downgrade();
+    let sort_keys = sort.downgrade();
     key.connect_key_pressed(move |_, key, _, modifiers| {
         let default_key = crate::keybindings::is_default("launcher", key);
         let key = crate::keybindings::remap("launcher", key, modifiers);
         let Some(list_keys) = list_keys.upgrade() else {
             return glib::Propagation::Proceed;
         };
+        let focused_button = window_keys
+            .upgrade()
+            .and_then(|window| gtk::prelude::GtkWindowExt::focus(&window))
+            .and_downcast::<gtk::Button>();
+        let pin_focused = focused_button
+            .as_ref()
+            .is_some_and(|button| button.has_css_class("app-pin"));
+        let sort_focused = focused_button
+            .as_ref()
+            .is_some_and(|button| button.has_css_class("launcher-sort"));
         match key {
             gdk::Key::Escape => {
                 if let Some(window) = window_keys.upgrade() {
@@ -365,14 +523,45 @@ fn create(
                 }
                 glib::Propagation::Stop
             }
+            gdk::Key::Right if mode == LauncherMode::Normal => {
+                if let Some(pin) = list_keys.selected_row().and_then(|row| pin_button(&row)) {
+                    pin.grab_focus();
+                }
+                glib::Propagation::Stop
+            }
+            gdk::Key::Left if pin_focused || sort_focused => {
+                if let Some(search) = search_keys.upgrade() {
+                    search.grab_focus();
+                }
+                glib::Propagation::Stop
+            }
+            gdk::Key::Left | gdk::Key::Right => glib::Propagation::Proceed,
             gdk::Key::Down | gdk::Key::Up | gdk::Key::Page_Down | gdk::Key::Page_Up => {
+                let rows = visible_rows(&list_keys);
+                if sort_focused {
+                    if matches!(key, gdk::Key::Up | gdk::Key::Page_Up) {
+                        list_keys.select_row(rows.last());
+                        if let Some(search) = search_keys.upgrade() {
+                            search.grab_focus();
+                        }
+                    }
+                    return glib::Propagation::Stop;
+                }
+                if key == gdk::Key::Down
+                    && mode == LauncherMode::Normal
+                    && (rows.is_empty() || rows.last() == list_keys.selected_row().as_ref())
+                {
+                    if let Some(sort) = sort_keys.upgrade() {
+                        sort.grab_focus();
+                    }
+                    return glib::Propagation::Stop;
+                }
                 let offset = match key {
                     gdk::Key::Up => -1,
                     gdk::Key::Page_Up => -5,
                     gdk::Key::Page_Down => 5,
                     _ => 1,
                 };
-                let rows = visible_rows(&list_keys);
                 if let Some(index) = selection_index(
                     rows.len(),
                     rows.iter()
@@ -380,17 +569,28 @@ fn create(
                     offset,
                 ) {
                     list_keys.select_row(rows.get(index));
+                    if pin_focused && let Some(pin) = rows.get(index).and_then(pin_button) {
+                        pin.grab_focus();
+                    }
                 } else {
                     list_keys.unselect_all();
                 }
                 glib::Propagation::Stop
             }
             gdk::Key::Return | gdk::Key::KP_Enter => {
+                if let Some(button) = focused_button.filter(|_| pin_focused || sort_focused) {
+                    button.emit_clicked();
+                    return glib::Propagation::Stop;
+                }
                 if let Some(row) = list_keys
                     .selected_row()
                     .filter(|row| row.is_visible() && row.is_child_visible() && row.is_sensitive())
                 {
-                    list_keys.emit_by_name::<()>("row-activated", &[&row]);
+                    if let Some(pin) = pin_button(&row).filter(|pin| pin.is_focus()) {
+                        pin.emit_clicked();
+                    } else {
+                        list_keys.emit_by_name::<()>("row-activated", &[&row]);
+                    }
                 }
                 glib::Propagation::Stop
             }
@@ -427,9 +627,28 @@ fn create(
     crate::ui::animate_close(&window);
     window.present();
     search.grab_focus();
+    list.select_row(visible_rows(&list).first());
     let window: gtk::Window = window.upcast();
     *state.launcher.borrow_mut() = Some(window.clone());
     window
+}
+
+fn pin_button(row: &gtk::ListBoxRow) -> Option<gtk::Button> {
+    row.child()?.last_child()?.downcast::<gtk::Button>().ok()
+}
+
+fn update_pin(button: &gtk::Button, pinned: bool) {
+    button.set_label(if pinned { "󰐃" } else { "󰐄" });
+    button.set_tooltip_text(Some(if pinned {
+        "Unpin application"
+    } else {
+        "Pin application"
+    }));
+    if pinned {
+        button.add_css_class("pinned");
+    } else {
+        button.remove_css_class("pinned");
+    }
 }
 
 pub(crate) fn visible_rows(list: &gtk::ListBox) -> Vec<gtk::ListBoxRow> {
@@ -501,7 +720,7 @@ pub(crate) fn scroll_selected_row_into_view(list: &gtk::ListBox, scrolled: &gtk:
     ));
 }
 
-fn append_app_row(list: &gtk::ListBox, entry: &AppEntry, mode: LauncherMode) {
+fn append_app_row(list: &gtk::ListBox, entry: &AppEntry, mode: LauncherMode) -> gtk::ListBoxRow {
     let row = gtk::ListBoxRow::new();
     row.set_widget_name(&format!("app-{}", entry.id));
     let content = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -540,6 +759,7 @@ fn append_app_row(list: &gtk::ListBox, entry: &AppEntry, mode: LauncherMode) {
     row.set_child(Some(&content));
     row.set_tooltip_text(Some(&entry.exec));
     list.append(&row);
+    row
 }
 
 #[cfg(test)]
@@ -561,7 +781,10 @@ pub fn regression_checks(app: &gtk::Application) {
         &state,
         LauncherMode::Normal,
         entries,
-        HashMap::new(),
+        (
+            HashMap::from([("Beta.desktop".to_owned(), 9)]),
+            apps::LauncherPreferences::default(),
+        ),
         false,
     );
     let window = state.launcher.borrow().clone().unwrap();
@@ -586,6 +809,65 @@ pub fn regression_checks(app: &gtk::Application) {
         .unwrap();
     crate::ui_tests::pump(100);
     crate::ui_tests::capture("launcher");
+    let frequent = list.selected_row().unwrap();
+    let other = visible_rows(&list)[1].clone();
+    let other_pin = pin_button(&other).unwrap();
+    let unpinned_icon = other_pin.label().unwrap();
+    other_pin.emit_clicked();
+    assert_ne!(other_pin.label().unwrap(), unpinned_icon);
+    assert!(other_pin.has_css_class("pinned"));
+    assert_eq!(visible_rows(&list)[0], other);
+    let controllers = window.observe_controllers();
+    let key = (0..controllers.n_items())
+        .filter_map(|index| {
+            controllers
+                .item(index)
+                .and_downcast::<gtk::EventControllerKey>()
+        })
+        .find(|key| key.name().as_deref() == Some("launcher-navigation"))
+        .unwrap();
+    let press = |value: gdk::Key| {
+        key.emit_by_name::<bool>("key-pressed", &[&value, &0u32, &gdk::ModifierType::empty()]);
+    };
+    press(gdk::Key::Right);
+    assert!(other_pin.is_focus());
+    crate::ui_tests::pump(300);
+    crate::ui_tests::capture("launcher-pin");
+    press(gdk::Key::Return);
+    assert!(!other_pin.has_css_class("pinned"));
+    assert_eq!(other_pin.label().unwrap(), unpinned_icon);
+    assert!(other_pin.is_focus());
+    press(gdk::Key::Return);
+    assert!(other_pin.has_css_class("pinned"));
+    assert!(other_pin.is_focus());
+    press(gdk::Key::Return);
+    assert_eq!(visible_rows(&list)[0], frequent);
+    press(gdk::Key::Left);
+    assert!(!other_pin.is_focus());
+    let sort = outer.last_child().and_downcast::<gtk::Button>().unwrap();
+    list.select_row(visible_rows(&list).last());
+    press(gdk::Key::Right);
+    press(gdk::Key::Down);
+    assert!(sort.is_focus());
+    crate::ui_tests::pump(300);
+    crate::ui_tests::capture("launcher-sort");
+    press(gdk::Key::Return);
+    assert!(sort.is_focus());
+    assert_eq!(sort.label().as_deref(), Some("sort: a–z"));
+    assert_eq!(visible_rows(&list)[0], other);
+    sort.emit_clicked();
+    assert_eq!(sort.label().as_deref(), Some("sort: most used"));
+    assert_eq!(visible_rows(&list)[0], frequent);
+    press(gdk::Key::Up);
+    assert!(!sort.is_focus());
+    assert_eq!(list.selected_row().as_ref(), visible_rows(&list).last());
+    press(gdk::Key::Right);
+    assert!(
+        pin_button(&list.selected_row().unwrap())
+            .unwrap()
+            .is_focus()
+    );
+    press(gdk::Key::Left);
     search.set_text("no-such-application");
     search.emit_by_name::<()>("search-changed", &[]);
     assert!(list.selected_row().is_none());
@@ -663,7 +945,7 @@ pub fn profile(app: &gtk::Application) {
             &state,
             LauncherMode::Normal,
             entries.clone(),
-            HashMap::new(),
+            (HashMap::new(), apps::LauncherPreferences::default()),
             false,
         );
         while window.width() <= 0 && start.elapsed() < Duration::from_secs(5) {

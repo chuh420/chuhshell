@@ -83,6 +83,18 @@ pub const SHORTCUTS: &[Shortcut] = &[
         defaults: "Page_Up",
     },
     Shortcut {
+        id: "launcher.pin-focus",
+        scope: "launcher",
+        description: "Focus the application pin button",
+        defaults: "Right",
+    },
+    Shortcut {
+        id: "launcher.search-focus",
+        scope: "launcher",
+        description: "Return from the pin button to search",
+        defaults: "Left",
+    },
+    Shortcut {
         id: "launcher.activate",
         scope: "launcher",
         description: "Launch the selected app or toggle its visibility",

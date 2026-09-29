@@ -26,6 +26,27 @@ fn config_path() -> PathBuf {
     config_home.join("chuhshell/hidden-apps")
 }
 
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct LauncherPreferences {
+    pub pinned: std::collections::BTreeSet<String>,
+    pub alphabetical: bool,
+}
+
+pub fn read_launcher_preferences() -> LauncherPreferences {
+    fs::read(config_path().with_file_name("launcher.json"))
+        .ok()
+        .and_then(|contents| serde_json::from_slice(&contents).ok())
+        .unwrap_or_default()
+}
+
+pub fn write_launcher_preferences(preferences: &LauncherPreferences) -> std::io::Result<()> {
+    crate::storage::atomic_write(
+        &config_path().with_file_name("launcher.json"),
+        &serde_json::to_vec(preferences)?,
+    )
+}
+
 fn launch_counts_path() -> PathBuf {
     let state_home = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)

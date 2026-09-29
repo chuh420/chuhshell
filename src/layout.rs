@@ -151,7 +151,8 @@ pub fn show_ready(app: &gtk::Application, state: &Rc<AppState>) {
         }
         if let Some(scrolled) = launcher
             .child()
-            .and_then(|outer| outer.last_child())
+            .and_then(|outer| outer.first_child())
+            .and_then(|search| search.next_sibling())
             .and_downcast::<gtk::ScrolledWindow>()
         {
             scrolled.set_min_content_height(0);

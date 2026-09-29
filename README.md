@@ -10,7 +10,7 @@ the panel shows your workspaces, background apps, clock, notifications, volume, 
 
 press mod and space to open chuh menu in the middle of the screen. use up and down to move, enter or right to select, left to go back and escape to close. some sections are still marked wip and do not do anything yet.
 
-press mod and d to open the app launcher. it has fuzzy search and remembers the apps you use most. the app launcher section in chuh menu lets you hide or show apps. choose configure to drag the launcher to a new position or resize it by its bottom edge.
+press mod and d to open the app launcher. it has fuzzy search and remembers the apps you use most. pin apps with the button on the right to keep them at the top. right focuses the pin button, enter toggles it, and left returns to search. down from the last app focuses the sort button; up returns to the list. use the sort button to switch between most used and a–z; pins and sorting are saved in `~/.config/chuhshell/launcher.json` (or under `XDG_CONFIG_HOME`). the app launcher section in chuh menu lets you hide or show apps. choose configure to drag the launcher to a new position or resize it by its bottom edge.
 
 keybindings in chuh menu lists all niri bindings from the active config and its includes, plus chuhshell’s internal shortcuts. search by key, action or source, then enter or record a new combination and save. descriptions and source files are shown beside each binding; overridden bindings are marked. niri changes are validated before writing and reload automatically. internal shortcuts are stored in `keybindings` in the shell config and apply immediately. comma-separated alternatives are supported for internal shortcuts. standard gtk text editing and focus navigation remain provided by gtk.
 
