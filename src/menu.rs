@@ -17,6 +17,7 @@ enum Page {
     Weather,
     Calendar,
     Clipboard,
+    Todo,
     Keybindings,
     Appearance,
     Wallpaper,
@@ -58,11 +59,13 @@ fn entries(page: Page) -> Vec<(String, String, Action)> {
             ("Weather", "", Action::Page(Page::Weather)),
             ("Calendar", "", Action::Page(Page::Calendar)),
             ("Clipboard", "", Action::Page(Page::Clipboard)),
+            ("Todo", "", Action::Page(Page::Todo)),
         ],
         Page::Bluetooth
         | Page::Weather
         | Page::Calendar
         | Page::Clipboard
+        | Page::Todo
         | Page::Keybindings
         | Page::SelectWallpaper => Vec::new(),
         Page::Launcher => vec![
@@ -353,7 +356,7 @@ fn render_entries(
         Page::Wallpaper => Some(Page::Appearance),
         Page::SelectWallpaper => Some(Page::Wallpaper),
         Page::Bluetooth => Some(Page::Settings),
-        Page::Weather | Page::Calendar | Page::Clipboard => Some(Page::Info),
+        Page::Weather | Page::Calendar | Page::Clipboard | Page::Todo => Some(Page::Info),
         Page::Modules => Some(Page::Bar),
     };
     let back = parent.map(|parent| {
@@ -379,6 +382,7 @@ fn render_entries(
         Page::Weather => "Weather",
         Page::Calendar => "Calendar",
         Page::Clipboard => "Clipboard",
+        Page::Todo => "Todo",
         Page::Home => "chuh menu",
         Page::Launcher => "App launcher",
         Page::Bar => "Bar",
@@ -398,6 +402,7 @@ fn render_entries(
         Page::Bluetooth => Some(crate::bluetooth::view()),
         Page::Weather => Some(crate::weather::view()),
         Page::Calendar => Some(crate::info::calendar()),
+        Page::Todo => Some(crate::todo::view()),
         Page::Clipboard => {
             let weak = Rc::downgrade(state);
             Some(state.clipboard.view(move || {
@@ -746,10 +751,10 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
         }
         let mut child = widget.first_child();
         while let Some(widget) = child {
-            child = widget.next_sibling();
             if let Some(found) = find(&widget, class) {
                 return Some(found);
             }
+            child = widget.next_sibling();
         }
         None
     }
@@ -840,7 +845,7 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
     let menu = list(&window);
     menu.select_row(menu.row_at_index(3).as_ref());
     press(&window, gdk::Key::Return);
-    assert_eq!(crate::launcher::visible_rows(&list(&window)).len(), 3);
+    assert_eq!(crate::launcher::visible_rows(&list(&window)).len(), 4);
     let menu = list(&window);
     menu.select_row(menu.row_at_index(1).as_ref());
     press(&window, gdk::Key::Return);
@@ -857,6 +862,40 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
         &find(window.upcast_ref(), "menu-back").unwrap()
     ));
     press(&window, gdk::Key::Return);
+    assert_eq!(window.title().as_deref(), Some("Info"));
+    let info = list(&window);
+    info.select_row(info.row_at_index(3).as_ref());
+    press(&window, gdk::Key::Return);
+    assert_eq!(window.title().as_deref(), Some("Todo"));
+    crate::ui_tests::pump(100);
+    let entry = find(window.upcast_ref(), "todo-entry")
+        .unwrap()
+        .downcast::<gtk::Entry>()
+        .unwrap();
+    entry.set_text("Test task");
+    find(window.upcast_ref(), "todo-add")
+        .unwrap()
+        .downcast::<gtk::Button>()
+        .unwrap()
+        .emit_clicked();
+    crate::ui_tests::pump(100);
+    assert_eq!(crate::todo::load(&crate::todo::path()).unwrap().len(), 1);
+    let check = find(window.upcast_ref(), "todo-check")
+        .unwrap()
+        .downcast::<gtk::CheckButton>()
+        .unwrap();
+    check.set_active(true);
+    crate::ui_tests::pump(100);
+    assert!(crate::todo::load(&crate::todo::path()).unwrap()[0].done);
+    find(window.upcast_ref(), "todo-delete")
+        .unwrap()
+        .downcast::<gtk::Button>()
+        .unwrap()
+        .emit_clicked();
+    crate::ui_tests::pump(100);
+    assert!(crate::todo::load(&crate::todo::path()).unwrap().is_empty());
+    let back = find(window.upcast_ref(), "menu-back").unwrap();
+    back.downcast::<gtk::Button>().unwrap().emit_clicked();
     assert_eq!(window.title().as_deref(), Some("Info"));
     show_clipboard(app, state);
     let window = state.menu.borrow().as_ref().unwrap().clone();

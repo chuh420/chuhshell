@@ -22,6 +22,7 @@ mod notifications;
 mod process;
 mod services;
 mod storage;
+mod todo;
 mod ui;
 #[cfg(test)]
 mod ui_tests;
