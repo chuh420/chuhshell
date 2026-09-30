@@ -82,13 +82,25 @@ pub fn get() -> &'static Config {
 }
 
 pub fn save_value(key: &str, setting: serde_json::Value) -> Result<(), String> {
-    save_value_at(&path(), key, setting)
+    save_values_at(&path(), vec![(key.to_owned(), setting)])
 }
 
-fn save_value_at(
-    path: &std::path::Path,
+pub fn save_values(
+    settings: Vec<(String, serde_json::Value)>,
+) -> impl std::future::Future<Output = Result<(), String>> {
+    crate::storage::run(move || save_values_at(&path(), settings))
+}
+
+pub fn save_value_async(
     key: &str,
     setting: serde_json::Value,
+) -> impl std::future::Future<Output = Result<(), String>> {
+    save_values(vec![(key.to_owned(), setting)])
+}
+
+fn save_values_at(
+    path: &std::path::Path,
+    settings: Vec<(String, serde_json::Value)>,
 ) -> Result<(), String> {
     static SAVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = SAVE.lock().unwrap_or_else(|e| e.into_inner());
@@ -99,10 +111,12 @@ fn save_value_at(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
         Err(e) => return Err(format!("Could not read settings: {e}")),
     };
-    value
+    let object = value
         .as_object_mut()
-        .ok_or("Settings must be a JSON object")?
-        .insert(key.into(), setting);
+        .ok_or("Settings must be a JSON object")?;
+    for (key, setting) in settings {
+        object.insert(key, setting);
+    }
     crate::storage::atomic_write(
         path,
         &serde_json::to_vec_pretty(&value).map_err(|e| e.to_string())?,
@@ -114,6 +128,27 @@ fn save_value_at(
 mod tests {
     use super::*;
     #[test]
+    fn related_settings_are_saved_together() {
+        let path = std::env::temp_dir().join(format!(
+            "chuhshell-settings-transaction-{}.json",
+            std::process::id()
+        ));
+        save_values_at(
+            &path,
+            vec![
+                ("weather_location".into(), "city".into()),
+                ("weather_system".into(), false.into()),
+            ],
+        )
+        .unwrap();
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["weather_location"], "city");
+        assert_eq!(value["weather_system"], false);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn concurrent_settings_updates_preserve_other_fields_and_invalid_json() {
         let path =
             std::env::temp_dir().join(format!("chuhshell-settings-{}.json", std::process::id()));
@@ -121,14 +156,16 @@ mod tests {
         std::thread::scope(|scope| {
             for key in ["one", "two", "three"] {
                 let path = &path;
-                scope.spawn(move || save_value_at(path, key, true.into()).unwrap());
+                scope.spawn(move || {
+                    save_values_at(path, vec![(key.to_owned(), true.into())]).unwrap()
+                });
             }
         });
         let value: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(value.as_object().unwrap().len(), 4);
         std::fs::write(&path, b"invalid").unwrap();
-        assert!(save_value_at(&path, "one", false.into()).is_err());
+        assert!(save_values_at(&path, vec![("one".into(), false.into())]).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"invalid");
         std::fs::remove_file(path).unwrap();
     }

@@ -35,6 +35,46 @@ fn button(label: &str) -> gtk::Button {
 }
 
 impl Panel {
+    fn handle_key(
+        &self,
+        key: gtk::gdk::Key,
+        keycode: u32,
+        modifiers: gtk::gdk::ModifierType,
+    ) -> glib::Propagation {
+        if self.recording.get() {
+            let key = if matches!(self.target.borrow().as_ref(), Some(Target::Niri(_)))
+                && modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK)
+            {
+                self.entry
+                    .upgrade()
+                    .and_then(|w| w.display().map_keycode(keycode))
+                    .and_then(|keys| {
+                        keys.into_iter()
+                            .find(|(mapping, _)| mapping.group() == 0 && mapping.level() == 0)
+                    })
+                    .map_or(key, |(_, key)| key)
+            } else {
+                key
+            };
+            if key == gtk::gdk::Key::Escape {
+                self.recording.set(false);
+                self.status("Recording cancelled", false);
+            } else if let Some(value) = local::capture(key, modifiers) {
+                if let Some(entry) = self.entry.upgrade() {
+                    entry.set_text(&value);
+                }
+                self.recording.set(false);
+                self.status("Review the combination and Save", false);
+            }
+            return glib::Propagation::Stop;
+        }
+        if self.target.borrow().is_some() && key == gtk::gdk::Key::Escape {
+            self.cancel();
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    }
+
     fn status(&self, text: &str, error: bool) {
         if let Some(status) = self.status.upgrade() {
             status.set_text(text);
@@ -303,8 +343,25 @@ impl Panel {
     }
 }
 
-pub fn view() -> gtk::Box {
-    build(niri::config_path()).0
+pub struct View {
+    pub widget: gtk::Box,
+    panel: Rc<Panel>,
+}
+
+impl View {
+    pub fn handle_key(
+        &self,
+        key: gtk::gdk::Key,
+        keycode: u32,
+        modifiers: gtk::gdk::ModifierType,
+    ) -> glib::Propagation {
+        self.panel.handle_key(key, keycode, modifiers)
+    }
+}
+
+pub fn view() -> View {
+    let (widget, panel) = build(niri::config_path());
+    View { widget, panel }
 }
 
 fn build(root: std::path::PathBuf) -> (gtk::Box, Rc<Panel>) {
@@ -417,40 +474,7 @@ fn build(root: std::path::PathBuf) -> (gtk::Box, Rc<Panel>) {
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     keys.connect_key_pressed({
         let panel = panel.clone();
-        move |controller, key, keycode, modifiers| {
-            if panel.recording.get() {
-                let key = if matches!(panel.target.borrow().as_ref(), Some(Target::Niri(_)))
-                    && modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK)
-                {
-                    controller
-                        .widget()
-                        .and_then(|w| w.display().map_keycode(keycode))
-                        .and_then(|keys| {
-                            keys.into_iter()
-                                .find(|(mapping, _)| mapping.group() == 0 && mapping.level() == 0)
-                        })
-                        .map_or(key, |(_, key)| key)
-                } else {
-                    key
-                };
-                if key == gtk::gdk::Key::Escape {
-                    panel.recording.set(false);
-                    panel.status("Recording cancelled", false);
-                } else if let Some(value) = local::capture(key, modifiers) {
-                    if let Some(entry) = panel.entry.upgrade() {
-                        entry.set_text(&value);
-                    }
-                    panel.recording.set(false);
-                    panel.status("Review the combination and Save", false);
-                }
-                return glib::Propagation::Stop;
-            }
-            if panel.target.borrow().is_some() && key == gtk::gdk::Key::Escape {
-                panel.cancel();
-                return glib::Propagation::Stop;
-            }
-            glib::Propagation::Proceed
-        }
+        move |_, key, keycode, modifiers| panel.handle_key(key, keycode, modifiers)
     });
     outer.add_controller(keys);
     panel.refresh(false);

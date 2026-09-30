@@ -33,11 +33,49 @@ pub struct LauncherPreferences {
     pub alphabetical: bool,
 }
 
-pub fn read_launcher_preferences() -> LauncherPreferences {
+fn load_launcher_preferences() -> LauncherPreferences {
     fs::read(config_path().with_file_name("launcher.json"))
         .ok()
         .and_then(|contents| serde_json::from_slice(&contents).ok())
         .unwrap_or_default()
+}
+
+static PREFERENCES: OnceLock<Mutex<LauncherPreferences>> = OnceLock::new();
+
+pub fn read_launcher_preferences() -> LauncherPreferences {
+    PREFERENCES
+        .get_or_init(|| Mutex::new(load_launcher_preferences()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+pub enum PreferenceChange {
+    Pin(String),
+    Sort,
+}
+
+pub fn change_launcher_preferences(
+    change: PreferenceChange,
+) -> impl std::future::Future<Output = Result<LauncherPreferences, String>> {
+    crate::storage::run(move || {
+        let mut preferences = PREFERENCES
+            .get_or_init(|| Mutex::new(load_launcher_preferences()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut next = preferences.clone();
+        match change {
+            PreferenceChange::Pin(id) => {
+                if !next.pinned.remove(&id) {
+                    next.pinned.insert(id);
+                }
+            }
+            PreferenceChange::Sort => next.alphabetical = !next.alphabetical,
+        }
+        write_launcher_preferences(&next).map_err(|e| e.to_string())?;
+        *preferences = next.clone();
+        Ok(next)
+    })
 }
 
 pub fn write_launcher_preferences(preferences: &LauncherPreferences) -> std::io::Result<()> {

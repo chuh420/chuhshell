@@ -86,8 +86,8 @@ pub fn apply_launcher(window: &impl IsA<gtk::Window>, geometry: Geometry) {
     window.set_default_size(width, geometry.height);
 }
 
-fn save(geometry: Geometry) -> Result<(), String> {
-    crate::config::save_value("launcher_layout", serde_json::json!(geometry))
+fn save(geometry: Geometry) -> impl std::future::Future<Output = Result<(), String>> {
+    crate::config::save_value_async("launcher_layout", serde_json::json!(geometry))
 }
 
 pub fn show(app: &gtk::Application, state: &Rc<AppState>, bar: bool) {
@@ -353,13 +353,23 @@ pub fn show_ready(app: &gtk::Application, state: &Rc<AppState>) {
                 return;
             };
             let g = geometry.get().bounded(canvas.width(), canvas.height()).0;
-            if let Err(message) = save(g) {
-                error.set_text(&message);
-                error.set_visible(true);
+            if !window.is_sensitive() {
                 return;
             }
-            state.layouts.launcher.set(Some(g));
-            window.close();
+            let saved = save(g);
+            window.set_sensitive(false);
+            let error = error.clone();
+            glib::MainContext::default().spawn_local(async move {
+                let result = saved.await;
+                window.set_sensitive(true);
+                if let Err(message) = result {
+                    error.set_text(&message);
+                    error.set_visible(true);
+                    return;
+                }
+                state.layouts.launcher.set(Some(g));
+                window.close();
+            });
         }
     });
     cancel.connect_clicked({
@@ -388,7 +398,10 @@ pub fn show_ready(app: &gtk::Application, state: &Rc<AppState>) {
     window.add_controller(keys);
     window.connect_close_request({
         let state = Rc::downgrade(state);
-        move |_| {
+        move |window| {
+            if !window.is_sensitive() {
+                return glib::Propagation::Stop;
+            }
             if let Some(state) = state.upgrade() {
                 state.menu.borrow_mut().take();
                 let launcher = state.launcher.borrow_mut().take();
@@ -474,6 +487,7 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
     crate::ui_tests::pump(100);
     assert_eq!(launcher.surface().unwrap().height(), expected_height);
     button(window.upcast_ref(), "Save").unwrap().emit_clicked();
+    crate::ui_tests::pump(100);
     let saved = state.layouts.launcher.get().unwrap();
     assert_eq!(saved.height, expected_height);
     assert!(saved.x < 0.5);

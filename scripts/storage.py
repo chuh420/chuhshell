@@ -34,7 +34,7 @@ def snapshot(path):
         return {'link': os.readlink(path)}
     if not path.exists():
         return None
-    return {'data': base64.b64encode(path.read_bytes()).decode(), 'mode': path.stat().st_mode & 0o777}
+    return {'data': base64.b64encode(path.read_bytes()).decode(), 'mode': path.stat().st_mode & 0o7777}
 
 
 def restore(path, entry):

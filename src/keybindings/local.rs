@@ -260,12 +260,16 @@ pub fn remap(scope: &str, key: gdk::Key, modifiers: gdk::ModifierType) -> gdk::K
     gdk::Key::VoidSymbol
 }
 
-pub fn is_default(scope: &str, key: gdk::Key) -> bool {
+pub fn is_default(scope: &str, key: gdk::Key, modifiers: gdk::ModifierType) -> bool {
+    let mask = gdk::ModifierType::CONTROL_MASK
+        | gdk::ModifierType::SHIFT_MASK
+        | gdk::ModifierType::ALT_MASK
+        | gdk::ModifierType::SUPER_MASK;
     SHORTCUTS.iter().filter(|s| s.scope == scope).any(|s| {
         parse(s.defaults)
             .unwrap_or_default()
             .iter()
-            .any(|(default, _)| *default == key.to_lower())
+            .any(|binding| *binding == (key.to_lower(), modifiers & mask))
     })
 }
 
@@ -302,6 +306,20 @@ pub fn capture(key: gdk::Key, modifiers: gdk::ModifierType) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_keys_preserve_text_editing_combinations() {
+        for key in [gdk::Key::Left, gdk::Key::Right] {
+            assert!(is_default("launcher", key, gdk::ModifierType::empty()));
+            for modifiers in [
+                gdk::ModifierType::CONTROL_MASK,
+                gdk::ModifierType::SHIFT_MASK,
+                gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK,
+            ] {
+                assert!(!is_default("launcher", key, modifiers));
+            }
+        }
+    }
 
     #[test]
     fn conflicts_are_scoped_and_include_parent_menu_actions() {

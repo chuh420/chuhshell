@@ -1,6 +1,6 @@
 use gtk::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 
 pub const MODULES: &[(&str, &str)] = &[
@@ -119,6 +119,7 @@ impl Panel {
 }
 
 pub struct BarModules {
+    saving: Cell<bool>,
     order: RefCell<ModuleOrder>,
     panels: RefCell<Vec<Panel>>,
     disabled: RefCell<BTreeSet<String>>,
@@ -128,6 +129,7 @@ pub struct BarModules {
 impl Default for BarModules {
     fn default() -> Self {
         Self {
+            saving: Cell::new(false),
             order: RefCell::new(crate::config::get().bar_order.clone().normalized()),
             panels: RefCell::new(Vec::new()),
             disabled: RefCell::new(
@@ -159,8 +161,8 @@ impl BarModules {
         });
     }
 
-    pub fn save_order(&self) -> Result<(), String> {
-        crate::config::save_value("bar_order", serde_json::json!(self.order()))
+    pub fn save_order(&self) -> impl std::future::Future<Output = Result<(), String>> + use<> {
+        crate::config::save_value_async("bar_order", serde_json::json!(self.order()))
     }
 
     pub fn register(
@@ -227,7 +229,10 @@ impl BarModules {
         container
     }
 
-    pub fn toggle(&self, id: &str) -> Result<bool, String> {
+    pub async fn toggle(&self, id: &str) -> Result<bool, String> {
+        if self.saving.replace(true) {
+            return Err("Module settings are being saved".into());
+        }
         let enabled = !self.enabled(id);
         let mut disabled = self.disabled.borrow().clone();
         if enabled {
@@ -235,7 +240,10 @@ impl BarModules {
         } else {
             disabled.insert(id.to_owned());
         }
-        crate::config::save_value("disabled_modules", serde_json::json!(disabled))?;
+        let result =
+            crate::config::save_value_async("disabled_modules", serde_json::json!(disabled)).await;
+        self.saving.set(false);
+        result?;
         *self.disabled.borrow_mut() = disabled;
         self.widgets.borrow_mut().retain(|(name, weak)| {
             let Some(widget) = weak.upgrade() else {

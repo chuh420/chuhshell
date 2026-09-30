@@ -27,34 +27,54 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def object_state(path):
+    if path.is_symlink():
+        return {'kind': 'link', 'target': os.readlink(path)}
+    if not path.exists():
+        return None
+    if not path.is_file():
+        return {'kind': 'other'}
+    return {'kind': 'file', 'digest': digest(path.read_bytes()), 'mode': path.stat().st_mode & 0o7777}
+
+
+def installed_state(entry):
+    return entry.get('installed_state', {'kind': 'file', 'digest': entry['installed'], 'mode': entry['mode']})
+
+
+def original_snapshot(entry):
+    if 'original' in entry:
+        return entry['original']
+    if entry['existed']:
+        import base64
+        return {'data': base64.b64encode(Path(entry['backup']).read_bytes()).decode(), 'mode': entry['mode']}
+    return None
+
+
 def save(path, data, mode, manifest):
     key = str(path)
     if key not in manifest:
         backup = STATE / digest(key.encode())
-        exists = path.exists()
-        if exists:
+        original = snapshot(path)
+        exists = original is not None
+        if exists and 'data' in original:
             write(backup, path.read_bytes(), 0o600)
-        manifest[key] = {'existed': exists, 'backup': str(backup), 'mode': path.stat().st_mode & 0o777 if exists else mode}
-        if path.is_symlink():
-            manifest[key]['original'] = snapshot(path)
+        manifest[key] = {'existed': exists, 'backup': str(backup), 'mode': original.get('mode', mode) if exists else mode}
+        if original is None or 'link' in original:
+            manifest[key]['original'] = original
     write(path, data, mode)
     manifest[key]['installed'] = digest(data)
+    manifest[key]['installed_state'] = {'kind': 'file', 'digest': digest(data), 'mode': mode}
 
 
 def restore(manifest, respect_edits):
     remaining = {}
     for filename, entry in manifest.items():
         path = Path(filename)
-        if respect_edits and path.exists() and digest(path.read_bytes()) != entry['installed']:
+        if respect_edits and object_state(path) != installed_state(entry):
             print(f'Preserved modified file: {path}')
             remaining[filename] = entry
             continue
-        if 'original' in entry:
-            restore_file(path, entry['original'])
-        elif entry['existed']:
-            write(path, Path(entry['backup']).read_bytes(), entry['mode'])
-        else:
-            path.unlink(missing_ok=True)
+        restore_file(path, original_snapshot(entry))
     return remaining
 
 
@@ -106,10 +126,15 @@ def recover():
     if not path.exists():
         return
     journal = json.loads(path.read_text())
+    if journal.get('operation') == 'uninstall':
+        finish_uninstall(journal)
+        return
     for filename, entry in journal['files'].items():
         target = Path(filename)
         current = snapshot(target)
-        if current != entry['before'] and (not target.is_file() or target.is_symlink() or digest(target.read_bytes()) != entry['installed']):
+        expected = entry.get('installed_state')
+        matches = object_state(target) == expected if expected is not None else (target.is_file() and not target.is_symlink() and digest(target.read_bytes()) == entry['installed'])
+        if current != entry['before'] and not matches:
             raise RuntimeError(f'Interrupted installation: {target} changed afterwards. Preserve your edits and resolve {path} before retrying.')
     if journal['stopped']:
         run('systemctl', '--user', 'stop', 'chuhshell.service', check=False)
@@ -146,6 +171,7 @@ def install(config=None):
     manifest = json.loads(MANIFEST.read_text()) if MANIFEST.exists() else {}
     destination = HOME_DIR / '.local/bin/chuhshell'
     service_path = CONFIG / 'systemd/user/chuhshell.service'
+    previous_service = manifest.get(str(service_path))
     notification_path = DATA / 'dbus-1/services/org.freedesktop.Notifications.service'
     service = (ROOT / 'packaging/chuhshell.service').read_text().replace('ExecStart=/usr/bin/chuhshell', 'ExecStart=' + json.dumps(str(destination)))
     notification = (ROOT / 'packaging/org.freedesktop.Notifications.service').read_text().replace('Exec=/usr/bin/chuhshell', 'Exec=' + json.dumps(str(destination)))
@@ -156,8 +182,8 @@ def install(config=None):
         if path.read_text() != entry['before']:
             raise RuntimeError(f'Niri configuration changed while preparing installation: {path}')
         if entry['text'] != entry['before']:
-            changes.append((path, entry['text'].encode(), path.stat().st_mode & 0o777))
-    before = {str(path): {'before': snapshot(path), 'installed': digest(data)} for path, data, _ in changes}
+            changes.append((path, entry['text'].encode(), path.stat().st_mode & 0o7777))
+    before = {str(path): {'before': snapshot(path), 'installed': digest(data), 'installed_state': {'kind': 'file', 'digest': digest(data), 'mode': mode}} for path, data, mode in changes}
     enabled_before = run('systemctl', '--user', 'is-enabled', 'chuhshell.service', check=False).returncode == 0
     active_before = run('systemctl', '--user', 'is-active', 'chuhshell.service', check=False).returncode == 0
     standalone = None
@@ -171,6 +197,8 @@ def install(config=None):
     try:
         for path, data, mode in changes:
             save(path, data, mode, manifest)
+        if previous_service is None:
+            manifest[str(service_path)]['service_before'] = {'enabled': enabled_before, 'active': active_before}
         run('systemctl', '--user', 'daemon-reload')
         environment = [name for name in ['WAYLAND_DISPLAY', 'NIRI_SOCKET', 'DISPLAY', 'XDG_CURRENT_DESKTOP'] if name in os.environ]
         if environment:
@@ -195,20 +223,68 @@ def install(config=None):
         raise
 
 
+def save_journal(journal):
+    write(journal_path(), json.dumps(journal).encode(), 0o600)
+
+
+def finish_uninstall(journal):
+    service_path = str(CONFIG / 'systemd/user/chuhshell.service')
+    if not journal['stopped']:
+        if service_path not in journal['remaining']:
+            run('systemctl', '--user', 'disable', '--now', 'chuhshell.service')
+        journal['stopped'] = True
+        save_journal(journal)
+    for filename, entry in journal['files'].items():
+        if entry.get('done'):
+            continue
+        target = Path(filename)
+        current = snapshot(target)
+        if current != entry['before'] and current != entry['after']:
+            raise RuntimeError(f'Interrupted uninstall: {target} changed afterwards. Preserve your edits and resolve {journal_path()} before retrying.')
+        if current != entry['after']:
+            restore_file(target, entry['after'])
+        entry['done'] = True
+        save_journal(journal)
+    if journal['remaining']:
+        write(MANIFEST, json.dumps(journal['remaining'], indent=2).encode(), 0o600)
+    else:
+        MANIFEST.unlink(missing_ok=True)
+        sync_directory(STATE)
+    run('systemctl', '--user', 'daemon-reload')
+    service = journal.get('service')
+    if service is not None and service_path not in journal['remaining'] and (service['enabled'] or service['active'] or Path(service_path).exists()):
+        run('systemctl', '--user', 'enable' if service['enabled'] else 'disable', 'chuhshell.service')
+        if service['active']:
+            run('systemctl', '--user', 'start', 'chuhshell.service')
+        else:
+            run('systemctl', '--user', 'stop', 'chuhshell.service')
+    if 'NIRI_SOCKET' in os.environ:
+        run('niri', 'msg', 'action', 'load-config-file')
+    journal_path().unlink()
+    sync_directory(STATE)
+    print('Restored installation backups; independently modified files were preserved')
+
+
 def uninstall():
+    resuming = journal_path().exists() and json.loads(journal_path().read_text()).get('operation') == 'uninstall'
     recover()
+    if resuming:
+        return
     if not MANIFEST.exists():
         raise RuntimeError('No installation manifest found')
-    run('systemctl', '--user', 'disable', '--now', 'chuhshell.service', check=False)
-    remaining = restore(json.loads(MANIFEST.read_text()), True)
-    if remaining:
-        write(MANIFEST, json.dumps(remaining, indent=2).encode(), 0o600)
-    else:
-        MANIFEST.unlink()
-    run('systemctl', '--user', 'daemon-reload')
-    if 'NIRI_SOCKET' in os.environ:
-        run('niri', 'msg', 'action', 'load-config-file', check=False)
-    print('Restored installation backups; independently modified files were preserved')
+    manifest = json.loads(MANIFEST.read_text())
+    files, remaining = {}, {}
+    for filename, entry in manifest.items():
+        target = Path(filename)
+        if object_state(target) != installed_state(entry):
+            print(f'Preserved modified file: {target}')
+            remaining[filename] = entry
+        else:
+            files[filename] = {'before': snapshot(target), 'after': original_snapshot(entry), 'done': False}
+    service_path = str(CONFIG / 'systemd/user/chuhshell.service')
+    journal = {'operation': 'uninstall', 'files': files, 'remaining': remaining, 'service': manifest.get(service_path, {}).get('service_before'), 'stopped': False}
+    save_journal(journal)
+    finish_uninstall(journal)
 
 
 if __name__ == '__main__':

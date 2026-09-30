@@ -74,6 +74,22 @@ fn ui_regressions() {
     assert!(!immediate_window.is_visible());
     assert!(!immediate_window.has_css_class("shell-closing"));
     settings.set_gtk_enable_animations(animations);
+    let heartbeats = Rc::new(std::cell::Cell::new(0));
+    let heartbeat = glib::timeout_add_local(Duration::from_millis(5), {
+        let heartbeats = heartbeats.clone();
+        move || {
+            heartbeats.set(heartbeats.get() + 1);
+            glib::ControlFlow::Continue
+        }
+    });
+    let delayed = crate::storage::run(|| {
+        std::thread::sleep(Duration::from_millis(200));
+        Ok(())
+    });
+    pump(80);
+    assert!(heartbeats.get() >= 5);
+    glib::MainContext::default().block_on(delayed).unwrap();
+    heartbeat.remove();
     crate::launcher::regression_checks(&app);
     crate::bar::regression_checks();
     crate::notification_center::regression_checks(&app);
@@ -119,7 +135,7 @@ fn ui_regressions() {
     crate::clipboard::regression_checks(&app);
     crate::keybindings::regression_checks(&app);
     crate::bluetooth::regression_checks(&app);
-    crate::network::regression_checks();
+    crate::network::regression_checks(&network_button);
     crate::weather::regression_checks(&app);
     crate::layout::regression_checks(&app, &state);
     crate::bar_editor::regression_checks(&app, &state);

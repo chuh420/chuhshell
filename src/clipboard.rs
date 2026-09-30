@@ -319,7 +319,7 @@ impl History {
             let list = list.downgrade();
             let render = render.clone();
             move |_, key, _, modifiers| {
-                let default_key = crate::keybindings::is_default("clipboard", key);
+                let default_key = crate::keybindings::is_default("clipboard", key, modifiers);
                 let key = crate::keybindings::remap("clipboard", key, modifiers);
                 let Some(list) = list.upgrade() else {
                     return glib::Propagation::Proceed;

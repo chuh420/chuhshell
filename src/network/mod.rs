@@ -28,6 +28,11 @@ pub struct NetworkMenu {
     service_error: RefCell<Option<String>>,
     busy: Cell<bool>,
     updating: Cell<bool>,
+    switching: Cell<bool>,
+    generation: Cell<u64>,
+    detail_network: RefCell<Option<Network>>,
+    #[cfg(test)]
+    captured_actions: RefCell<Option<Vec<Action>>>,
 }
 
 fn label(text: &str, class: &str) -> gtk::Label {
@@ -55,31 +60,58 @@ impl NetworkMenu {
             service_error: RefCell::new(None),
             busy: Cell::new(false),
             updating: Cell::new(false),
+            switching: Cell::new(false),
+            generation: Cell::new(0),
+            detail_network: RefCell::new(None),
+            #[cfg(test)]
+            captured_actions: RefCell::new(None),
         });
         let weak = Rc::downgrade(&menu);
         service.subscribe(move |result| {
             let Some(menu) = weak.upgrade() else {
                 return false;
             };
-            match result {
-                Ok(snapshot) => {
-                    let initial = menu.snapshot.borrow().is_none();
-                    *menu.snapshot.borrow_mut() = Some(snapshot.clone());
-                    menu.update_header();
-                    menu.render_list();
-                    let recovered = menu.service_error.borrow_mut().take().is_some();
-                    if initial || recovered {
-                        menu.message("Select a network to manage it", false);
-                    }
-                }
-                Err(error) => {
-                    *menu.service_error.borrow_mut() = Some(error.clone());
-                    menu.message(error, true);
-                }
-            }
+            menu.receive(result);
             true
         });
         menu
+    }
+
+    fn receive(self: &Rc<Self>, result: &Result<Snapshot, String>) {
+        match result {
+            Ok(snapshot) => {
+                let initial = self.snapshot.borrow().is_none();
+                let stale = self.detail_network.borrow().as_ref().is_some_and(|target| {
+                    !snapshot.networks.iter().any(|network| {
+                        network.ssid == target.ssid
+                            && network.security == target.security
+                            && network.access_point == target.access_point
+                            && network.profile == target.profile
+                            && network.active == target.active
+                    })
+                });
+                let changed = self.device() != snapshot.device.as_ref().map(|a| a.path.clone());
+                self.switching.set(false);
+                *self.snapshot.borrow_mut() = Some(snapshot.clone());
+                if changed || stale {
+                    self.show_list();
+                }
+                let recovered = self.service_error.borrow_mut().take().is_some();
+                self.update_header();
+                self.set_busy(self.busy.get());
+                self.render_list();
+                if initial || recovered {
+                    self.message("Select a network to manage it", false);
+                }
+            }
+            Err(error) => {
+                *self.service_error.borrow_mut() = Some(error.clone());
+                self.switching.set(false);
+                self.show_list();
+                self.set_busy(self.busy.get());
+                self.message(error, true);
+            }
+        }
     }
 
     pub fn toggle(self: &Rc<Self>, anchor: &gtk::Button) {
@@ -160,6 +192,8 @@ impl NetworkMenu {
         let weak = Rc::downgrade(self);
         popover.connect_closed(move |_| {
             if let Some(menu) = weak.upgrade() {
+                menu.generation.set(menu.generation.get().wrapping_add(1));
+                menu.detail_network.borrow_mut().take();
                 menu.view.borrow_mut().take();
             }
         });
@@ -200,6 +234,9 @@ impl NetworkMenu {
                     .as_ref()
                     .and_then(|s| s.adapters.get(dropdown.selected() as usize))
                     .map(|a| a.name.clone());
+                menu.switching.set(true);
+                menu.show_list();
+                menu.set_busy(menu.busy.get());
                 menu.service.select(name);
                 menu.refresh();
             }
@@ -248,7 +285,9 @@ impl NetworkMenu {
     fn set_busy(&self, busy: bool) {
         self.busy.set(busy);
         if let Some(view) = self.view.borrow().as_ref() {
-            view.controls.set_sensitive(!busy);
+            view.controls.set_sensitive(
+                !busy && !self.switching.get() && self.service_error.borrow().is_none(),
+            );
             view.spinner.set_visible(busy);
             view.spinner.set_spinning(busy);
         }
@@ -259,7 +298,12 @@ impl NetworkMenu {
     }
 
     fn run(self: &Rc<Self>, action: Action, message: &str) {
-        if self.busy.get() {
+        if self.busy.get() || self.switching.get() || self.service_error.borrow().is_some() {
+            return;
+        }
+        #[cfg(test)]
+        if let Some(actions) = self.captured_actions.borrow_mut().as_mut() {
+            actions.push(action);
             return;
         }
         self.set_busy(true);
@@ -439,6 +483,8 @@ impl NetworkMenu {
     }
 
     fn show_list(self: &Rc<Self>) {
+        self.generation.set(self.generation.get().wrapping_add(1));
+        self.detail_network.borrow_mut().take();
         if let Some(view) = self.view.borrow().as_ref() {
             view.stack.set_visible_child_name("networks");
             while let Some(child) = view.detail.first_child() {
@@ -449,7 +495,12 @@ impl NetworkMenu {
     }
 
     fn form(self: &Rc<Self>, title: &str) -> Option<View> {
+        if self.busy.get() || self.switching.get() || self.service_error.borrow().is_some() {
+            return None;
+        }
+        self.detail_network.borrow_mut().take();
         let view = self.view.borrow().clone()?;
+        self.generation.set(self.generation.get().wrapping_add(1));
         while let Some(child) = view.detail.first_child() {
             view.detail.remove(&child);
         }
@@ -468,10 +519,25 @@ impl NetworkMenu {
         Some(view)
     }
 
+    fn form_device(&self, device: &str, generation: u64) -> Option<String> {
+        if self.generation.get() != generation
+            || self.switching.get()
+            || self.service_error.borrow().is_some()
+        {
+            return None;
+        }
+        self.device().filter(|current| current == device)
+    }
+
     fn network_form(self: &Rc<Self>, network: Network) {
         let Some(view) = self.form(&network.name) else {
             return;
         };
+        let Some(device_path) = self.device() else {
+            return;
+        };
+        let generation = self.generation.get();
+        *self.detail_network.borrow_mut() = Some(network.clone());
         let mut details = network.security.label().to_string();
         if let Some(strength) = network.strength {
             details.push_str(&format!(" · {strength}%"));
@@ -488,9 +554,10 @@ impl NetworkMenu {
         if network.active {
             let disconnect = button("Disconnect");
             let weak = Rc::downgrade(self);
+            let device_path = device_path.clone();
             disconnect.connect_clicked(move |_| {
                 if let Some(menu) = weak.upgrade()
-                    && let Some(device) = menu.device()
+                    && let Some(device) = menu.form_device(&device_path, generation)
                 {
                     menu.run(Action::Disconnect(device), "Disconnecting…");
                 }
@@ -514,9 +581,10 @@ impl NetworkMenu {
             let weak = Rc::downgrade(self);
             let target = network.clone();
             let input = password.clone();
+            let device_path = device_path.clone();
             connect.connect_clicked(move |_| {
                 if let Some(menu) = weak.upgrade()
-                    && let Some(device) = menu.device()
+                    && let Some(device) = menu.form_device(&device_path, generation)
                 {
                     let password = input.text().to_string();
                     menu.run(
@@ -555,7 +623,9 @@ impl NetworkMenu {
             let weak = Rc::downgrade(self);
             let confirmed = Cell::new(false);
             forget.connect_clicked(move |button| {
-                if let Some(menu) = weak.upgrade() {
+                if let Some(menu) = weak.upgrade()
+                    && menu.form_device(&device_path, generation).is_some()
+                {
                     if confirmed.replace(true) {
                         menu.run(Action::Forget(profile.clone()), "Removing saved network…");
                     } else {
@@ -572,6 +642,10 @@ impl NetworkMenu {
         let Some(view) = self.form("Hidden network") else {
             return;
         };
+        let Some(device_path) = self.device() else {
+            return;
+        };
+        let generation = self.generation.get();
         let name = gtk::Entry::new();
         name.set_placeholder_text(Some("Network name (SSID)"));
         name.set_max_length(32);
@@ -604,7 +678,7 @@ impl NetworkMenu {
         let input = password.clone();
         connect.connect_clicked(move |_| {
             if let Some(menu) = weak.upgrade()
-                && let Some(device) = menu.device()
+                && let Some(device) = menu.form_device(&device_path, generation)
             {
                 let name = ssid.text().to_string();
                 let security = match security.selected() {
@@ -648,6 +722,84 @@ impl NetworkMenu {
 }
 
 #[cfg(test)]
-pub fn regression_checks() {
+pub fn regression_checks(anchor: &gtk::Button) {
     backend::regression_checks();
+    let menu = NetworkMenu::new(service::Service::new());
+    *menu.captured_actions.borrow_mut() = Some(Vec::new());
+    menu.toggle(anchor);
+    let adapters = ["A", "B"].map(|name| backend::Adapter {
+        path: format!("/adapter/{name}"),
+        name: name.into(),
+    });
+    let network = Network {
+        ssid: b"Example".to_vec(),
+        name: "Example".into(),
+        access_point: "/ap/A".into(),
+        profile: None,
+        security: Security::Open,
+        strength: Some(80),
+        frequency: 2400,
+        active: true,
+        hidden: false,
+    };
+    let mut snapshot = Snapshot {
+        enabled: true,
+        hardware_enabled: true,
+        adapters: adapters.to_vec(),
+        device: Some(adapters[0].clone()),
+        networks: vec![network.clone()],
+        address: String::new(),
+    };
+    for active in [true, false] {
+        snapshot.device = Some(adapters[0].clone());
+        snapshot.networks[0].active = active;
+        menu.receive(&Ok(snapshot.clone()));
+        menu.network_form(snapshot.networks[0].clone());
+        let view = menu.view.borrow().clone().unwrap();
+        let old_button = view
+            .detail
+            .last_child()
+            .unwrap()
+            .downcast::<gtk::Button>()
+            .unwrap();
+        old_button.emit_clicked();
+        let actions = menu
+            .captured_actions
+            .borrow_mut()
+            .as_mut()
+            .unwrap()
+            .pop()
+            .unwrap();
+        match actions {
+            Action::Disconnect(device) | Action::Connect { device, .. } => {
+                assert_eq!(device, "/adapter/A")
+            }
+            _ => panic!("Unexpected network operation"),
+        }
+        view.adapter.set_selected(1);
+        assert_eq!(view.stack.visible_child_name().as_deref(), Some("networks"));
+        assert!(!view.controls.is_sensitive());
+        old_button.emit_clicked();
+        assert!(menu.captured_actions.borrow().as_ref().unwrap().is_empty());
+        snapshot.device = Some(adapters[1].clone());
+        menu.receive(&Ok(snapshot.clone()));
+        old_button.emit_clicked();
+        assert!(menu.captured_actions.borrow().as_ref().unwrap().is_empty());
+        assert!(view.controls.is_sensitive());
+    }
+    menu.network_form(snapshot.networks[0].clone());
+    let view = menu.view.borrow().clone().unwrap();
+    let old_button = view
+        .detail
+        .last_child()
+        .unwrap()
+        .downcast::<gtk::Button>()
+        .unwrap();
+    menu.receive(&Err("Unavailable".into()));
+    old_button.emit_clicked();
+    assert!(menu.captured_actions.borrow().as_ref().unwrap().is_empty());
+    assert!(!view.controls.is_sensitive());
+    menu.receive(&Ok(snapshot));
+    assert!(view.controls.is_sensitive());
+    view.popover.popdown();
 }

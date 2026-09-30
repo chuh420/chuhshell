@@ -34,10 +34,107 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     result
 }
 
+type Job = Box<dyn FnOnce() + Send>;
+
+struct Worker {
+    sender: async_channel::Sender<Job>,
+    thread: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+impl Worker {
+    fn new() -> Self {
+        let (sender, receiver) = async_channel::bounded::<Job>(64);
+        let thread = std::thread::spawn(move || {
+            while let Ok(job) = receiver.recv_blocking() {
+                job();
+            }
+        });
+        Self {
+            sender,
+            thread: std::sync::Mutex::new(Some(thread)),
+        }
+    }
+
+    fn submit<T: Send + 'static, F: FnOnce() -> Result<T, String> + Send + 'static>(
+        &self,
+        operation: F,
+    ) -> impl std::future::Future<Output = Result<T, String>> + use<T, F> {
+        let (sender, receiver) = async_channel::bounded(1);
+        let queued = self
+            .sender
+            .try_send(Box::new(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation))
+                    .unwrap_or_else(|_| Err("Settings worker interrupted".into()));
+                let _ = sender.try_send(result);
+            }))
+            .map_err(|_| "Settings queue is full or stopped".to_owned());
+        async move {
+            queued?;
+            receiver
+                .recv()
+                .await
+                .map_err(|_| "Settings worker stopped".to_owned())?
+        }
+    }
+
+    fn stop(&self) {
+        self.sender.close();
+        if let Some(thread) = self.thread.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+static WORKER: std::sync::OnceLock<Worker> = std::sync::OnceLock::new();
+
+pub fn run<T: Send + 'static>(
+    operation: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> impl std::future::Future<Output = Result<T, String>> {
+    WORKER.get_or_init(Worker::new).submit(operation)
+}
+
+pub fn shutdown() {
+    if let Some(worker) = WORKER.get() {
+        worker.stop();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    #[test]
+    fn worker_bounds_the_queue_and_drains_in_submission_order() {
+        let worker = Worker::new();
+        let (release, wait) = std::sync::mpsc::channel();
+        let (started, ready) = std::sync::mpsc::channel();
+        let first = worker.submit(move || {
+            started.send(()).unwrap();
+            wait.recv().unwrap();
+            Ok(())
+        });
+        ready.recv().unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut jobs = Vec::new();
+        for i in 0..64 {
+            let seen = seen.clone();
+            jobs.push(worker.submit(move || {
+                seen.lock().unwrap().push(i);
+                Ok(())
+            }));
+        }
+        let context = glib::MainContext::new();
+        assert!(context.block_on(worker.submit(|| Ok(()))).is_err());
+        release.send(()).unwrap();
+        worker.stop();
+        context.block_on(first).unwrap();
+        for job in jobs {
+            context.block_on(job).unwrap();
+        }
+        assert_eq!(*seen.lock().unwrap(), (0..64).collect::<Vec<_>>());
+        assert!(context.block_on(worker.submit(|| Ok(()))).is_err());
+    }
+
     #[test]
     fn replacement_preserves_permissions_and_complete_content() {
         let path = std::env::temp_dir().join(format!("chuhshell-storage-{}", std::process::id()));

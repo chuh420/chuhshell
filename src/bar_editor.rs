@@ -292,18 +292,29 @@ pub fn show(app: &gtk::Application, state: &Rc<AppState>) {
         let committed = committed.clone();
         move |_| {
             if let (Some(state), Some(window)) = (state.upgrade(), window.upgrade()) {
-                match state.bar_modules.save_order() {
-                    Ok(()) => {
-                        committed.set(true);
-                        window.close();
-                    }
-                    Err(error) => {
-                        if let Some(status) = status.upgrade() {
-                            status.set_text(&error);
-                            status.add_css_class("menu-error");
+                if !window.is_sensitive() {
+                    return;
+                }
+                let saved = state.bar_modules.save_order();
+                window.set_sensitive(false);
+                let status = status.clone();
+                let committed = committed.clone();
+                glib::MainContext::default().spawn_local(async move {
+                    let result = saved.await;
+                    window.set_sensitive(true);
+                    match result {
+                        Ok(()) => {
+                            committed.set(true);
+                            window.close();
+                        }
+                        Err(error) => {
+                            if let Some(status) = status.upgrade() {
+                                status.set_text(&error);
+                                status.add_css_class("menu-error");
+                            }
                         }
                     }
-                }
+                });
             }
         }
     });
@@ -327,7 +338,10 @@ pub fn show(app: &gtk::Application, state: &Rc<AppState>) {
     window.add_controller(keys);
     window.connect_close_request({
         let state = Rc::downgrade(state);
-        move |_| {
+        move |window| {
+            if !window.is_sensitive() {
+                return glib::Propagation::Stop;
+            }
             if let Some(state) = state.upgrade() {
                 state.menu.borrow_mut().take();
                 if !committed.get() {
@@ -463,6 +477,7 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
             .is_none()
     );
     click(&window, "Save");
+    crate::ui_tests::pump(100);
     assert_eq!(
         crate::config::read()
             .unwrap()
@@ -521,7 +536,9 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
     crate::ui_tests::pump(100);
     assert!(state.menu.borrow().is_none());
     assert_eq!(state.bar_modules.order(), saved);
-    state.bar_modules.toggle("audio").unwrap();
+    glib::MainContext::default()
+        .block_on(state.bar_modules.toggle("audio"))
+        .unwrap();
     let mut order = saved.clone();
     order.place("audio", 1, 0);
     state.bar_modules.preview(order);
@@ -543,6 +560,8 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
         let audio = group.first_child().unwrap();
         assert!(!audio.get_visible());
     }
-    state.bar_modules.toggle("audio").unwrap();
+    glib::MainContext::default()
+        .block_on(state.bar_modules.toggle("audio"))
+        .unwrap();
     state.bar_modules.preview(saved);
 }

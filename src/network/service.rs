@@ -108,6 +108,7 @@ impl Service {
         let _ = self.wake.try_send(());
     }
     pub fn select(&self, name: Option<String>) {
+        self.latest.borrow_mut().take();
         *self.preferred.lock().unwrap_or_else(|e| e.into_inner()) = name;
         self.refresh();
     }

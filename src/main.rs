@@ -176,6 +176,7 @@ fn main() -> glib::ExitCode {
         let guard = app.hold();
         app.connect_shutdown(move |_| {
             let _ = &guard;
+            crate::storage::shutdown();
             process::shutdown();
         });
         for signal in [libc::SIGTERM, libc::SIGINT] {

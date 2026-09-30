@@ -27,18 +27,17 @@ fn show_inner(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode, 
     crate::ui::close_popover();
     let generation = state.launcher_generation.get().wrapping_add(1);
     state.launcher_generation.set(generation);
-    let (tx, rx) = async_channel::bounded(1);
-    std::thread::spawn(move || {
-        let _ = tx.send_blocking((
+    let loaded = crate::storage::run(|| {
+        Ok((
             apps::load_apps(),
             apps::read_launch_counts(),
             apps::read_launcher_preferences(),
-        ));
+        ))
     });
     let state = Rc::downgrade(state);
     let app = app.downgrade();
     glib::MainContext::default().spawn_local(async move {
-        if let Ok((apps, counts, preferences)) = rx.recv().await
+        if let Ok((apps, counts, preferences)) = loaded.await
             && let (Some(app), Some(state)) = (app.upgrade(), state.upgrade())
             && state.launcher_generation.get() == generation
         {
@@ -177,38 +176,12 @@ fn create(
     window.set_child(Some(&outer));
 
     let preferences = Rc::new(RefCell::new(settings.1));
-    let (save_tx, save_rx) = async_channel::bounded::<apps::LauncherPreferences>(32);
-    let (error_tx, error_rx) = async_channel::bounded(1);
-    std::thread::spawn(move || {
-        while let Ok(preferences) = save_rx.recv_blocking() {
-            if let Err(error) = apps::write_launcher_preferences(&preferences) {
-                let _ = error_tx.try_send(error.to_string());
-            }
-        }
-    });
+    let saving = Rc::new(std::cell::Cell::new(false));
     let save_error = gtk::Label::new(None);
     save_error.add_css_class("app-meta");
     save_error.set_wrap(true);
     save_error.set_visible(false);
     outer.append(&save_error);
-    let save_error = save_error.downgrade();
-    let error_window = window.downgrade();
-    glib::MainContext::default().spawn_local(async move {
-        while let Ok(error) = error_rx.recv().await {
-            if let Some(label) = save_error.upgrade() {
-                label.set_text(
-                    "Could not save launcher preferences. Changes may be lost after closing.",
-                );
-                label.set_visible(true);
-            }
-            if let Some(window) = error_window.upgrade() {
-                window.set_title(Some(&format!(
-                    "Failed to save launcher preferences: {error}"
-                )));
-            }
-            eprintln!("chuhshell: failed to save launcher preferences: {error}");
-        }
-    });
     let sort = gtk::Button::new();
     sort.add_css_class("launcher-sort");
     sort.set_halign(gtk::Align::End);
@@ -223,23 +196,53 @@ fn create(
     }
     sort.connect_clicked({
         let preferences = preferences.clone();
-        let save_tx = save_tx.clone();
+        let saving = saving.clone();
+        let error = save_error.downgrade();
         let list = list.downgrade();
         move |button| {
-            let mut next = preferences.borrow().clone();
-            next.alphabetical = !next.alphabetical;
-            if save_tx.try_send(next.clone()).is_err() {
+            if saving.replace(true) {
                 return;
             }
-            button.set_label(if next.alphabetical {
-                "sort: a–z"
-            } else {
-                "sort: most used"
+            let saved = apps::change_launcher_preferences(apps::PreferenceChange::Sort);
+            let focused = button.is_focus();
+            button.set_sensitive(false);
+            let button = button.downgrade();
+            let preferences = preferences.clone();
+            let saving = saving.clone();
+            let list = list.clone();
+            let error = error.clone();
+            glib::MainContext::default().spawn_local(async move {
+                let result = saved.await;
+                saving.set(false);
+                if let Some(button) = button.upgrade() {
+                    button.set_sensitive(true);
+                    if focused {
+                        button.grab_focus();
+                    }
+                    match result {
+                        Ok(next) => {
+                            button.set_label(if next.alphabetical {
+                                "sort: a–z"
+                            } else {
+                                "sort: most used"
+                            });
+                            *preferences.borrow_mut() = next;
+                            if let Some(list) = list.upgrade() {
+                                list.invalidate_sort();
+                            }
+                            if let Some(error) = error.upgrade() {
+                                error.set_visible(false);
+                            }
+                        }
+                        Err(message) => {
+                            if let Some(error) = error.upgrade() {
+                                error.set_text(&message);
+                                error.set_visible(true);
+                            }
+                        }
+                    }
+                }
             });
-            *preferences.borrow_mut() = next;
-            if let Some(list) = list.upgrade() {
-                list.invalidate_sort();
-            }
         }
     });
     let scores = Rc::new(RefCell::new(HashMap::new()));
@@ -298,27 +301,55 @@ fn create(
                 pin.connect_clicked({
                     let id = entry.id.clone();
                     let preferences = preferences.clone();
-                    let save_tx = save_tx.clone();
+                    let saving = saving.clone();
+                    let error = save_error.downgrade();
                     let list = list.downgrade();
                     let row = row.downgrade();
                     move |button| {
-                        let mut next = preferences.borrow().clone();
-                        if !next.pinned.remove(&id) {
-                            next.pinned.insert(id.clone());
-                        }
-                        if save_tx.try_send(next.clone()).is_err() {
+                        if saving.replace(true) {
                             return;
                         }
+                        let saved = apps::change_launcher_preferences(apps::PreferenceChange::Pin(
+                            id.clone(),
+                        ));
                         let focused = button.is_focus();
-                        update_pin(button, next.pinned.contains(&id));
-                        *preferences.borrow_mut() = next;
-                        if let Some(list) = list.upgrade() {
-                            list.invalidate_sort();
-                            list.select_row(row.upgrade().as_ref());
-                            if focused {
-                                button.grab_focus();
+                        button.set_sensitive(false);
+                        let button = button.downgrade();
+                        let id = id.clone();
+                        let preferences = preferences.clone();
+                        let saving = saving.clone();
+                        let error = error.clone();
+                        let list = list.clone();
+                        let row = row.clone();
+                        glib::MainContext::default().spawn_local(async move {
+                            let result = saved.await;
+                            saving.set(false);
+                            if let Some(button) = button.upgrade() {
+                                button.set_sensitive(true);
+                                match result {
+                                    Ok(next) => {
+                                        update_pin(&button, next.pinned.contains(&id));
+                                        *preferences.borrow_mut() = next;
+                                        if let Some(list) = list.upgrade() {
+                                            list.invalidate_sort();
+                                            list.select_row(row.upgrade().as_ref());
+                                            if focused {
+                                                button.grab_focus();
+                                            }
+                                        }
+                                        if let Some(error) = error.upgrade() {
+                                            error.set_visible(false);
+                                        }
+                                    }
+                                    Err(message) => {
+                                        if let Some(error) = error.upgrade() {
+                                            error.set_text(&message);
+                                            error.set_visible(true);
+                                        }
+                                    }
+                                }
                             }
-                        }
+                        });
                     }
                 });
             }
@@ -415,6 +446,7 @@ fn create(
     let state_for_activate = Rc::downgrade(state);
     let window_for_activate = window.downgrade();
     let counts_for_activate = Rc::clone(&counts);
+    let saving = saving.clone();
     list.connect_row_activated(move |_, row| {
         let Some(state_for_activate) = state_for_activate.upgrade() else {
             return;
@@ -426,43 +458,62 @@ fn create(
             return;
         };
         if mode == LauncherMode::Manage {
-            let apps = state_for_activate.launcher_apps.borrow();
-            let Some(hidden) = apps::toggled_hidden(&apps, &id, apps::read_hidden()) else {
-                return;
-            };
-            if let Err(error) = apps::write_hidden(&hidden) {
-                eprintln!("chuhshell: failed to save hidden apps: {error}");
+            if saving.replace(true) {
                 return;
             }
-            drop(apps);
-            let mut apps = state_for_activate.launcher_apps.borrow_mut();
-            if let Some(entry) = apps.iter_mut().find(|entry| entry.id == id) {
-                entry.hidden = !entry.hidden;
-            }
-            if let Some(content) = row.child().and_downcast::<gtk::Box>() {
-                if let Some(icon) = content.first_child().and_downcast::<gtk::Label>() {
-                    icon.set_text(
-                        if apps
-                            .iter()
-                            .find(|entry| entry.id == id)
-                            .is_some_and(|entry| entry.hidden)
+            let entries = state_for_activate.launcher_apps.borrow().clone();
+            let target_id = id.clone();
+            let saved = crate::storage::run(move || {
+                let hidden = apps::toggled_hidden(&entries, &target_id, apps::read_hidden())
+                    .ok_or("Application no longer exists")?;
+                apps::write_hidden(&hidden).map_err(|e| e.to_string())?;
+                Ok(hidden.contains(&target_id))
+            });
+            row.set_sensitive(false);
+            let row = row.downgrade();
+            let state = Rc::downgrade(&state_for_activate);
+            let saving = saving.clone();
+            let error = save_error.downgrade();
+            glib::MainContext::default().spawn_local(async move {
+                let result = saved.await;
+                saving.set(false);
+                let Some(row) = row.upgrade() else {
+                    return;
+                };
+                row.set_sensitive(true);
+                match result {
+                    Ok(hidden) => {
+                        if let Some(state) = state.upgrade()
+                            && let Some(entry) = state
+                                .launcher_apps
+                                .borrow_mut()
+                                .iter_mut()
+                                .find(|entry| entry.id == id)
                         {
-                            "󰈉"
-                        } else {
-                            "󰈈"
-                        },
-                    );
+                            entry.hidden = hidden;
+                        }
+                        if let Some(content) = row.child().and_downcast::<gtk::Box>() {
+                            if let Some(icon) = content.first_child().and_downcast::<gtk::Label>() {
+                                icon.set_text(if hidden { "󰈉" } else { "󰈈" });
+                            }
+                            if hidden {
+                                content.add_css_class("hidden-app");
+                            } else {
+                                content.remove_css_class("hidden-app");
+                            }
+                        }
+                        if let Some(error) = error.upgrade() {
+                            error.set_visible(false);
+                        }
+                    }
+                    Err(message) => {
+                        if let Some(error) = error.upgrade() {
+                            error.set_text(&message);
+                            error.set_visible(true);
+                        }
+                    }
                 }
-                if apps
-                    .iter()
-                    .find(|entry| entry.id == id)
-                    .is_some_and(|entry| entry.hidden)
-                {
-                    content.add_css_class("hidden-app");
-                } else {
-                    content.remove_css_class("hidden-app");
-                }
-            }
+            });
         } else {
             row.set_sensitive(false);
             let row = row.downgrade();
@@ -471,7 +522,14 @@ fn create(
             glib::MainContext::default().spawn_local(async move {
                 match apps::launch(&id).await {
                     Ok(()) => {
-                        if let Err(error) = apps::record_launch(&mut counts.borrow_mut(), &id) {
+                        if let Err(error) = crate::storage::run(move || {
+                            let mut next = apps::read_launch_counts();
+                            apps::record_launch(&mut next, &id).map_err(|e| e.to_string())?;
+                            Ok(next)
+                        })
+                        .await
+                        .map(|next| *counts.borrow_mut() = next)
+                        {
                             eprintln!("chuhshell: failed to save launch counts: {error}");
                         }
                         if let Some(window) = window.upgrade() {
@@ -501,7 +559,7 @@ fn create(
     let search_keys = search.downgrade();
     let sort_keys = sort.downgrade();
     key.connect_key_pressed(move |_, key, _, modifiers| {
-        let default_key = crate::keybindings::is_default("launcher", key);
+        let default_key = crate::keybindings::is_default("launcher", key, modifiers);
         let key = crate::keybindings::remap("launcher", key, modifiers);
         let Some(list_keys) = list_keys.upgrade() else {
             return glib::Propagation::Proceed;
@@ -814,6 +872,7 @@ pub fn regression_checks(app: &gtk::Application) {
     let other_pin = pin_button(&other).unwrap();
     let unpinned_icon = other_pin.label().unwrap();
     other_pin.emit_clicked();
+    crate::ui_tests::pump(100);
     assert_ne!(other_pin.label().unwrap(), unpinned_icon);
     assert!(other_pin.has_css_class("pinned"));
     assert_eq!(visible_rows(&list)[0], other);
@@ -829,18 +888,30 @@ pub fn regression_checks(app: &gtk::Application) {
     let press = |value: gdk::Key| {
         key.emit_by_name::<bool>("key-pressed", &[&value, &0u32, &gdk::ModifierType::empty()]);
     };
+    for key_value in [gdk::Key::Left, gdk::Key::Right] {
+        for modifiers in [
+            gdk::ModifierType::CONTROL_MASK,
+            gdk::ModifierType::SHIFT_MASK,
+            gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK,
+        ] {
+            assert!(!key.emit_by_name::<bool>("key-pressed", &[&key_value, &0u32, &modifiers]));
+        }
+    }
     press(gdk::Key::Right);
     assert!(other_pin.is_focus());
     crate::ui_tests::pump(300);
     crate::ui_tests::capture("launcher-pin");
     press(gdk::Key::Return);
+    crate::ui_tests::pump(100);
     assert!(!other_pin.has_css_class("pinned"));
     assert_eq!(other_pin.label().unwrap(), unpinned_icon);
     assert!(other_pin.is_focus());
     press(gdk::Key::Return);
+    crate::ui_tests::pump(100);
     assert!(other_pin.has_css_class("pinned"));
     assert!(other_pin.is_focus());
     press(gdk::Key::Return);
+    crate::ui_tests::pump(100);
     assert_eq!(visible_rows(&list)[0], frequent);
     press(gdk::Key::Left);
     assert!(!other_pin.is_focus());
@@ -852,10 +923,12 @@ pub fn regression_checks(app: &gtk::Application) {
     crate::ui_tests::pump(300);
     crate::ui_tests::capture("launcher-sort");
     press(gdk::Key::Return);
+    crate::ui_tests::pump(100);
     assert!(sort.is_focus());
     assert_eq!(sort.label().as_deref(), Some("sort: a–z"));
     assert_eq!(visible_rows(&list)[0], other);
     sort.emit_clicked();
+    crate::ui_tests::pump(100);
     assert_eq!(sort.label().as_deref(), Some("sort: most used"));
     assert_eq!(visible_rows(&list)[0], frequent);
     press(gdk::Key::Up);
@@ -889,7 +962,66 @@ pub fn regression_checks(app: &gtk::Application) {
         }
     }
     assert!(list.selected_row().unwrap().is_child_visible());
+    search.set_text("");
+    search.emit_by_name::<()>("search-changed", &[]);
+    let before = apps::read_launcher_preferences();
+    let delayed = crate::storage::run(|| {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        Ok(())
+    });
+    other_pin.emit_clicked();
     window.close();
+    let directory =
+        std::path::PathBuf::from(std::env::var_os("XDG_DATA_HOME").unwrap()).join("applications");
+    std::fs::create_dir_all(&directory).unwrap();
+    for name in ["Alpha", "Beta"] {
+        std::fs::write(
+            directory.join(format!("{name}.desktop")),
+            format!("[Desktop Entry]\nType=Application\nName={name}\nExec=/bin/true\n"),
+        )
+        .unwrap();
+    }
+    apps::invalidate();
+    show(app, &state, LauncherMode::Normal);
+    crate::ui_tests::pump(400);
+    glib::MainContext::default().block_on(delayed).unwrap();
+    let reopened = state.launcher.borrow().clone().unwrap();
+    let outer = reopened.child().unwrap();
+    let sort = outer
+        .last_child()
+        .unwrap()
+        .downcast::<gtk::Button>()
+        .unwrap();
+    sort.emit_clicked();
+    crate::ui_tests::pump(100);
+    let after = apps::read_launcher_preferences();
+    assert_ne!(
+        after.pinned.contains("Alpha.desktop"),
+        before.pinned.contains("Alpha.desktop")
+    );
+    assert_ne!(after.alphabetical, before.alphabetical);
+    let path = crate::config::path().with_file_name("launcher.json");
+    let contents = std::fs::read(&path).unwrap();
+    let disk: apps::LauncherPreferences = serde_json::from_slice(&contents).unwrap();
+    assert_eq!(disk.pinned, after.pinned);
+    assert_eq!(disk.alphabetical, after.alphabetical);
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    sort.emit_clicked();
+    crate::ui_tests::pump(100);
+    assert!(sort.is_sensitive());
+    assert_eq!(
+        apps::read_launcher_preferences().alphabetical,
+        after.alphabetical
+    );
+    assert!(sort.prev_sibling().unwrap().is_visible());
+    std::fs::remove_dir(&path).unwrap();
+    std::fs::write(path, contents).unwrap();
+    reopened.close();
+    for name in ["Alpha", "Beta"] {
+        std::fs::remove_file(directory.join(format!("{name}.desktop"))).unwrap();
+    }
+    apps::invalidate();
 }
 
 #[cfg(test)]

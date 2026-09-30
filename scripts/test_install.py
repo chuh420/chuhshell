@@ -56,6 +56,38 @@ class InstallationBackups(unittest.TestCase):
         self.assertFalse(created.exists())
         self.assertEqual(self.path.read_bytes(), b'original')
 
+    def test_uninstall_preserves_deletion_permissions_and_object_types(self):
+        for change in ['delete', 'chmod', 'special-mode', 'link', 'dangling-link', 'replace-link']:
+            with self.subTest(change=change):
+                self.path.unlink(missing_ok=True)
+                self.path.write_bytes(b'original')
+                manifest = {}
+                installer.save(self.path, b'installed', 0o644, manifest)
+                if change == 'delete':
+                    self.path.unlink()
+                elif change in ['chmod', 'special-mode']:
+                    self.path.chmod(0o600 if change == 'chmod' else 0o4644)
+                else:
+                    self.path.unlink()
+                    target = self.root / ('missing' if change == 'dangling-link' else 'target')
+                    if change != 'dangling-link':
+                        target.write_bytes(b'installed')
+                    self.path.symlink_to(target)
+                    if change == 'replace-link':
+                        self.path.unlink()
+                        self.path.symlink_to(self.root / 'changed-target')
+                before = snapshot(self.path)
+                self.assertIn(str(self.path), installer.restore(manifest, True))
+                self.assertEqual(snapshot(self.path), before)
+
+    def test_dangling_original_link_is_restored(self):
+        self.path.unlink()
+        self.path.symlink_to(self.root / 'missing')
+        original = snapshot(self.path)
+        installer.save(self.path, b'installed', 0o644, self.manifest)
+        self.assertEqual(installer.restore(self.manifest, True), {})
+        self.assertEqual(snapshot(self.path), original)
+
 
 class InstallationTransaction(unittest.TestCase):
     def setUp(self):
@@ -165,6 +197,104 @@ class InstallationTransaction(unittest.TestCase):
             installer.recover()
         self.assertFalse(self.config.exists())
         self.assertTrue(installer.journal_path().exists())
+
+    def test_uninstall_recovers_failures_before_and_after_every_step(self):
+        original_write = installer.write
+        original_restore = installer.restore_file
+        for after in [False, True]:
+            for fail in range(1, 32):
+                with self.subTest(after=after, step=fail):
+                    self.install()
+                    calls = 0
+                    def wrapped(operation):
+                        def execute(*args, **kwargs):
+                            nonlocal calls
+                            calls += 1
+                            if calls == fail and not after:
+                                raise OSError('Interrupted uninstall')
+                            result = operation(*args, **kwargs)
+                            if calls == fail and after:
+                                raise OSError('Interrupted uninstall after mutation')
+                            return result
+                        return execute
+                    interrupted = False
+                    with patch.object(installer, 'write', side_effect=wrapped(original_write)), patch.object(installer, 'restore_file', side_effect=wrapped(original_restore)), patch.object(installer, 'run', side_effect=wrapped(self.original_run)):
+                        try:
+                            installer.uninstall()
+                        except OSError:
+                            interrupted = True
+                    if interrupted:
+                        with patch.object(installer, 'run', side_effect=self.original_run):
+                            installer.uninstall()
+                    self.assertEqual(self.config.read_text(), 'original')
+                    self.assertFalse((installer.HOME_DIR / '.local/bin/chuhshell').exists())
+                    self.assertFalse(installer.MANIFEST.exists())
+                    self.assertFalse(installer.journal_path().exists())
+
+    def test_uninstall_resumes_after_manifest_removal_and_reload_failure(self):
+        self.install()
+        def run(*args, **kwargs):
+            if 'daemon-reload' in args:
+                self.assertFalse(installer.MANIFEST.exists())
+                raise OSError('Interrupted reload')
+            return self.original_run(*args, **kwargs)
+        with patch.object(installer, 'run', side_effect=run):
+            with self.assertRaises(OSError):
+                installer.uninstall()
+        self.assertTrue(installer.journal_path().exists())
+        with patch.object(installer, 'run', side_effect=self.original_run):
+            installer.uninstall()
+        self.assertFalse(installer.journal_path().exists())
+
+    def test_uninstall_preserves_edits_and_service_conflicts(self):
+        self.install()
+        service = installer.CONFIG / 'systemd/user/chuhshell.service'
+        service.write_text('user service')
+        self.config.unlink()
+        commands = []
+        def run(*args, **kwargs):
+            commands.append(args)
+            return self.original_run(*args, **kwargs)
+        with patch.object(installer, 'run', side_effect=run):
+            installer.uninstall()
+        self.assertEqual(service.read_text(), 'user service')
+        self.assertFalse(self.config.exists())
+        self.assertFalse(any('disable' in args or 'start' in args or 'stop' in args for args in commands))
+        manifest = json.loads(installer.MANIFEST.read_text())
+        self.assertEqual(set(manifest), {str(service), str(self.config)})
+
+    def test_service_original_state_survives_reinstall(self):
+        for enabled, active in [(True, True), (True, False), (False, False), (False, True)]:
+            with self.subTest(enabled=enabled, active=active):
+                service = installer.CONFIG / 'systemd/user/chuhshell.service'
+                service.parent.mkdir(parents=True, exist_ok=True)
+                service.write_text('original service')
+                active_queries = 0
+                def initial_run(*args, **kwargs):
+                    nonlocal active_queries
+                    code = 0
+                    if 'is-enabled' in args:
+                        code = 0 if enabled else 1
+                    if 'is-active' in args:
+                        active_queries += 1
+                        code = 0 if active or active_queries > 1 else 1
+                    return subprocess.CompletedProcess(args, code, '', '')
+                with patch.object(installer, 'run', side_effect=initial_run), patch.object(installer, 'plan_configuration', return_value=self.plan), patch.object(installer, 'stop_old_shell'), patch.object(installer, 'shell_pid', return_value=None), patch.object(installer.time, 'sleep'):
+                    installer.install(self.config)
+                updated_plan = [{'path': str(self.config), 'before': 'updated', 'text': 'updated'}]
+                with patch.object(installer, 'run', side_effect=self.original_run), patch.object(installer, 'plan_configuration', return_value=updated_plan), patch.object(installer, 'stop_old_shell'), patch.object(installer.time, 'sleep'):
+                    installer.install(self.config)
+                manifest = json.loads(installer.MANIFEST.read_text())
+                self.assertEqual(manifest[str(service)]['service_before'], {'enabled': enabled, 'active': active})
+                commands = []
+                def uninstall_run(*args, **kwargs):
+                    commands.append(args)
+                    return self.original_run(*args, **kwargs)
+                with patch.object(installer, 'run', side_effect=uninstall_run):
+                    installer.uninstall()
+                self.assertEqual(service.read_text(), 'original service')
+                self.assertIn(('systemctl', '--user', 'enable' if enabled else 'disable', 'chuhshell.service'), commands)
+                self.assertIn(('systemctl', '--user', 'start' if active else 'stop', 'chuhshell.service'), commands)
 
 
 class AutologinTransaction(unittest.TestCase):

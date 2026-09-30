@@ -397,8 +397,9 @@ fn render_entries(
     title.set_xalign(0.0);
     header.append(&title);
     outer.append(&header);
+    let keybindings = matches!(page, Page::Keybindings).then(crate::keybindings::view);
     let leaf = match page {
-        Page::Keybindings => Some(crate::keybindings::view()),
+        Page::Keybindings => keybindings.as_ref().map(|view| view.widget.clone()),
         Page::Bluetooth => Some(crate::bluetooth::view()),
         Page::Weather => Some(crate::weather::view()),
         Page::Calendar => Some(crate::info::calendar()),
@@ -416,12 +417,18 @@ fn render_entries(
     if let Some(leaf) = leaf {
         outer.append(&leaf);
         let key = gtk::EventControllerKey::new();
+        key.set_name(Some("menu-leaf-navigation"));
         key.set_propagation_phase(gtk::PropagationPhase::Capture);
         let weak_window = window.downgrade();
         let weak_state = Rc::downgrade(state);
         let weak_leaf = leaf.downgrade();
         let weak_back = back.as_ref().map(|back| back.downgrade());
-        key.connect_key_pressed(move |_, raw_key, _, modifiers| {
+        key.connect_key_pressed(move |_, raw_key, keycode, modifiers| {
+            if let Some(view) = keybindings.as_ref()
+                && view.handle_key(raw_key, keycode, modifiers) == glib::Propagation::Stop
+            {
+                return glib::Propagation::Stop;
+            }
             let key = crate::keybindings::remap("menu", raw_key, modifiers);
             let (Some(window), Some(state)) = (weak_window.upgrade(), weak_state.upgrade()) else {
                 return glib::Propagation::Proceed;
@@ -560,28 +567,43 @@ fn render_entries(
                         crate::launcher::show(&app, &state, mode);
                     }
                 }
-                Action::Toggle(id) => match state.bar_modules.toggle(id) {
-                    Ok(enabled) => {
-                        if let Some(status) = statuses[row.index() as usize].upgrade() {
-                            status.set_text(if enabled { "On" } else { "Off" });
-                            if enabled {
-                                status.add_css_class("enabled");
-                            } else {
-                                status.remove_css_class("enabled");
+                Action::Toggle(id) => {
+                    if !row.is_sensitive() {
+                        return;
+                    }
+                    row.set_sensitive(false);
+                    let row = row.downgrade();
+                    let status = statuses[row.upgrade().unwrap().index() as usize].clone();
+                    let message = message.clone();
+                    glib::MainContext::default().spawn_local(async move {
+                        let result = state.bar_modules.toggle(id).await;
+                        if let Some(row) = row.upgrade() {
+                            row.set_sensitive(true);
+                        }
+                        match result {
+                            Ok(enabled) => {
+                                if let Some(status) = status.upgrade() {
+                                    status.set_text(if enabled { "On" } else { "Off" });
+                                    if enabled {
+                                        status.add_css_class("enabled");
+                                    } else {
+                                        status.remove_css_class("enabled");
+                                    }
+                                }
+                                if let Some(message) = message.upgrade() {
+                                    message.set_visible(false);
+                                }
+                            }
+                            Err(error) => {
+                                if let Some(message) = message.upgrade() {
+                                    message.add_css_class("menu-error");
+                                    message.set_text(&error);
+                                    message.set_visible(true);
+                                }
                             }
                         }
-                        if let Some(message) = message.upgrade() {
-                            message.set_visible(false);
-                        }
-                    }
-                    Err(error) => {
-                        if let Some(message) = message.upgrade() {
-                            message.add_css_class("menu-error");
-                            message.set_text(&error);
-                            message.set_visible(true);
-                        }
-                    }
-                },
+                    });
+                }
                 Action::Configure(bar) => {
                     if let Some(app) = window.application() {
                         close(&state);
@@ -608,7 +630,7 @@ fn render_entries(
         let state = Rc::downgrade(state);
         let back = back.as_ref().map(|back| back.downgrade());
         move |_, raw_key, _, modifiers| {
-            let default_key = crate::keybindings::is_default("menu", raw_key);
+            let default_key = crate::keybindings::is_default("menu", raw_key, modifiers);
             let key = crate::keybindings::remap("menu", raw_key, modifiers);
             let (Some(window), Some(list), Some(state)) =
                 (window.upgrade(), list.upgrade(), state.upgrade())
@@ -796,6 +818,7 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
     let row = modules.row_at_index(4).unwrap();
     modules.select_row(Some(&row));
     press(&window, gdk::Key::Return);
+    crate::ui_tests::pump(100);
     assert!(!state.bar_modules.enabled("audio"));
     assert!(
         crate::config::read()
@@ -815,6 +838,7 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
         assert!(!audio.parent().unwrap().is_visible());
     }
     press(&window, gdk::Key::Return);
+    crate::ui_tests::pump(100);
     assert!(state.bar_modules.enabled("audio"));
     for (_, bar) in state.bars.borrow().iter() {
         let audio = find(bar.upcast_ref(), "audio").unwrap();
@@ -940,6 +964,46 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
         &window,
         &find(window.upcast_ref(), "menu-back").unwrap()
     ));
+    crate::ui_tests::pump(200);
+    let rows = find(window.upcast_ref(), "keybinding-row").unwrap();
+    let edit = rows
+        .last_child()
+        .unwrap()
+        .last_child()
+        .unwrap()
+        .downcast::<gtk::Button>()
+        .unwrap();
+    edit.emit_clicked();
+    let editor = find(window.upcast_ref(), "keybinding-editor").unwrap();
+    assert!(editor.is_visible());
+    let input = editor
+        .first_child()
+        .unwrap()
+        .next_sibling()
+        .unwrap()
+        .downcast::<gtk::Entry>()
+        .unwrap();
+    let record = editor
+        .last_child()
+        .unwrap()
+        .first_child()
+        .unwrap()
+        .downcast::<gtk::Button>()
+        .unwrap();
+    record.emit_clicked();
+    press(&window, gdk::Key::Escape);
+    assert!(state.menu.borrow().is_some());
+    assert!(editor.is_visible());
+    record.emit_clicked();
+    press(&window, gdk::Key::Home);
+    assert_eq!(input.text(), "Home");
+    assert!(state.menu.borrow().is_some());
+    record.emit_clicked();
+    press(&window, gdk::Key::Escape);
+    assert!(editor.is_visible());
+    press(&window, gdk::Key::Escape);
+    assert!(state.menu.borrow().is_some());
+    assert!(!editor.is_visible());
     press(&window, gdk::Key::Escape);
     assert!(state.menu.borrow().is_none());
     crate::launcher::show(app, state, LauncherMode::Manage);

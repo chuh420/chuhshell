@@ -403,18 +403,36 @@ pub fn view() -> gtk::Box {
                 2 => Units::Fahrenheit,
                 _ => Units::System,
             };
-            match crate::config::save_value("weather_units", serde_json::to_value(value).unwrap()) {
-                Ok(()) => {
-                    units.set(selected);
-                    update();
-                }
-                Err(error) => {
-                    selector.set_selected(units.get());
-                    if let Some(status) = status.upgrade() {
-                        status.set_text(&error);
+            busy.set(true);
+            selector.set_sensitive(false);
+            let saved = crate::config::save_value_async(
+                "weather_units",
+                serde_json::to_value(value).unwrap(),
+            );
+            let selector = selector.downgrade();
+            let units = units.clone();
+            let busy = busy.clone();
+            let update = update.clone();
+            let status = status.clone();
+            glib::MainContext::default().spawn_local(async move {
+                let result = saved.await;
+                busy.set(false);
+                if let Some(selector) = selector.upgrade() {
+                    selector.set_sensitive(true);
+                    match result {
+                        Ok(()) => {
+                            units.set(selected);
+                            update();
+                        }
+                        Err(error) => {
+                            selector.set_selected(units.get());
+                            if let Some(status) = status.upgrade() {
+                                status.set_text(&error);
+                            }
+                        }
                     }
                 }
-            }
+            });
         }
     });
     refresh.connect_clicked({
@@ -430,17 +448,27 @@ pub fn view() -> gtk::Box {
             if busy.get() {
                 return;
             }
-            match crate::config::save_value("weather_system", true.into()) {
-                Ok(()) => {
-                    system.set(true);
-                    update();
-                }
-                Err(error) => {
-                    if let Some(status) = status.upgrade() {
-                        status.set_text(&error);
+            busy.set(true);
+            let saved = crate::config::save_value_async("weather_system", true.into());
+            let busy = busy.clone();
+            let system = system.clone();
+            let update = update.clone();
+            let status = status.clone();
+            glib::MainContext::default().spawn_local(async move {
+                let result = saved.await;
+                busy.set(false);
+                match result {
+                    Ok(()) => {
+                        system.set(true);
+                        update();
+                    }
+                    Err(error) => {
+                        if let Some(status) = status.upgrade() {
+                            status.set_text(&error);
+                        }
                     }
                 }
-            }
+            });
         }
     });
     find.connect_clicked({
@@ -513,27 +541,39 @@ pub fn view() -> gtk::Box {
                                 if busy.get() {
                                     return;
                                 }
-                                let saved = crate::config::save_value(
-                                    "weather_location",
-                                    serde_json::to_value(&city).unwrap(),
-                                )
-                                .and_then(|_| {
-                                    crate::config::save_value("weather_system", false.into())
+                                busy.set(true);
+                                let saved = crate::config::save_values(vec![
+                                    (
+                                        "weather_location".into(),
+                                        serde_json::to_value(&city).unwrap(),
+                                    ),
+                                    ("weather_system".into(), false.into()),
+                                ]);
+                                let busy = busy.clone();
+                                let city = city.clone();
+                                let location = location.clone();
+                                let system = system.clone();
+                                let update = update.clone();
+                                let weak_results = weak_results.clone();
+                                let status = status.clone();
+                                glib::MainContext::default().spawn_local(async move {
+                                    let result = saved.await;
+                                    busy.set(false);
+                                    if let Err(error) = result {
+                                        if let Some(status) = status.upgrade() {
+                                            status.set_text(&error);
+                                        }
+                                        return;
+                                    }
+                                    *location.borrow_mut() = city;
+                                    system.set(false);
+                                    if let Some(results) = weak_results.upgrade() {
+                                        while let Some(child) = results.first_child() {
+                                            results.remove(&child);
+                                        }
+                                    }
+                                    update();
                                 });
-                                if let Err(error) = saved {
-                                    if let Some(status) = status.upgrade() {
-                                        status.set_text(&error);
-                                    }
-                                    return;
-                                }
-                                *location.borrow_mut() = city.clone();
-                                system.set(false);
-                                if let Some(results) = weak_results.upgrade() {
-                                    while let Some(child) = results.first_child() {
-                                        results.remove(&child);
-                                    }
-                                }
-                                update();
                             });
                             results.append(&button);
                         }
