@@ -19,13 +19,35 @@ pub struct NetworkInfo {
     pub ssid: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BatteryState {
+    Charging,
+    Full,
+    Discharging,
+    NotCharging,
+    #[default]
+    Unknown,
+}
+
+impl BatteryState {
+    fn parse(status: &str) -> Self {
+        match status.trim().to_ascii_lowercase().as_str() {
+            "charging" => Self::Charging,
+            "full" => Self::Full,
+            "discharging" => Self::Discharging,
+            "not charging" => Self::NotCharging,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BatteryStatus {
     pub text: String,
     pub level: String,
     pub tooltip: String,
     pub plugged: bool,
-    pub charging: bool,
+    pub state: BatteryState,
     pub available: bool,
 }
 
@@ -223,7 +245,7 @@ pub fn battery_status() -> BatteryStatus {
         level: level.to_owned(),
         tooltip: format!("{capacity}% • {}", battery_estimate(&battery, &status)),
         plugged: online,
-        charging: status.eq_ignore_ascii_case("charging"),
+        state: BatteryState::parse(&status),
         available: true,
     }
 }

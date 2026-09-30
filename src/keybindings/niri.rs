@@ -85,10 +85,11 @@ pub fn config_path() -> PathBuf {
             }
             if let Some(home) = vars
                 .get("XDG_CONFIG_HOME")
-                .filter(|s| !s.is_empty())
+                .filter(|s| Path::new(s).is_absolute())
                 .map(PathBuf::from)
                 .or_else(|| {
                     vars.get("HOME")
+                        .filter(|home| Path::new(home).is_absolute())
                         .map(|home| PathBuf::from(home).join(".config"))
                 })
             {
@@ -142,7 +143,8 @@ impl Catalog {
         if stack.len() >= 64 || stack.contains(&path) {
             return Err(format!("Include cycle or depth limit: {}", path.display()));
         }
-        let text = std::fs::read_to_string(&path).map_err(|e| io_error(&path, e))?;
+        let text =
+            crate::storage::read_text(&path, 4 * 1024 * 1024).map_err(|e| io_error(&path, e))?;
         if text.len() > 4 * 1024 * 1024 || self.bindings.len() > 10000 {
             return Err("Niri configuration exceeds the editor size limit".into());
         }
@@ -283,7 +285,9 @@ impl Catalog {
         files.insert(binding.path.clone(), replacement.clone());
         validate_files(&self.root, &files)?;
         for (path, original) in &self.files {
-            if std::fs::read_to_string(path).map_err(|e| io_error(path, e))? != *original {
+            if crate::storage::read_text(path, 4 * 1024 * 1024).map_err(|e| io_error(path, e))?
+                != *original
+            {
                 return Err("Configuration changed elsewhere. Refresh before saving.".into());
             }
         }

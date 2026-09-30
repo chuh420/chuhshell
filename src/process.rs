@@ -95,7 +95,13 @@ pub fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> Resu
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = ManagedChild::spawn(&mut command).map_err(|e| format!("{program}: {e}"))?;
+    run_command(&mut command, timeout)
+}
+
+pub fn run_command(command: &mut Command, timeout: Duration) -> Result<String, String> {
+    let program = command.get_program().to_string_lossy().into_owned();
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = ManagedChild::spawn(command).map_err(|e| format!("{program}: {e}"))?;
     let stdout = child
         .0
         .stdout
@@ -217,6 +223,79 @@ mod tests {
         let error = run("sh", &["-c", "head -c 400000 /dev/zero >&2; exit 1"]).unwrap_err();
         assert!(error.len() < OUTPUT_LIMIT as usize + 200);
     }
+    fn running(pid: u32) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            stat.rsplit_once(") ")
+                .is_some_and(|(_, fields)| !fields.starts_with('Z'))
+        })
+    }
+
+    #[test]
+    fn arbitrary_commands_kill_descendants_on_timeout() {
+        let path = std::env::temp_dir().join(format!("chuhshell-command-{}", std::process::id()));
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "sleep 300 & echo $! > \"$1\"; wait", "sh"])
+            .arg(&path);
+        assert!(
+            run_command(&mut command, Duration::from_millis(100))
+                .unwrap_err()
+                .contains("timed out")
+        );
+        let pid = std::fs::read_to_string(&path)
+            .unwrap()
+            .trim()
+            .parse::<u32>()
+            .unwrap();
+        for _ in 0..50 {
+            if !running(pid) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!running(pid));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn shutdown_cancels_managed_commands() {
+        if std::env::var_os("CHUHSHELL_TEST_SHUTDOWN").is_some() {
+            let worker = std::thread::spawn(|| run("sleep", &["300"]));
+            for _ in 0..100 {
+                if CHILDREN
+                    .get()
+                    .is_some_and(|children| !children.lock().unwrap().is_empty())
+                {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(
+                CHILDREN
+                    .get()
+                    .is_some_and(|children| !children.lock().unwrap().is_empty())
+            );
+            shutdown();
+            assert!(worker.join().unwrap().is_err());
+            assert!(CHILDREN.get().unwrap().lock().unwrap().is_empty());
+            return;
+        }
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "process::tests::shutdown_cancels_managed_commands",
+                "--nocapture",
+            ])
+            .env("CHUHSHELL_TEST_SHUTDOWN", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+
     #[test]
     fn command_locale_is_predictable() {
         assert_eq!(run("sh", &["-c", "printf %s \"$LC_ALL\""]).unwrap(), "C");

@@ -19,11 +19,7 @@ pub struct AppEntry {
 }
 
 fn config_path() -> PathBuf {
-    let config_home = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    config_home.join("chuhshell/hidden-apps")
+    crate::paths::config().join("chuhshell/hidden-apps")
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -34,7 +30,7 @@ pub struct LauncherPreferences {
 }
 
 fn load_launcher_preferences() -> LauncherPreferences {
-    fs::read(config_path().with_file_name("launcher.json"))
+    crate::storage::read_limited(&config_path().with_file_name("launcher.json"), 1024 * 1024)
         .ok()
         .and_then(|contents| serde_json::from_slice(&contents).ok())
         .unwrap_or_default()
@@ -86,15 +82,11 @@ pub fn write_launcher_preferences(preferences: &LauncherPreferences) -> std::io:
 }
 
 fn launch_counts_path() -> PathBuf {
-    let state_home = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    state_home.join("chuhshell/launch-counts.json")
+    crate::paths::state().join("chuhshell/launch-counts.json")
 }
 
 pub fn read_launch_counts() -> HashMap<String, u64> {
-    fs::read_to_string(launch_counts_path())
+    crate::storage::read_text(&launch_counts_path(), 1024 * 1024)
         .ok()
         .and_then(|contents| serde_json::from_str(&contents).ok())
         .unwrap_or_default()
@@ -145,7 +137,7 @@ pub fn toggled_hidden(
 }
 
 pub fn read_hidden() -> HashSet<String> {
-    fs::read_to_string(config_path())
+    crate::storage::read_text(&config_path(), 1024 * 1024)
         .unwrap_or_default()
         .lines()
         .map(str::trim)
@@ -221,20 +213,11 @@ fn parse_entry_for_locale(
 }
 
 fn search_dirs() -> Vec<PathBuf> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
-    let data_home = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".local/share"));
-    let data_dirs = std::env::var("XDG_DATA_DIRS")
-        .unwrap_or_else(|_| "/usr/local/share:/usr/share".to_string());
-    let mut dirs = vec![data_home.join("applications")];
+    let mut dirs = vec![crate::paths::data().join("applications")];
     dirs.extend(
-        data_dirs
-            .split(':')
-            .filter(|part| !part.is_empty())
-            .map(|part| Path::new(part).join("applications")),
+        crate::paths::data_dirs()
+            .into_iter()
+            .map(|path| path.join("applications")),
     );
     dirs
 }
@@ -257,30 +240,54 @@ fn collect_entries(
 }
 
 fn load_entry_files() -> Vec<(String, String)> {
-    fn collect(base: &Path, dir: &Path, entries: &mut Vec<(String, String)>) {
+    load_entry_files_at(search_dirs())
+}
+
+fn load_entry_files_at(dirs: Vec<PathBuf>) -> Vec<(String, String)> {
+    fn collect(
+        base: &Path,
+        dir: &Path,
+        entries: &mut Vec<(String, String)>,
+        remaining: &mut usize,
+        depth: usize,
+        visits: &mut usize,
+    ) {
+        if entries.len() >= 4096 || *remaining == 0 || depth > 16 || *visits == 0 {
+            return;
+        }
         let Ok(files) = fs::read_dir(dir) else {
             return;
         };
-        let mut files: Vec<_> = files.flatten().collect();
+        let mut files: Vec<_> = files.flatten().take(4096).collect();
         files.sort_by_key(|entry| entry.path());
         for entry in files {
+            if entries.len() >= 4096 || *remaining == 0 || *visits == 0 {
+                break;
+            }
+            *visits -= 1;
             let path = entry.path();
             if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                collect(base, &path, entries);
+                collect(base, &path, entries, remaining, depth + 1, visits);
             } else if path.extension().is_some_and(|ext| ext == "desktop") {
                 let Ok(relative) = path.strip_prefix(base) else {
                     continue;
                 };
                 let id = relative.to_string_lossy().replace('/', "-");
-                if let Ok(contents) = fs::read_to_string(path) {
+                if let Ok(contents) = crate::storage::read_text(&path, 256 * 1024) {
+                    if contents.len() > *remaining {
+                        break;
+                    }
+                    *remaining -= contents.len();
                     entries.push((id, contents));
                 }
             }
         }
     }
     let mut entries = Vec::new();
-    for dir in search_dirs() {
-        collect(&dir, &dir, &mut entries);
+    let mut remaining = 16 * 1024 * 1024;
+    let mut visits = 16384;
+    for dir in dirs {
+        collect(&dir, &dir, &mut entries, &mut remaining, 0, &mut visits);
     }
     entries
 }
@@ -364,6 +371,18 @@ pub async fn launch(id: &str) -> Result<(), String> {
 }
 
 #[cfg(test)]
+pub fn profile_catalog() -> usize {
+    let dirs = std::env::var_os("CHUHSHELL_PROFILE_CATALOG_DIRS")
+        .map(|paths| {
+            std::env::split_paths(&paths)
+                .filter(|path| path.is_absolute())
+                .collect()
+        })
+        .unwrap_or_else(search_dirs);
+    collect_entries(load_entry_files_at(dirs), &read_hidden()).len()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -376,6 +395,30 @@ Comment=Browse the web
 Icon=firefox
 Exec=/usr/bin/firefox %u
 ";
+
+    #[test]
+    fn desktop_reads_reject_oversized_files_and_deep_trees() {
+        let root =
+            std::env::temp_dir().join(format!("chuhshell-catalog-limits-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("oversized.desktop"), vec![b'x'; 256 * 1024 + 1]).unwrap();
+        let deep = (0..17).fold(root.clone(), |path, _| path.join("deep"));
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(
+            deep.join("deep.desktop"),
+            "[Desktop Entry]\nName=Deep\nType=Application\nExec=true\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("valid.desktop"),
+            "[Desktop Entry]\nName=Valid\nType=Application\nExec=true\n",
+        )
+        .unwrap();
+        let entries = load_entry_files_at(vec![root.clone()]);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "valid.desktop");
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn parses_application_entry() {

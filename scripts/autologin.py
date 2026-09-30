@@ -10,7 +10,29 @@ import subprocess
 import sys
 import tempfile
 import uuid
-from storage import write, snapshot, restore, sync_directory
+from storage import xdg_path, write, snapshot, restore, sync_directory
+
+
+BLOCK = b'if [[ -o interactive && "$TTY" == /dev/tty1 && -z "$WAYLAND_DISPLAY" && -z "$DISPLAY" ]]; then\n    exec niri --session\nfi\n'
+
+
+def profile_content(previous):
+    content = previous if previous.startswith(BLOCK) else BLOCK + b'\n' + previous
+    result = subprocess.run(['zsh', '-n'], input=content, capture_output=True, timeout=5)
+    if result.returncode:
+        raise RuntimeError('Invalid zsh profile: ' + result.stderr.decode(errors='replace').strip())
+    return content
+
+
+def profile_path(home):
+    environment = dict(os.environ, HOME=str(home))
+    if not environment.get("ZDOTDIR"):
+        environment.pop("ZDOTDIR", None)
+    result = subprocess.run(['zsh', '-d', '-c', 'print -r -- "${ZDOTDIR:-$HOME}"'], env=environment, cwd=home, capture_output=True, text=True, timeout=5, check=True)
+    value = Path(result.stdout.strip())
+    if not value.is_absolute():
+        raise RuntimeError('ZDOTDIR must be an absolute directory')
+    return value / '.zprofile'
 
 
 def run(*args, check=True):
@@ -63,6 +85,7 @@ def setup(directory, profile, dropin, username, undo_requested=False):
     state = directory / 'transaction.json'
     if state.exists():
         record = json.loads(state.read_text())
+        profile = Path(record.get('profile_path', profile))
         if undo_requested or record['phase'] != 'installed':
             undo(state, profile, dropin, record)
             print('Restored the previous login configuration.')
@@ -88,10 +111,9 @@ def setup(directory, profile, dropin, username, undo_requested=False):
     elif undo_requested:
         raise RuntimeError('No autologin backup found')
     previous = profile.read_bytes() if profile.exists() else b''
-    block = b'\nif [[ -o interactive && "$TTY" == /dev/tty1 && -z "$WAYLAND_DISPLAY" && -z "$DISPLAY" ]]; then\n    exec niri --session\nfi\n'
-    content = previous if b'exec niri --session' in previous else previous + block
+    content = profile_content(previous)
     getty = f'[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin {username} --noclear %I $TERM\n'.encode()
-    record = {'phase': 'prepared', 'profile': snapshot(profile), 'dropin': snapshot(dropin),
+    record = {'phase': 'prepared', 'profile_path': str(profile), 'profile': snapshot(profile), 'dropin': snapshot(dropin),
               'enabled': run('systemctl', 'is-enabled', 'getty@tty1.service', check=False).returncode == 0,
               'expected': {'profile': hashlib.sha256(content).hexdigest(), 'dropin': hashlib.sha256(getty).hexdigest()}}
     write(state, json.dumps(record).encode())
@@ -122,11 +144,14 @@ def main():
         raise RuntimeError('This setup requires a zsh login account with an existing home directory.')
     if not args.undo and shutil.which('niri') is None:
         raise RuntimeError('Install Niri first')
-    directory = Path(os.environ.get('XDG_STATE_HOME') or home / '.local/state') / 'chuhshell/autologin-backup'
+    directory = xdg_path('XDG_STATE_HOME', home, '.local/state') / 'chuhshell/autologin-backup'
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (directory / 'lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        setup(directory, home / '.zprofile', Path('/etc/systemd/system/getty@tty1.service.d/20-autologin.conf'), account.pw_name, args.undo)
+        journal = directory / 'transaction.json'
+        remembered = json.loads(journal.read_text()).get('profile_path') if journal.exists() else None
+        profile = Path(remembered) if remembered else profile_path(home)
+        setup(directory, profile, Path('/etc/systemd/system/getty@tty1.service.d/20-autologin.conf'), account.pw_name, args.undo)
 
 
 if __name__ == '__main__':

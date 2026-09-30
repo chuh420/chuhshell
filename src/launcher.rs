@@ -277,8 +277,44 @@ fn create(
             })
             .collect::<HashMap<_, _>>(),
     );
-    for entry in state.launcher_apps.borrow().iter() {
-        if mode == LauncherMode::Manage || !entry.hidden {
+    let mut entries: Vec<_> = state
+        .launcher_apps
+        .borrow()
+        .iter()
+        .filter(|entry| mode == LauncherMode::Manage || !entry.hidden)
+        .cloned()
+        .collect();
+    scores
+        .borrow_mut()
+        .extend(entries.iter().map(|entry| (entry.id.clone(), 0_i64)));
+    entries.sort_by(|left, right| {
+        let preferences = preferences.borrow();
+        preferences
+            .pinned
+            .contains(&right.id)
+            .cmp(&preferences.pinned.contains(&left.id))
+            .then_with(|| {
+                compare_apps(
+                    &left.id,
+                    &right.id,
+                    &scores.borrow(),
+                    &names,
+                    &counts.borrow(),
+                    if preferences.alphabetical {
+                        LauncherMode::Manage
+                    } else {
+                        mode
+                    },
+                    false,
+                )
+            })
+    });
+    let append_row = {
+        let list = list.clone();
+        let preferences = preferences.clone();
+        let saving = saving.clone();
+        let save_error = save_error.clone();
+        move |entry: &AppEntry| {
             let row = append_app_row(&list, entry, mode);
             if mode == LauncherMode::Normal {
                 let content = row.child().and_downcast::<gtk::Box>().unwrap();
@@ -353,9 +389,47 @@ fn create(
                     }
                 });
             }
-            scores.borrow_mut().insert(entry.id.clone(), 0_i64);
         }
+    };
+    for entry in entries.iter().take(16) {
+        append_row(entry);
     }
+    let mut pending = entries.into_iter().skip(16);
+    let populating = Rc::new(std::cell::Cell::new(pending.len() != 0));
+    let population_state = populating.clone();
+    let population_empty = empty.downgrade();
+    if populating.get() {
+        empty.set_text("loading applications…");
+    }
+    let population_window = window.downgrade();
+    let population_list = list.downgrade();
+    glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
+        if population_window
+            .upgrade()
+            .is_none_or(|window| !window.is_visible())
+        {
+            return glib::ControlFlow::Break;
+        }
+        let mut added = 0;
+        for entry in pending.by_ref().take(16) {
+            append_row(&entry);
+            added += 1;
+        }
+        if let Some(list) = population_list.upgrade()
+            && list.selected_row().is_none()
+        {
+            list.select_row(visible_rows(&list).first());
+        }
+        if added == 0 {
+            population_state.set(false);
+            if let Some(empty) = population_empty.upgrade() {
+                empty.set_text("no applications found");
+            }
+            glib::ControlFlow::Break
+        } else {
+            glib::ControlFlow::Continue
+        }
+    });
     list.set_filter_func({
         let scores = Rc::clone(&scores);
         move |row| {
@@ -607,6 +681,7 @@ fn create(
                 }
                 if key == gdk::Key::Down
                     && mode == LauncherMode::Normal
+                    && !populating.get()
                     && (rows.is_empty() || rows.last() == list_keys.selected_row().as_ref())
                 {
                     if let Some(sort) = sort_keys.upgrade() {
@@ -1031,18 +1106,12 @@ pub fn profile(app: &gtk::Application) {
         return;
     }
     let state = Rc::new(AppState::default());
-    let entries: Vec<_> = (0..100)
-        .map(|index| {
-            apps::parse_entry(
-                &format!("profile-{index}.desktop"),
-                &format!(
-                    "[Desktop Entry]\nType=Application\nName=Application {index}\nExec=/bin/true\n"
-                ),
-                false,
-            )
-            .unwrap()
-        })
-        .collect();
+    let cold = Instant::now();
+    let catalog_size = apps::profile_catalog();
+    println!(
+        "CHUHSHELL_CATALOG {}",
+        serde_json::json!({"apps": catalog_size, "cold_load_us": cold.elapsed().as_micros()})
+    );
     let maximum_gap = Rc::new(std::cell::Cell::new(Duration::ZERO));
     let previous = Rc::new(std::cell::Cell::new(Instant::now()));
     let timer = glib::timeout_add_local(Duration::from_millis(5), {
@@ -1068,46 +1137,112 @@ pub fn profile(app: &gtk::Application) {
             })
             .unwrap_or(0)
     };
-    let mut samples = Vec::new();
-    let mut baseline = 0;
-    for iteration in 0..25 {
-        let start = Instant::now();
-        let window = create(
-            app,
-            &state,
-            LauncherMode::Normal,
-            entries.clone(),
-            (HashMap::new(), apps::LauncherPreferences::default()),
-            false,
+    for count in [100, 500, 1000] {
+        let entries: Vec<_> = (0..count)
+            .map(|index| {
+                apps::parse_entry(
+                &format!("profile-{index}.desktop"),
+                &format!(
+                    "[Desktop Entry]\nType=Application\nName=Application {index}\nExec=/bin/true\n"
+                ),
+                false,
+            )
+            .unwrap()
+            })
+            .collect();
+        let mut samples = Vec::new();
+        let mut baseline = 0;
+        let mut searches = Vec::new();
+        let mut catalog_ready = Vec::new();
+        maximum_gap.set(Duration::ZERO);
+        for iteration in 0..25 {
+            let start = Instant::now();
+            let window = create(
+                app,
+                &state,
+                LauncherMode::Normal,
+                entries.clone(),
+                (HashMap::new(), apps::LauncherPreferences::default()),
+                false,
+            );
+            while window.width() <= 0 && start.elapsed() < Duration::from_secs(5) {
+                crate::ui_tests::pump(1);
+            }
+            assert!(window.width() > 0);
+            if iteration >= 5 {
+                samples.push(start.elapsed().as_micros());
+            }
+            let list = window
+                .child()
+                .unwrap()
+                .first_child()
+                .unwrap()
+                .next_sibling()
+                .unwrap()
+                .downcast::<gtk::ScrolledWindow>()
+                .unwrap()
+                .child()
+                .unwrap()
+                .downcast::<gtk::Viewport>()
+                .unwrap()
+                .child()
+                .unwrap()
+                .downcast::<gtk::ListBox>()
+                .unwrap();
+            while list.row_at_index(count - 1).is_none()
+                && start.elapsed() < Duration::from_secs(10)
+            {
+                crate::ui_tests::pump(5);
+            }
+            assert!(list.row_at_index(count - 1).is_some());
+            if iteration >= 5 {
+                catalog_ready.push(start.elapsed().as_micros());
+            }
+            let search = window
+                .child()
+                .unwrap()
+                .first_child()
+                .unwrap()
+                .downcast::<gtk::SearchEntry>()
+                .unwrap();
+            for query in ["Application 9", "missing", ""] {
+                let started = Instant::now();
+                search.set_text(query);
+                search.emit_by_name::<()>("search-changed", &[]);
+                crate::ui_tests::pump(1);
+                if iteration >= 5 {
+                    searches.push(started.elapsed().as_micros());
+                }
+            }
+            window.close();
+            drop(window);
+            crate::menu::show(app, &state);
+            crate::ui_tests::pump(5);
+            crate::menu::close(&state);
+            crate::ui_tests::pump(5);
+            if iteration == 4 {
+                baseline = rss();
+                maximum_gap.set(Duration::ZERO);
+            }
+        }
+        samples.sort();
+        searches.sort();
+        catalog_ready.sort();
+        println!(
+            "CHUHSHELL_PROFILE {}",
+            serde_json::json!({
+                    "apps": count, "iterations": 20,
+                    "launcher_median_us": samples[samples.len() / 2],
+                    "launcher_p95_us": samples[(samples.len() * 95).div_ceil(100) - 1],
+            "catalog_ready_median_us": catalog_ready[catalog_ready.len() / 2],
+                    "search_median_us": searches[searches.len() / 2],
+                    "search_p95_us": searches[(searches.len() * 95).div_ceil(100) - 1],
+                    "main_loop_max_gap_us": maximum_gap.get().as_micros(),
+                    "rss_warm_kib": baseline, "rss_final_kib": rss()
+                })
         );
-        while window.width() <= 0 && start.elapsed() < Duration::from_secs(5) {
-            crate::ui_tests::pump(1);
-        }
-        assert!(window.width() > 0);
-        if iteration >= 5 {
-            samples.push(start.elapsed().as_micros());
-        }
-        window.close();
-        drop(window);
-        crate::menu::show(app, &state);
-        crate::ui_tests::pump(5);
-        crate::menu::close(&state);
-        crate::ui_tests::pump(5);
-        if iteration == 4 {
-            baseline = rss();
-            maximum_gap.set(Duration::ZERO);
-        }
     }
     timer.remove();
-    samples.sort();
-    println!(
-        "CHUHSHELL_PROFILE {{\"apps\":100,\"iterations\":20,\"launcher_median_us\":{},\"launcher_p95_us\":{},\"main_loop_max_gap_us\":{},\"rss_warm_kib\":{},\"rss_final_kib\":{}}}",
-        samples[samples.len() / 2],
-        samples[samples.len() - 2],
-        maximum_gap.get().as_micros(),
-        baseline,
-        rss()
-    );
 }
 
 #[cfg(test)]

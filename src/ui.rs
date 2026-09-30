@@ -239,3 +239,22 @@ pub fn active_button(buttons: &[glib::WeakRef<gtk::Button>]) -> Option<gtk::Butt
         .cloned()
         .or_else(|| visible.first().cloned())
 }
+
+pub fn reconcile_box(container: &gtk::Box, widgets: &[gtk::Widget]) {
+    let mut child = container.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        if !widgets.contains(&widget) {
+            container.remove(&widget);
+        }
+    }
+    let mut previous: Option<gtk::Widget> = None;
+    for widget in widgets {
+        if widget.parent().as_ref() != Some(container.upcast_ref()) {
+            container.insert_child_after(widget, previous.as_ref());
+        } else if widget.prev_sibling() != previous {
+            container.reorder_child_after(widget, previous.as_ref());
+        }
+        previous = Some(widget.clone());
+    }
+}

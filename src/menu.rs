@@ -116,60 +116,96 @@ fn wallpaper_files(folder: &Path) -> Result<Vec<String>, String> {
     Ok(files)
 }
 
-fn run_wallpaper_command(argument: Option<String>) -> Result<(), String> {
-    let mut command = std::process::Command::new(wallpaper_script());
+fn run_wallpaper_command(
+    script: &Path,
+    argument: Option<String>,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let mut command = std::process::Command::new(script);
     if let Some(argument) = argument {
         command.arg(argument);
     }
-    let status = command
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map_err(|error| format!("Wallpaper script: {error}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("Wallpaper script exited with {status}"))
-    }
+    crate::process::run_command(&mut command, timeout).map(|_| ())
 }
 
 fn run_wallpaper_action(
     action: Action,
     message: glib::WeakRef<gtk::Label>,
     list: glib::WeakRef<gtk::ListBox>,
+    busy: Rc<std::cell::Cell<bool>>,
 ) {
-    if let Some(list) = list.upgrade() {
-        list.set_sensitive(false);
+    run_wallpaper_action_with(
+        action,
+        message,
+        list,
+        busy,
+        wallpaper_script(),
+        std::time::Duration::from_secs(30),
+    );
+}
+
+fn run_wallpaper_action_with(
+    action: Action,
+    message: glib::WeakRef<gtk::Label>,
+    list: glib::WeakRef<gtk::ListBox>,
+    busy: Rc<std::cell::Cell<bool>>,
+    script: PathBuf,
+    timeout: std::time::Duration,
+) {
+    let Some(active_list) = list.upgrade().filter(|list| list.is_sensitive()) else {
+        return;
+    };
+    if busy.replace(true) {
+        if let Some(message) = message.upgrade() {
+            message.set_text("A wallpaper operation is already running");
+            message.set_visible(true);
+        }
+        return;
+    }
+    active_list.set_sensitive(false);
+    if matches!(action, Action::OpenWallpapersFolder) {
+        let uri = gio::File::for_path(wallpaper_folder()).uri();
+        glib::MainContext::default().spawn_local(async move {
+            let result =
+                gio::AppInfo::launch_default_for_uri_future(&uri, gio::AppLaunchContext::NONE)
+                    .await;
+            busy.set(false);
+            if let Some(list) = list.upgrade() {
+                list.set_sensitive(true);
+            }
+            if let Some(message) = message.upgrade() {
+                match result {
+                    Ok(()) => {
+                        message.remove_css_class("menu-error");
+                        message.set_text("Wallpapers folder opened");
+                    }
+                    Err(error) => {
+                        message.add_css_class("menu-error");
+                        message.set_text(&format!("Open wallpapers folder: {error}"));
+                    }
+                }
+                message.set_visible(true);
+            }
+        });
+        return;
     }
     let (sender, receiver) = async_channel::bounded(1);
     std::thread::spawn(move || {
         let result = match action {
             Action::NextWallpaper => {
-                run_wallpaper_command(Some("--next".to_owned())).map(|()| "Wallpaper changed")
+                run_wallpaper_command(&script, Some("--next".to_owned()), timeout)
+                    .map(|()| "Wallpaper changed")
             }
             Action::SelectWallpaper(name) => {
-                run_wallpaper_command(Some(name)).map(|()| "Wallpaper selected")
+                run_wallpaper_command(&script, Some(name), timeout).map(|()| "Wallpaper selected")
             }
-            Action::OpenWallpapersFolder => std::process::Command::new("xdg-open")
-                .arg(wallpaper_folder())
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map_err(|error| format!("Open wallpapers folder: {error}"))
-                .and_then(|status| {
-                    status
-                        .success()
-                        .then_some("Wallpapers folder opened")
-                        .ok_or_else(|| format!("Open wallpapers folder: {status}"))
-                }),
             _ => return,
         };
         let _ = sender.send_blocking(result);
     });
     glib::MainContext::default().spawn_local(async move {
         let result = receiver.recv().await;
+        busy.set(false);
         if let Some(list) = list.upgrade() {
             list.set_sensitive(true);
         }
@@ -549,8 +585,12 @@ fn render_entries(
         let window = window.downgrade();
         let state = Rc::downgrade(state);
         let message = message.downgrade();
-        move |_, row| {
-            if !row.is_visible() || !row.is_child_visible() {
+        move |list, row| {
+            if !list.is_sensitive()
+                || !row.is_sensitive()
+                || !row.is_visible()
+                || !row.is_child_visible()
+            {
                 return;
             }
             let (Some(window), Some(state)) = (window.upgrade(), state.upgrade()) else {
@@ -616,7 +656,12 @@ fn render_entries(
                 | Action::SelectWallpaper(_)) => {
                     if let Some(message) = message.upgrade() {
                         message.set_visible(false);
-                        run_wallpaper_action(action, message.downgrade(), weak_list.clone());
+                        run_wallpaper_action(
+                            action,
+                            message.downgrade(),
+                            weak_list.clone(),
+                            state.wallpaper_busy.clone(),
+                        );
                     }
                 }
             }
@@ -729,6 +774,61 @@ fn render_entries(
 
 #[cfg(test)]
 pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
+    use std::os::unix::fs::PermissionsExt;
+    let script = std::env::temp_dir().join(format!("chuhshell-wallpaper-{}", std::process::id()));
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nsleep 0.1\nprintf 'wallpaper test failure' >&2\nexit 7\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let wallpaper_list = gtk::ListBox::new();
+    let wallpaper_message = gtk::Label::new(None);
+    run_wallpaper_action_with(
+        Action::NextWallpaper,
+        wallpaper_message.downgrade(),
+        wallpaper_list.downgrade(),
+        state.wallpaper_busy.clone(),
+        script.clone(),
+        std::time::Duration::from_secs(1),
+    );
+    assert!(!wallpaper_list.is_sensitive());
+    run_wallpaper_action_with(
+        Action::NextWallpaper,
+        wallpaper_message.downgrade(),
+        wallpaper_list.downgrade(),
+        state.wallpaper_busy.clone(),
+        script.clone(),
+        std::time::Duration::from_secs(1),
+    );
+    let other_list = gtk::ListBox::new();
+    run_wallpaper_action_with(
+        Action::NextWallpaper,
+        wallpaper_message.downgrade(),
+        other_list.downgrade(),
+        state.wallpaper_busy.clone(),
+        script.clone(),
+        std::time::Duration::from_secs(1),
+    );
+    assert!(other_list.is_sensitive());
+    assert!(wallpaper_message.text().contains("already running"));
+    crate::ui_tests::pump(300);
+    assert!(wallpaper_list.is_sensitive());
+    assert!(wallpaper_message.text().contains("wallpaper test failure"));
+    std::fs::write(&script, "#!/bin/sh\nsleep 300 &\nwait\n").unwrap();
+    run_wallpaper_action_with(
+        Action::NextWallpaper,
+        wallpaper_message.downgrade(),
+        wallpaper_list.downgrade(),
+        state.wallpaper_busy.clone(),
+        script.clone(),
+        std::time::Duration::from_millis(50),
+    );
+    crate::ui_tests::pump(200);
+    assert!(wallpaper_list.is_sensitive());
+    assert!(wallpaper_message.text().contains("timed out"));
+    std::fs::remove_file(script).unwrap();
+
     fn list(window: &gtk::Window) -> gtk::ListBox {
         let outer = window.child().unwrap();
         outer

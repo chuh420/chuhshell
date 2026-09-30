@@ -427,17 +427,6 @@ fn perform_with(client: &Client, action: Action) -> Result<String, String> {
             if network.ssid.is_empty() || network.ssid.len() > 32 {
                 return Err("Network names must contain 1–32 bytes".into());
             }
-            if network.security.password() && (network.profile.is_none() || !password.is_empty()) {
-                let valid = if network.security == Security::Sae {
-                    !password.is_empty()
-                } else {
-                    (8..=63).contains(&password.len())
-                        || (password.len() == 64 && password.bytes().all(|b| b.is_ascii_hexdigit()))
-                };
-                if !valid {
-                    return Err("Enter a valid Wi-Fi password (WPA/WPA2: 8–63 characters or a 64-digit hexadecimal key).".into());
-                }
-            }
             if network.profile.is_none() {
                 let interface: String = value(&client.properties(&device, DEVICE)?, "Interface");
                 for profile in client.paths(
@@ -452,6 +441,17 @@ fn perform_with(client: &Client, action: Action) -> Result<String, String> {
                         network.profile = Some(profile.to_string());
                         break;
                     }
+                }
+            }
+            if network.security.password() && (network.profile.is_none() || !password.is_empty()) {
+                let valid = if network.security == Security::Sae {
+                    !password.is_empty()
+                } else {
+                    (8..=63).contains(&password.len())
+                        || (password.len() == 64 && password.bytes().all(|b| b.is_ascii_hexdigit()))
+                };
+                if !valid {
+                    return Err("Enter a valid Wi-Fi password (WPA/WPA2: 8–63 characters or a 64-digit hexadecimal key).".into());
                 }
             }
             let device = object(&device)?;
@@ -576,14 +576,18 @@ pub fn regression_checks() {
     )
     .unwrap();
     let xml = format!(
-        r#"<node><interface name="{NM}"><method name="GetDevices"><arg type="ao" direction="out"/></method><property name="WirelessEnabled" type="b" access="read"/><property name="WirelessHardwareEnabled" type="b" access="read"/></interface><interface name="{DEVICE}"><property name="DeviceType" type="u" access="read"/><property name="State" type="u" access="read"/><property name="Interface" type="s" access="read"/></interface><interface name="{WIRELESS}"><method name="GetAllAccessPoints"><arg type="ao" direction="out"/></method><method name="RequestScan"><arg type="a{{sv}}" direction="in"/></method></interface><interface name="org.freedesktop.NetworkManager.Settings"><method name="ListConnections"><arg type="ao" direction="out"/></method></interface></node>"#
+        r#"<node><interface name="{NM}"><method name="ActivateConnection"><arg type="o" direction="in"/><arg type="o" direction="in"/><arg type="o" direction="in"/><arg type="o" direction="out"/></method><method name="GetDevices"><arg type="ao" direction="out"/></method><property name="WirelessEnabled" type="b" access="read"/><property name="WirelessHardwareEnabled" type="b" access="read"/></interface><interface name="{DEVICE}"><property name="DeviceType" type="u" access="read"/><property name="State" type="u" access="read"/><property name="Interface" type="s" access="read"/></interface><interface name="{WIRELESS}"><method name="GetAllAccessPoints"><arg type="ao" direction="out"/></method><method name="RequestScan"><arg type="a{{sv}}" direction="in"/></method></interface><interface name="org.freedesktop.NetworkManager.Settings"><method name="ListConnections"><arg type="ao" direction="out"/></method></interface><interface name="{PROFILE}"><method name="GetSettings"><arg type="a{{sa{{sv}}}}" direction="out"/></method></interface><interface name="{ACTIVE}"><property name="State" type="u" access="read"/></interface></node>"#
     );
     let info = gio::DBusNodeInfo::for_xml(&xml).unwrap();
     let device = format!("{ROOT}/Devices/1");
     let other = format!("{ROOT}/Devices/2");
     let mut registrations = Vec::new();
+    let profile = format!("{ROOT}/Settings/1");
+    let active = format!("{ROOT}/ActiveConnection/1");
     for (path, interface) in [
         (ROOT.to_string(), NM),
+        (profile.clone(), PROFILE),
+        (active.clone(), ACTIVE),
         (device.clone(), DEVICE),
         (device.clone(), WIRELESS),
         (other.clone(), DEVICE),
@@ -594,10 +598,34 @@ pub fn regression_checks() {
         ),
     ] {
         let devices = vec![object(&device).unwrap(), object(&other).unwrap()];
+        let profile = profile.clone();
+        let active = active.clone();
         registrations.push(
             bus.register_object(&path, &info.lookup_interface(interface).unwrap())
-                .method_call(move |_, _, _, _, method, _, invocation| match method {
+                .method_call(move |_, _, _, _, method, args, invocation| match method {
                     "GetDevices" => invocation.return_value(Some(&(devices.clone(),).to_variant())),
+                    "ListConnections" => invocation
+                        .return_value(Some(&(vec![object(&profile).unwrap()],).to_variant())),
+                    "GetSettings" => invocation.return_value(Some(
+                        &(Settings::from([
+                            (
+                                "802-11-wireless".into(),
+                                Properties::from([(
+                                    "ssid".into(),
+                                    b"hidden".to_vec().to_variant(),
+                                )]),
+                            ),
+                            (
+                                "802-11-wireless-security".into(),
+                                Properties::from([("key-mgmt".into(), "wpa-psk".to_variant())]),
+                            ),
+                        ]),)
+                            .to_variant(),
+                    )),
+                    "ActivateConnection" => {
+                        assert_eq!(args.child_get::<ObjectPath>(0).as_str(), profile);
+                        invocation.return_value(Some(&(object(&active).unwrap(),).to_variant()));
+                    }
                     "RequestScan" => invocation.return_dbus_error(
                         "org.freedesktop.NetworkManager.Device.NotAllowed",
                         "Scanning denied by test service",
@@ -607,7 +635,14 @@ pub fn regression_checks() {
                 .property(|_, _, path, _, property| match property {
                     "WirelessEnabled" | "WirelessHardwareEnabled" => true.to_variant(),
                     "DeviceType" => 2u32.to_variant(),
-                    "State" => (if path.ends_with("/2") { 100u32 } else { 30u32 }).to_variant(),
+                    "State" => (if path.contains("ActiveConnection") {
+                        2u32
+                    } else if path.ends_with("/2") {
+                        100u32
+                    } else {
+                        30u32
+                    })
+                    .to_variant(),
                     "Interface" => (if path.ends_with("/2") {
                         "wlan1"
                     } else {
@@ -631,6 +666,57 @@ pub fn regression_checks() {
         assert_eq!(automatic.device.unwrap().name, "wlan1");
         let selected = snapshot_with(&client, Some("wlan0")).unwrap();
         assert_eq!(selected.device.unwrap().name, "wlan0");
+        let hidden = Network {
+            name: "hidden".into(),
+            ssid: b"hidden".to_vec(),
+            security: Security::Personal,
+            access_point: "/".into(),
+            profile: None,
+            strength: None,
+            frequency: 0,
+            active: false,
+            hidden: true,
+        };
+        assert_eq!(
+            perform_with(
+                &client,
+                Action::Connect {
+                    device: device.clone(),
+                    network: hidden.clone(),
+                    password: String::new()
+                }
+            )
+            .unwrap(),
+            "Connected to hidden"
+        );
+        let mut new_network = hidden.clone();
+        new_network.ssid = b"new hidden".to_vec();
+        assert!(
+            perform_with(
+                &client,
+                Action::Connect {
+                    device: device.clone(),
+                    network: new_network,
+                    password: String::new()
+                }
+            )
+            .unwrap_err()
+            .contains("valid Wi-Fi password")
+        );
+        let mut invalid_ssid = hidden;
+        invalid_ssid.ssid = "я".repeat(17).into_bytes();
+        assert!(
+            perform_with(
+                &client,
+                Action::Connect {
+                    device: device.clone(),
+                    network: invalid_ssid,
+                    password: String::new()
+                }
+            )
+            .unwrap_err()
+            .contains("1–32 bytes")
+        );
         let error = perform_with(&client, Action::Scan(device)).unwrap_err();
         assert!(error.contains("Scanning denied"));
         let expired = Client {

@@ -26,6 +26,8 @@ struct Panel {
     reset: glib::WeakRef<gtk::Button>,
     busy: Cell<bool>,
     recording: Cell<bool>,
+    rows: RefCell<Vec<(String, gtk::Widget)>>,
+    empty: RefCell<Option<gtk::Widget>>,
 }
 
 fn button(label: &str) -> gtk::Button {
@@ -149,18 +151,32 @@ impl Panel {
         });
     }
 
+    fn filter(&self) {
+        let query = self
+            .search
+            .upgrade()
+            .map(|search| search.text().to_lowercase())
+            .unwrap_or_default();
+        let mut found = false;
+        for (text, row) in self.rows.borrow().iter() {
+            let visible = text.contains(&query);
+            row.set_visible(visible);
+            found |= visible;
+        }
+        if let Some(empty) = self.empty.borrow().as_ref() {
+            empty.set_visible(!found);
+        }
+    }
+
     fn render(self: &Rc<Self>) {
+        self.rows.borrow_mut().clear();
         let Some(list) = self.list.upgrade() else {
             return;
         };
         while let Some(child) = list.first_child() {
             list.remove(&child);
         }
-        let query = self
-            .search
-            .upgrade()
-            .map(|s| s.text().to_lowercase())
-            .unwrap_or_default();
+        let query = String::new();
         let mut count = 0;
         if let Some(catalog) = self.catalog.borrow().as_ref() {
             for binding in &catalog.bindings {
@@ -220,9 +236,17 @@ impl Panel {
                 count += 1;
             }
         }
-        if count == 0 {
-            list.append(&crate::info::label("No matching keybindings", "menu-hint"));
-        }
+        let empty = crate::info::label(
+            if count == 0 {
+                "No keybindings available"
+            } else {
+                "No matching keybindings"
+            },
+            "menu-hint",
+        );
+        list.append(&empty);
+        *self.empty.borrow_mut() = empty.parent();
+        self.filter();
     }
 
     fn row(
@@ -258,6 +282,10 @@ impl Panel {
         details.append(&edit);
         row.append(&details);
         list.append(&row);
+        self.rows.borrow_mut().push((
+            format!("{description} {key} {source} {action}").to_lowercase(),
+            row.parent().unwrap(),
+        ));
     }
 
     fn edit(&self, target: Target) {
@@ -428,10 +456,12 @@ fn build(root: std::path::PathBuf) -> (gtk::Box, Rc<Panel>) {
         reset: reset.downgrade(),
         busy: Cell::new(false),
         recording: Cell::new(false),
+        rows: RefCell::new(Vec::new()),
+        empty: RefCell::new(None),
     });
     search.connect_search_changed({
         let panel = panel.clone();
-        move |_| panel.render()
+        move |_| panel.filter()
     });
     refresh.connect_clicked({
         let panel = panel.clone();
@@ -525,11 +555,24 @@ pub fn regression_checks(app: &gtk::Application) {
     assert!(panel.list.upgrade().unwrap().row_at_index(2).is_some());
     crate::ui_tests::pump(100);
     crate::ui_tests::capture("keybindings");
+    let stable_row = panel.list.upgrade().unwrap().row_at_index(0).unwrap();
     let search = panel.search.upgrade().unwrap();
     search.set_text("Terminal");
     crate::ui_tests::pump(200);
     assert!(panel.list.upgrade().unwrap().row_at_index(0).is_some());
-    assert!(panel.list.upgrade().unwrap().row_at_index(1).is_none());
+    assert_eq!(
+        panel.list.upgrade().unwrap().row_at_index(0).unwrap(),
+        stable_row
+    );
+    assert_eq!(
+        panel
+            .rows
+            .borrow()
+            .iter()
+            .filter(|(_, row)| row.is_visible())
+            .count(),
+        1
+    );
     let binding = panel.catalog.borrow().as_ref().unwrap().bindings[0].clone();
     panel.edit(Target::Niri(binding));
     let entry = panel.entry.upgrade().unwrap();

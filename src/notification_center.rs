@@ -57,6 +57,7 @@ pub struct NotificationCenter {
     connection: RefCell<Option<gio::DBusConnection>>,
     notifications: RefCell<Vec<Notification>>,
     next_id: Cell<u32>,
+    popup_times: RefCell<std::collections::VecDeque<std::time::Instant>>,
     owned: Cell<bool>,
     buttons: RefCell<Vec<glib::WeakRef<gtk::Button>>>,
     drawer: RefCell<Option<gtk::Popover>>,
@@ -71,6 +72,7 @@ impl NotificationCenter {
             connection: RefCell::new(None),
             notifications: RefCell::new(Vec::new()),
             next_id: Cell::new(1),
+            popup_times: RefCell::new(std::collections::VecDeque::new()),
             owned: Cell::new(false),
             buttons: RefCell::new(Vec::new()),
             rows: RefCell::new(HashMap::new()),
@@ -148,6 +150,13 @@ impl NotificationCenter {
                 ));
             }
             "Notify" => {
+                if parameters.size() > 1152 * 1024 {
+                    invocation.return_dbus_error(
+                        "org.freedesktop.DBus.Error.LimitsExceeded",
+                        "Notification exceeds the size limit",
+                    );
+                    return;
+                }
                 let app = parameters.child_get::<String>(0);
                 let app = if app.is_empty() {
                     "Application".to_owned()
@@ -279,7 +288,27 @@ impl NotificationCenter {
             id
         };
         drop(entries);
-        self.show_popup(id);
+        let existing_popup = self
+            .notifications
+            .borrow()
+            .iter()
+            .any(|entry| entry.view.id == id && entry.popup.is_some());
+        let mut times = self.popup_times.borrow_mut();
+        let now = std::time::Instant::now();
+        while times
+            .front()
+            .is_some_and(|time| now.duration_since(*time) >= Duration::from_secs(1))
+        {
+            times.pop_front();
+        }
+        let allowed = existing_popup || times.len() < 5;
+        if allowed && !existing_popup {
+            times.push_back(now);
+        }
+        drop(times);
+        if allowed {
+            self.show_popup(id);
+        }
         if timeout != 0 {
             let duration = if timeout < 0 {
                 Duration::from_secs(6)
@@ -793,6 +822,33 @@ impl ImageData {
 }
 
 #[cfg(test)]
+impl NotificationCenter {
+    pub fn stress(self: &Rc<Self>) {
+        for _ in 0..20 {
+            self.notify(
+                0,
+                NotificationView {
+                    id: 0,
+                    app: "Soak test".into(),
+                    icon: String::new(),
+                    summary: "Synthetic notification".into(),
+                    body: "Bounded notification load".into(),
+                    actions: Vec::new(),
+                    desktop_id: None,
+                    resident: false,
+                    transient: false,
+                    image: None,
+                },
+                1000,
+            );
+        }
+        assert!(
+            self.notifications.borrow().len() <= crate::config::get().notification_history_limit
+        );
+    }
+}
+
+#[cfg(test)]
 pub fn regression_checks(app: &gtk::Application) {
     let center = NotificationCenter::new(app);
     center.start();
@@ -821,6 +877,33 @@ pub fn regression_checks(app: &gtk::Application) {
             1000,
         ))
         .unwrap();
+    let oversized = (
+        "Test",
+        0u32,
+        "",
+        "Oversized",
+        "x".repeat(1152 * 1024),
+        Vec::<String>::new(),
+        HashMap::<String, glib::Variant>::new(),
+        0i32,
+    )
+        .to_variant();
+    assert!(
+        glib::MainContext::default()
+            .block_on(connection.call_future(
+                Some(BUS_NAME),
+                OBJECT_PATH,
+                INTERFACE,
+                "Notify",
+                Some(&oversized),
+                None,
+                gio::DBusCallFlags::NONE,
+                1000
+            ))
+            .unwrap_err()
+            .to_string()
+            .contains("LimitsExceeded")
+    );
     let dbus_id = reply.child_get::<u32>(0);
     assert!(dbus_id > 0);
     assert!(
@@ -869,6 +952,15 @@ pub fn regression_checks(app: &gtk::Application) {
     for _ in 0..crate::config::get().notification_history_limit + 5 {
         center.notify(0, view(), 0);
     }
+    assert!(
+        center
+            .notifications
+            .borrow()
+            .iter()
+            .filter(|entry| entry.popup.is_some())
+            .count()
+            <= 5
+    );
     assert_eq!(
         center.notifications.borrow().len(),
         crate::config::get().notification_history_limit

@@ -7,28 +7,28 @@ url='https://github.com/chuh420/chuhshell'
 license=('LicenseRef-unlicensed')
 depends=('gtk4' 'gtk4-layer-shell' 'glib2>=2.80' 'niri' 'wireplumber' 'libpulse' 'networkmanager' 'brightnessctl' 'systemd' 'bluez' 'wl-clipboard' 'curl')
 makedepends=('cargo' 'git')
-optdepends=('foot: terminal for network and process tools' 'btop: process tool' 'ttf-input: interface font')
-source=()
-sha256sums=()
+optdepends=('foot: terminal for the temperature monitor' 'btop: process tool' 'ttf-input: interface font')
+source=("$pkgname-$pkgver.tar.gz")
+sha256sums=('SOURCE_ARCHIVE_CHECKSUM')
 
 prepare() {
-    cd "$startdir/.."
+    cd "$srcdir/$pkgname-$pkgver"
     cargo fetch --locked
 }
 
 build() {
-    cd "$startdir/.."
-    cargo build --release --locked
+    cd "$srcdir/$pkgname-$pkgver"
+    cargo build --release --locked --offline
 }
 
 check() {
-    cd "$startdir/.."
-    cargo test --locked
+    cd "$srcdir/$pkgname-$pkgver"
+    cargo test --locked --offline
 }
 
 package() {
-    cd "$startdir/.."
-    install -Dm755 target/release/chuhshell "$pkgdir/usr/bin/chuhshell"
+    cd "$srcdir/$pkgname-$pkgver"
+    install -Dm755 "${CARGO_TARGET_DIR:-target}/release/chuhshell" "$pkgdir/usr/bin/chuhshell"
     install -Dm644 packaging/chuhshell.service "$pkgdir/usr/lib/systemd/user/chuhshell.service"
     install -Dm644 packaging/org.freedesktop.Notifications.service "$pkgdir/usr/share/dbus-1/services/org.freedesktop.Notifications.service"
     install -Dm644 README.md "$pkgdir/usr/share/doc/chuhshell/README.md"

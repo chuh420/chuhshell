@@ -1,9 +1,47 @@
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub fn read_limited(path: &Path, limit: usize) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(limit as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(std::io::Error::other("File exceeds the size limit"));
+    }
+    Ok(bytes)
+}
+
+pub fn read_text(path: &Path, limit: usize) -> std::io::Result<String> {
+    String::from_utf8(read_limited(path, limit)?)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+}
+
+#[derive(Debug)]
+enum Commit {
+    Durable,
+    Unconfirmed(std::io::Error),
+}
+
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Commit::Unconfirmed(error) = atomic_write_with_sync(path, bytes, |parent| {
+        std::fs::File::open(parent)?.sync_all()
+    })? {
+        eprintln!(
+            "chuhshell: saved {} but durability could not be confirmed: {error}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn atomic_write_with_sync(
+    path: &Path,
+    bytes: &[u8],
+    sync: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> std::io::Result<Commit> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let parent = path
         .parent()
@@ -26,7 +64,10 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         file.write_all(bytes)?;
         file.sync_all()?;
         std::fs::rename(&temporary, path)?;
-        std::fs::File::open(parent)?.sync_all()
+        Ok(match sync(parent) {
+            Ok(()) => Commit::Durable,
+            Err(error) => Commit::Unconfirmed(error),
+        })
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(temporary);
@@ -103,6 +144,20 @@ pub fn shutdown() {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    #[test]
+    fn committed_write_and_durability_failure_are_distinct() {
+        let path = std::env::temp_dir().join(format!("chuhshell-commit-{}", std::process::id()));
+        let result = atomic_write_with_sync(&path, b"committed", |_| {
+            Err(std::io::Error::other("fsync failed"))
+        })
+        .unwrap();
+        assert!(matches!(result, Commit::Unconfirmed(_)));
+        assert_eq!(std::fs::read(&path).unwrap(), b"committed");
+        assert!(read_limited(&path, 8).is_err());
+        assert_eq!(read_limited(&path, 9).unwrap(), b"committed");
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn worker_bounds_the_queue_and_drains_in_submission_order() {
         let worker = Worker::new();

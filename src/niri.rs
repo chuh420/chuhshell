@@ -1,5 +1,5 @@
 use async_channel::Sender;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::thread;
 use std::time::Duration;
@@ -40,6 +40,22 @@ pub struct WindowProcess {
     pub app_id: Option<String>,
 }
 
+const FRAME_LIMIT: usize = 1024 * 1024;
+
+fn read_frame(reader: &mut impl BufRead, line: &mut String) -> std::io::Result<usize> {
+    line.clear();
+    let mut bytes = Vec::new();
+    let size = reader
+        .take(FRAME_LIMIT as u64 + 1)
+        .read_until(b'\n', &mut bytes)?;
+    if size > FRAME_LIMIT {
+        return Err(std::io::Error::other("Niri frame exceeds the size limit"));
+    }
+    *line = String::from_utf8(bytes)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    Ok(size)
+}
+
 fn request(request: &str) -> Option<serde_json::Value> {
     let socket_path = std::env::var_os("NIRI_SOCKET")?;
     let mut stream = UnixStream::connect(socket_path).ok()?;
@@ -49,7 +65,7 @@ fn request(request: &str) -> Option<serde_json::Value> {
     stream.write_all(b"\n").ok()?;
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
-    reader.read_line(&mut line).ok()?;
+    read_frame(&mut reader, &mut line).ok()?;
     response(&line)
 }
 
@@ -178,7 +194,7 @@ pub fn apply_event(event: &serde_json::Value, snapshot: &mut Snapshot) -> bool {
 
 fn read_ok_line(reader: &mut impl BufRead, line: &mut String) -> bool {
     line.clear();
-    reader.read_line(line).is_ok() && response(line).is_some()
+    read_frame(reader, line).is_ok() && response(line).is_some()
 }
 
 pub fn spawn_poller(sender: Sender<Snapshot>) {
@@ -205,7 +221,7 @@ pub fn spawn_poller(sender: Sender<Snapshot>) {
             let mut snapshot = Snapshot::default();
             loop {
                 line.clear();
-                match reader.read_line(&mut line) {
+                match read_frame(&mut reader, &mut line) {
                     Ok(0) | Err(_) => break,
                     Ok(_) => {
                         let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
@@ -242,6 +258,23 @@ mod tests {
             is_focused: false,
             active_window_id: None,
         }
+    }
+
+    #[test]
+    fn ipc_frames_are_bounded_and_preserve_next_frame() {
+        let mut reader = std::io::Cursor::new(b"one\ntwo\n");
+        let mut line = String::new();
+        assert_eq!(read_frame(&mut reader, &mut line).unwrap(), 4);
+        assert_eq!(line, "one\n");
+        read_frame(&mut reader, &mut line).unwrap();
+        assert_eq!(line, "two\n");
+        assert!(
+            read_frame(
+                &mut std::io::Cursor::new(vec![b'x'; FRAME_LIMIT + 1]),
+                &mut line
+            )
+            .is_err()
+        );
     }
 
     #[test]

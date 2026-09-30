@@ -44,16 +44,11 @@ impl Default for Config {
 }
 
 pub fn path() -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config")
-        })
-        .join("chuhshell/config.json")
+    crate::paths::config().join("chuhshell/config.json")
 }
 
 pub fn read() -> Result<Config, String> {
-    let contents = match std::fs::read_to_string(path()) {
+    let contents = match crate::storage::read_text(&path(), 1024 * 1024) {
         Ok(value) => value,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
         Err(error) => return Err(error.to_string()),
@@ -104,7 +99,7 @@ fn save_values_at(
 ) -> Result<(), String> {
     static SAVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = SAVE.lock().unwrap_or_else(|e| e.into_inner());
-    let mut value: serde_json::Value = match std::fs::read_to_string(path) {
+    let mut value: serde_json::Value = match crate::storage::read_text(path, 1024 * 1024) {
         Ok(contents) => {
             serde_json::from_str(&contents).map_err(|e| format!("Could not read settings: {e}"))?
         }
@@ -127,6 +122,12 @@ fn save_values_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn documented_configuration_uses_supported_fields() {
+        let config: Config = serde_json::from_str(include_str!("../config.example.json")).unwrap();
+        assert_eq!(config.notification_history_limit, 200);
+    }
+
     #[test]
     fn related_settings_are_saved_together() {
         let path = std::env::temp_dir().join(format!(

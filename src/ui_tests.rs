@@ -100,6 +100,30 @@ fn ui_regressions() {
     assert_eq!(state.bars.borrow().len(), 2);
     crate::bar::create(&app, &state, &center);
     assert_eq!(state.bars.borrow().len(), 2);
+    let services = state.services.borrow().as_ref().unwrap().clone();
+    let stable_bar = state.bars.borrow()[0].1.clone();
+    let connector = state.bars.borrow()[1].0.connector().unwrap();
+    let change_output = |enabled: bool| {
+        let status = std::process::Command::new("wlr-randr")
+            .args([
+                "--output",
+                connector.as_str(),
+                if enabled { "--on" } else { "--off" },
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        pump(300);
+    };
+    change_output(false);
+    assert_eq!(state.bars.borrow().len(), 1);
+    assert_eq!(state.bars.borrow()[0].1, stable_bar);
+    change_output(true);
+    assert_eq!(state.bars.borrow().len(), 2);
+    assert!(Rc::ptr_eq(
+        state.services.borrow().as_ref().unwrap(),
+        &services
+    ));
     let buttons: Vec<_> = state
         .bars
         .borrow()
@@ -150,6 +174,7 @@ fn ui_regressions() {
     center.toggle_drawer();
     pump(100);
     crate::launcher::profile(&app);
+    soak(&app, &state, &center);
     crate::process::shutdown();
     for (_, window) in state.bars.borrow().iter() {
         window.close();
@@ -163,9 +188,94 @@ pub fn capture(name: &str) {
     };
     let directory = std::path::PathBuf::from(directory);
     std::fs::create_dir_all(&directory).unwrap();
+    pump(120);
     let status = std::process::Command::new("grim")
         .arg(directory.join(format!("{name}.png")))
         .status()
         .unwrap();
     assert!(status.success());
+    if let Some(baselines) = std::env::var_os("CHUHSHELL_TEST_BASELINES") {
+        let baseline = std::path::PathBuf::from(baselines).join(format!("{name}.png"));
+        let expected = gtk::gdk::Texture::from_file(&gio::File::for_path(&baseline))
+            .unwrap_or_else(|error| panic!("Missing baseline {}: {error}", baseline.display()));
+        let actual = gtk::gdk::Texture::from_file(&gio::File::for_path(
+            directory.join(format!("{name}.png")),
+        ))
+        .unwrap();
+        assert_eq!(
+            (actual.width(), actual.height()),
+            (expected.width(), expected.height()),
+            "{name}: screenshot dimensions changed"
+        );
+        let stride = actual.width() as usize * 4;
+        let mut left = vec![0u8; stride * actual.height() as usize];
+        let mut right = left.clone();
+        actual.download(&mut left, stride);
+        expected.download(&mut right, stride);
+        let changed = left
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(right.as_chunks::<4>().0.iter())
+            .filter(|(left, right)| {
+                left.iter()
+                    .zip(right.iter())
+                    .any(|(left, right)| left.abs_diff(*right) > 24)
+            })
+            .count();
+        let fraction = changed as f64 / (actual.width() * actual.height()) as f64;
+        assert!(
+            fraction <= 0.01,
+            "{name}: {:.2}% changed pixels exceeds 1% tolerance",
+            fraction * 100.0
+        );
+    }
+}
+
+fn soak(
+    app: &gtk::Application,
+    state: &Rc<crate::app::AppState>,
+    center: &Rc<crate::notification_center::NotificationCenter>,
+) {
+    let seconds = std::env::var("CHUHSHELL_SOAK_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let started = Instant::now();
+    let mut iteration = 0u64;
+    while started.elapsed().as_secs() < seconds {
+        center.stress();
+        state.services.borrow().as_ref().unwrap().stress(iteration);
+        if iteration.is_multiple_of(30) {
+            crate::launcher::show(app, state, crate::app::LauncherMode::Normal);
+            pump(50);
+            let window = state.launcher.borrow().clone();
+            if let Some(window) = window {
+                window.close();
+            }
+            crate::menu::show(app, state);
+            pump(50);
+            crate::menu::close(state);
+        }
+        assert_eq!(state.bars.borrow().len(), 2);
+        if iteration.is_multiple_of(60) {
+            let memory = std::fs::read_to_string("/proc/self/status").unwrap();
+            let rss = memory
+                .lines()
+                .find(|line| line.starts_with("VmRSS:"))
+                .unwrap();
+            println!(
+                "CHUHSHELL_SOAK {}",
+                serde_json::json!({"elapsed_seconds": started.elapsed().as_secs(), "iteration": iteration, "rss": rss})
+            );
+        }
+        iteration += 1;
+        pump(1000);
+    }
+    if seconds > 0 {
+        println!(
+            "CHUHSHELL_SOAK {}",
+            serde_json::json!({"elapsed_seconds": started.elapsed().as_secs(), "iterations": iteration, "complete": true})
+        );
+    }
 }

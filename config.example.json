@@ -1,0 +1,13 @@
+{
+  "monitors": [],
+  "disabled_modules": [],
+  "notification_history_limit": 200,
+  "weather_system": false,
+  "weather_units": "system",
+  "battery": null,
+  "backlight": null,
+  "wifi": null,
+  "temperature_sensor": null,
+  "keybindings": {},
+  "launcher_layout": null
+}

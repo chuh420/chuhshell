@@ -9,13 +9,13 @@ import sys
 import time
 import argparse
 import fcntl
-from storage import write, snapshot, restore as restore_file, sync_directory
+from storage import xdg_path, write, snapshot, restore as restore_file, sync_directory
 
 ROOT = Path(__file__).resolve().parent.parent
 HOME_DIR = Path.home()
-CONFIG = Path(os.environ.get('XDG_CONFIG_HOME', HOME_DIR / '.config'))
-DATA = Path(os.environ.get('XDG_DATA_HOME', HOME_DIR / '.local/share'))
-STATE = Path(os.environ.get('XDG_STATE_HOME', HOME_DIR / '.local/state')) / 'chuhshell/installation'
+CONFIG = xdg_path('XDG_CONFIG_HOME', HOME_DIR, '.config')
+DATA = xdg_path('XDG_DATA_HOME', HOME_DIR, '.local/share')
+STATE = xdg_path('XDG_STATE_HOME', HOME_DIR, '.local/state') / 'chuhshell/installation'
 MANIFEST = STATE / 'manifest.json'
 
 

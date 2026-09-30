@@ -1,5 +1,16 @@
 name: Checks
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      performance:
+        description: Run optional headless performance measurements
+        type: boolean
+        default: false
+defaults:
+  run:
+    shell: bash
 permissions:
   contents: read
 jobs:
@@ -7,11 +18,68 @@ jobs:
     runs-on: ubuntu-latest
     container: archlinux:base-devel
     steps:
-      - run: pacman -Syu --noconfirm rust git gtk4 gtk4-layer-shell pkgconf python labwc dbus niri
+      - run: pacman -Syu --noconfirm rust git gtk4 gtk4-layer-shell pkgconf python zsh labwc dbus niri grim wlr-randr
       - uses: actions/checkout@v4
+      - run: mkdir -p artifacts && scripts/report-environment.sh > artifacts/environment.txt
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked --all-targets
-      - run: for script in scripts/*.sh; do bash -n "$script" || exit; done
+      - run: for script in scripts/*.sh packaging/PKGBUILD; do bash -n "$script" || exit; done
       - run: python scripts/test_install.py
-      - run: scripts/check-headless.sh
+      - run: CHUHSHELL_TEST_SCREENSHOTS="$PWD/artifacts/baselines" scripts/check-headless.sh
+      - run: CHUHSHELL_TEST_BASELINES="$PWD/artifacts/baselines" CHUHSHELL_TEST_SCREENSHOTS="$PWD/artifacts/screenshots" scripts/check-headless.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: checks
+          path: artifacts
+  release:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - run: pacman -Syu --noconfirm rust gtk4 gtk4-layer-shell pkgconf git
+      - uses: actions/checkout@v4
+      - run: mkdir -p artifacts && scripts/report-environment.sh > artifacts/environment.txt
+      - run: cargo build --release --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: |
+            target/release/chuhshell
+            artifacts/environment.txt
+  security:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - run: pacman -Syu --noconfirm rust git cargo-audit
+      - uses: actions/checkout@v4
+      - run: mkdir -p artifacts && scripts/report-environment.sh > artifacts/environment.txt
+      - run: cargo audit --json > artifacts/rustsec.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rustsec
+          path: artifacts
+  msrv:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - run: pacman -Syu --noconfirm rustup git gtk4 gtk4-layer-shell pkgconf
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install 1.92.0 --profile minimal
+      - run: cargo +1.92.0 check --locked --all-targets
+  performance:
+    if: github.event_name == 'workflow_dispatch' && inputs.performance
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - run: pacman -Syu --noconfirm rust git gtk4 gtk4-layer-shell pkgconf labwc dbus niri wlr-randr
+      - uses: actions/checkout@v4
+      - run: mkdir -p artifacts && scripts/report-environment.sh > artifacts/environment.txt
+      - run: set -o pipefail; CHUHSHELL_PROFILE=1 CHUHSHELL_TEST_RELEASE=1 scripts/check-headless.sh | tee artifacts/performance.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: performance
+          path: artifacts

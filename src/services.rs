@@ -15,7 +15,43 @@ pub struct SystemState {
     pub battery: modules::BatteryStatus,
 }
 
-type Listener = Box<dyn Fn(&SystemState) -> bool>;
+#[derive(Clone, Copy, Default)]
+pub struct Changes {
+    pub workspaces: bool,
+    pub layouts: bool,
+    pub audio: bool,
+    pub network: bool,
+    pub temperature: bool,
+    pub brightness: bool,
+    pub battery: bool,
+}
+
+impl Changes {
+    fn between(previous: &SystemState, next: &SystemState) -> Self {
+        Self {
+            workspaces: previous.niri.workspaces != next.niri.workspaces,
+            layouts: previous.niri.layouts != next.niri.layouts,
+            audio: previous.audio != next.audio,
+            network: previous.network != next.network,
+            temperature: previous.temperature != next.temperature,
+            brightness: previous.brightness != next.brightness,
+            battery: previous.battery != next.battery,
+        }
+    }
+    fn all() -> Self {
+        Self {
+            workspaces: true,
+            layouts: true,
+            audio: true,
+            network: true,
+            temperature: true,
+            brightness: true,
+            battery: true,
+        }
+    }
+}
+
+type Listener = Box<dyn Fn(&SystemState, Changes) -> bool>;
 
 pub struct Services {
     pub network: Rc<crate::network::service::Service>,
@@ -145,15 +181,16 @@ impl Services {
                 };
                 let old = services.data.borrow().battery.clone();
                 if old.available && battery.available {
-                    let previous = Some((old.plugged, old.charging));
+                    let previous = Some((old.plugged, old.state));
                     if let Some(event) =
-                        notifications::power_transition(previous, battery.plugged, battery.charging)
+                        notifications::power_transition(previous, battery.plugged, battery.state)
                     {
                         let title = match event {
                             PowerNotice::Connected => "Power connected",
                             PowerNotice::Disconnected => "Power disconnected",
                             PowerNotice::ChargingStarted => "Charging started",
                             PowerNotice::ChargingComplete => "Charging complete",
+                            PowerNotice::ChargingStopped => "Charging stopped",
                         };
                         notifications::show(
                             &state,
@@ -220,14 +257,48 @@ impl Services {
         if previous == *data {
             return;
         }
+        let changes = Changes::between(&previous, &data);
         drop(data);
         self.listeners
             .borrow_mut()
-            .retain(|listener| listener(&self.data.borrow()));
+            .retain(|listener| listener(&self.data.borrow(), changes));
     }
 
-    pub fn subscribe(&self, listener: impl Fn(&SystemState) -> bool + 'static) {
-        listener(&self.data.borrow());
+    pub fn subscribe(&self, listener: impl Fn(&SystemState, Changes) -> bool + 'static) {
+        listener(&self.data.borrow(), Changes::all());
         self.listeners.borrow_mut().push(Box::new(listener));
+    }
+}
+
+#[cfg(test)]
+impl Services {
+    pub fn stress(&self, iteration: u64) {
+        self.update(|data| {
+            data.temperature = Some(40000 + iteration as i64 % 1000);
+            data.audio = Some(format!("Volume: {:.2}", (iteration % 100) as f32 / 100.0));
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn temperature_changes_do_not_refresh_other_modules() {
+        let previous = SystemState::default();
+        let next = SystemState {
+            temperature: Some(45000),
+            ..previous.clone()
+        };
+        let changes = Changes::between(&previous, &next);
+        assert!(changes.temperature);
+        assert!(
+            !changes.audio
+                && !changes.network
+                && !changes.workspaces
+                && !changes.layouts
+                && !changes.brightness
+                && !changes.battery
+        );
     }
 }

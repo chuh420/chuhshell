@@ -3,6 +3,8 @@ from pathlib import Path
 import tempfile
 import unittest
 import json
+import os
+import storage
 import subprocess
 from unittest.mock import patch
 import autologin
@@ -124,6 +126,44 @@ class InstallationTransaction(unittest.TestCase):
         with patch.object(installer, 'run', side_effect=run), patch.object(installer, 'plan_configuration', return_value=self.plan), patch.object(installer, 'stop_old_shell'), patch.object(installer.time, 'sleep'):
             installer.install(self.config)
         return count
+
+    def test_process_exit_after_rename_recovers_installation(self):
+        pid = os.fork()
+        if pid == 0:
+            original_sync = storage.sync_directory
+            def interrupted(path):
+                original_sync(path)
+                if Path(path) == self.config.parent and self.config.read_text() == 'updated':
+                    os._exit(78)
+            with patch.object(storage, 'sync_directory', side_effect=interrupted):
+                self.install()
+            os._exit(79)
+        _, status = os.waitpid(pid, 0)
+        self.assertEqual(os.waitstatus_to_exitcode(status), 78)
+        self.assertTrue(installer.journal_path().exists())
+        with patch.object(installer, 'run', side_effect=self.original_run):
+            installer.recover()
+        self.assertEqual(self.config.read_text(), 'original')
+        self.assertFalse(installer.journal_path().exists())
+        self.install()
+        with patch.object(installer, 'run', side_effect=self.original_run):
+            installer.uninstall()
+
+    def test_directory_sync_failure_after_profile_rename_rolls_back(self):
+        original_sync = storage.sync_directory
+        failed = False
+        def interrupted(path):
+            nonlocal failed
+            if not failed and Path(path) == self.config.parent and self.config.read_text() == 'updated':
+                failed = True
+                raise OSError('Injected fsync failure after rename')
+            return original_sync(path)
+        with patch.object(storage, 'sync_directory', side_effect=interrupted):
+            with self.assertRaises(storage.DurabilityError) as result:
+                self.install()
+        self.assertTrue(result.exception.committed)
+        self.assertEqual(self.config.read_text(), 'original')
+        self.assertFalse(installer.journal_path().exists())
 
     def test_every_command_failure_restores_original_files(self):
         for fail in range(1, 12):
@@ -298,6 +338,41 @@ class InstallationTransaction(unittest.TestCase):
 
 
 class AutologinTransaction(unittest.TestCase):
+    def test_managed_profile_ignores_comments_and_inactive_branches(self):
+        for previous in [b'# exec niri --session\n', b'if false; then exec niri --session; fi\n']:
+            content = autologin.profile_content(previous)
+            self.assertTrue(content.startswith(autologin.BLOCK))
+            self.assertTrue(content.endswith(previous))
+            self.assertEqual(autologin.profile_content(content), content)
+        with self.assertRaises(RuntimeError):
+            autologin.profile_content(b'if broken\n')
+
+    def test_profile_path_honors_zdotdir_and_zshenv(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            custom = home / 'zsh'
+            custom.mkdir()
+            (home / '.zshenv').write_text(f'ZDOTDIR={custom}\n')
+            with patch.dict(os.environ, {'ZDOTDIR': ''}):
+                self.assertEqual(autologin.profile_path(home), custom / '.zprofile')
+            (home / '.zshenv').unlink()
+            with patch.dict(os.environ, {'ZDOTDIR': str(custom)}):
+                self.assertEqual(autologin.profile_path(home), custom / '.zprofile')
+
+    def test_recovery_remembers_profile_when_zdotdir_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first, second, dropin = root / 'first', root / 'second', root / 'getty'
+            first.write_text('original')
+            second.write_text('unrelated')
+            dropin.write_text('original getty')
+            with patch.object(autologin, 'run', side_effect=lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, '', '')), patch.object(autologin, 'privileged_restore', side_effect=restore):
+                autologin.setup(root / 'backup', first, dropin, 'test-user')
+                autologin.setup(root / 'backup', second, dropin, 'test-user', True)
+            self.assertEqual(first.read_text(), 'original')
+            self.assertEqual(second.read_text(), 'unrelated')
+            self.assertEqual(dropin.read_text(), 'original getty')
+
     def test_failures_restore_profile_and_getty_and_allow_retry(self):
         for fail in range(1, 4):
             with self.subTest(step=fail), tempfile.TemporaryDirectory() as directory:

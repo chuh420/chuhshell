@@ -8,6 +8,7 @@ mod bluetooth;
 mod clipboard;
 mod config;
 mod css;
+mod doctor;
 mod fuzzy;
 mod info;
 mod keybindings;
@@ -19,6 +20,7 @@ mod network;
 mod niri;
 mod notification_center;
 mod notifications;
+mod paths;
 mod process;
 mod services;
 mod storage;
@@ -37,66 +39,6 @@ fn valid_command(command: &str) -> bool {
         command,
         "clipboard" | "menu" | "launcher" | "manage" | "notifications" | "background-apps"
     ) || notifications::is_command(command)
-}
-
-fn doctor() -> glib::ExitCode {
-    let mut healthy = true;
-    match config::read() {
-        Ok(_) => println!("Configuration: OK ({})", config::path().display()),
-        Err(error) => {
-            println!("Configuration: {error}");
-            healthy = false;
-        }
-    }
-    let connected = niri::window_processes().is_some();
-    println!("Niri IPC: {}", if connected { "OK" } else { "unavailable" });
-    healthy &= connected;
-    for program in [
-        "wpctl",
-        "pactl",
-        "brightnessctl",
-        "udevadm",
-        "foot",
-        "wl-paste",
-        "curl",
-    ] {
-        let found = std::env::var_os("PATH").is_some_and(|paths| {
-            std::env::split_paths(&paths).any(|path| path.join(program).is_file())
-        });
-        println!("{program}: {}", if found { "OK" } else { "missing" });
-        healthy &= found;
-    }
-    match process::run("busctl", &["--system", "tree", "org.bluez"]) {
-        Ok(_) => println!("Bluetooth service: OK"),
-        Err(error) => {
-            println!("Bluetooth: {error}");
-            healthy = false;
-        }
-    }
-    match process::run(
-        "busctl",
-        &[
-            "--user",
-            "call",
-            "org.freedesktop.DBus",
-            "/org/freedesktop/DBus",
-            "org.freedesktop.DBus",
-            "GetNameOwner",
-            "s",
-            "org.freedesktop.Notifications",
-        ],
-    ) {
-        Ok(owner) => println!("Notification service owner: {owner}"),
-        Err(error) => {
-            println!("Notification service: {error}");
-            healthy = false;
-        }
-    }
-    if healthy {
-        glib::ExitCode::SUCCESS
-    } else {
-        glib::ExitCode::FAILURE
-    }
 }
 
 fn main() -> glib::ExitCode {
@@ -135,6 +77,9 @@ fn main() -> glib::ExitCode {
             }
         };
     }
+    if arguments.as_slice() == ["doctor", "--json"] {
+        return doctor::run(true);
+    }
     if arguments.as_slice() == ["clipboard-capture"] {
         clipboard::capture();
         return glib::ExitCode::SUCCESS;
@@ -147,11 +92,11 @@ fn main() -> glib::ExitCode {
             }
             "--help" | "-h" => {
                 println!(
-                    "chuhshell [menu|clipboard|launcher|manage|notifications|background-apps|doctor]\nMedia commands: volume-up, volume-down, volume-mute, microphone-mute, brightness-up, brightness-down, brightness-key-up, brightness-key-down, brightness-scroll-up, brightness-scroll-down"
+                    "chuhshell [menu|clipboard|launcher|manage|notifications|background-apps|doctor [--json]]\nMedia commands: volume-up, volume-down, volume-mute, microphone-mute, brightness-up, brightness-down, brightness-key-up, brightness-key-down, brightness-scroll-up, brightness-scroll-down"
                 );
                 return glib::ExitCode::SUCCESS;
             }
-            "doctor" => return doctor(),
+            "doctor" => return doctor::run(false),
             _ => {}
         }
     }

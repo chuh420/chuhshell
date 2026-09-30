@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::OnceLock;
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Task {
     pub(crate) text: String,
     pub(crate) done: bool,
@@ -22,16 +22,23 @@ struct Request {
 }
 
 pub(crate) fn path() -> PathBuf {
-    let home = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    home.join("chuhshell/todo.json")
+    crate::paths::data().join("chuhshell/todo.json")
 }
 
 pub(crate) fn load(path: &Path) -> Result<Vec<Task>, String> {
-    match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| format!("Read tasks: {error}")),
+    match crate::storage::read_limited(path, 512 * 1024) {
+        Ok(bytes) => {
+            let tasks: Vec<Task> =
+                serde_json::from_slice(&bytes).map_err(|error| format!("Read tasks: {error}"))?;
+            if tasks.len() > 500
+                || tasks
+                    .iter()
+                    .any(|task| task.text.chars().count() > 200 || task.text.trim().is_empty())
+            {
+                return Err("Tasks exceed the limit (500 tasks, 200 characters per task)".into());
+            }
+            Ok(tasks)
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(error) => Err(format!("Read tasks: {error}")),
     }
@@ -45,6 +52,9 @@ fn update(path: &Path, command: Command) -> Result<Vec<Task>, String> {
             let text = text.trim();
             if text.is_empty() {
                 return Ok(tasks);
+            }
+            if text.chars().count() > 200 {
+                return Err("Tasks may contain at most 200 characters".into());
             }
             if tasks.len() >= 500 {
                 return Err("Task limit reached (500)".into());
@@ -94,9 +104,10 @@ struct TodoView {
 
 impl TodoView {
     fn dispatch(self: &Rc<Self>, command: Command) {
-        if let Some(root) = self.root.upgrade() {
-            root.set_sensitive(false);
-        }
+        let Some(root) = self.root.upgrade().filter(|root| root.is_sensitive()) else {
+            return;
+        };
+        root.set_sensitive(false);
         let view = self.clone();
         glib::MainContext::default().spawn_local(async move {
             let (reply, receiver) = async_channel::bounded(1);
@@ -239,6 +250,30 @@ pub fn view() -> gtk::Box {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task_files_are_bounded_before_parsing() {
+        let path =
+            std::env::temp_dir().join(format!("chuhshell-todo-limits-{}", std::process::id()));
+        let task = Task {
+            text: "x".repeat(201),
+            done: false,
+        };
+        std::fs::write(&path, serde_json::to_vec(&vec![task]).unwrap()).unwrap();
+        assert!(load(&path).is_err());
+        let tasks = vec![
+            Task {
+                text: "one".into(),
+                done: false
+            };
+            501
+        ];
+        std::fs::write(&path, serde_json::to_vec(&tasks).unwrap()).unwrap();
+        assert!(load(&path).is_err());
+        std::fs::write(&path, vec![b' '; 512 * 1024 + 1]).unwrap();
+        assert!(load(&path).unwrap_err().contains("size limit"));
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn tasks_survive_updates_and_reject_bad_data() {

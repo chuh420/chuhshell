@@ -225,67 +225,83 @@ fn build(
         .borrow()
         .as_ref()
         .unwrap()
-        .subscribe(move |data| {
+        .subscribe(move |data, changes| {
             if weak_window
                 .upgrade()
                 .is_none_or(|window| !window.is_visible())
             {
                 return false;
             }
-            if *old_workspaces.borrow() != data.niri.workspaces {
+            if changes.workspaces && *old_workspaces.borrow() != data.niri.workspaces {
                 *old_workspaces.borrow_mut() = data.niri.workspaces.clone();
                 update_workspaces(&left, &workspace_buttons, &data.niri.workspaces, &output);
             }
-            if let Some(text) = &data.audio {
-                let muted = text.contains("MUTED");
-                let percent = text
-                    .split_whitespace()
-                    .nth(1)
-                    .and_then(|s| s.parse::<f32>().ok())
-                    .unwrap_or(0.0)
-                    * 100.0;
-                audio.set_label(&format!(
-                    "{} {:.0}%",
-                    if muted { "󰝟" } else { "󰕾" },
-                    percent
-                ));
-                audio.set_tooltip_text(Some(if muted { "Audio muted" } else { "Audio volume" }));
-            } else {
-                audio.set_label("󰝟 --");
-                audio.set_tooltip_text(Some("Audio unavailable"));
+            if changes.audio {
+                if let Some(text) = &data.audio {
+                    let muted = text.contains("MUTED");
+                    let percent = text
+                        .split_whitespace()
+                        .nth(1)
+                        .and_then(|s| s.parse::<f32>().ok())
+                        .unwrap_or(0.0)
+                        * 100.0;
+                    audio.set_label(&format!(
+                        "{} {:.0}%",
+                        if muted { "󰝟" } else { "󰕾" },
+                        percent
+                    ));
+                    audio.set_tooltip_text(Some(if muted {
+                        "Audio muted"
+                    } else {
+                        "Audio volume"
+                    }));
+                } else {
+                    audio.set_label("󰝟 --");
+                    audio.set_tooltip_text(Some("Audio unavailable"));
+                }
             }
-            brightness.set_label(
-                &data
-                    .brightness
-                    .map_or_else(|| "--".into(), |(p, icon)| format!("{icon} {p}%")),
-            );
-            brightness.set_tooltip_text(Some(if data.brightness.is_some() {
-                "Screen brightness — scroll to adjust"
-            } else {
-                "Screen brightness unavailable"
-            }));
-            temperature.set_label(
-                &data
-                    .temperature
-                    .map_or_else(|| "󰔏 --°C".into(), |t| format!("󰔏 {}°C", t / 1000)),
-            );
-            let name = data.niri.layouts.names.get(data.niri.layouts.current_idx);
-            language.set_label(&name.map_or_else(
-                || "󰌌 --".into(),
-                |s| format!("󰌌 {}", notifications::layout_label(s)),
-            ));
-            if let Some(info) = &data.network {
+            if changes.brightness {
+                brightness.set_label(
+                    &data
+                        .brightness
+                        .map_or_else(|| "--".into(), |(p, icon)| format!("{icon} {p}%")),
+                );
+                brightness.set_tooltip_text(Some(if data.brightness.is_some() {
+                    "Screen brightness — scroll to adjust"
+                } else {
+                    "Screen brightness unavailable"
+                }));
+            }
+            if changes.temperature {
+                temperature.set_label(
+                    &data
+                        .temperature
+                        .map_or_else(|| "󰔏 --°C".into(), |t| format!("󰔏 {}°C", t / 1000)),
+                );
+            }
+            if changes.layouts {
+                let name = data.niri.layouts.names.get(data.niri.layouts.current_idx);
+                language.set_label(&name.map_or_else(
+                    || "󰌌 --".into(),
+                    |s| format!("󰌌 {}", notifications::layout_label(s)),
+                ));
+            }
+            if changes.network
+                && let Some(info) = &data.network
+            {
                 network.set_label(&info.text);
                 network.set_tooltip_text(Some(&info.tooltip));
             }
-            battery.set_label(&data.battery.text);
-            battery.set_tooltip_text(Some(&data.battery.tooltip));
-            battery.set_visible(!data.battery.text.is_empty());
-            for class in ["warning", "critical"] {
-                if data.battery.level == class {
-                    battery.add_css_class(class);
-                } else {
-                    battery.remove_css_class(class);
+            if changes.battery {
+                battery.set_label(&data.battery.text);
+                battery.set_tooltip_text(Some(&data.battery.tooltip));
+                battery.set_visible(!data.battery.text.is_empty());
+                for class in ["warning", "critical"] {
+                    if data.battery.level == class {
+                        battery.add_css_class(class);
+                    } else {
+                        battery.remove_css_class(class);
+                    }
                 }
             }
             true

@@ -4,6 +4,15 @@ from pathlib import Path
 import tempfile
 
 
+class DurabilityError(OSError):
+    committed = True
+
+
+def xdg_path(variable, home, suffix):
+    value = os.environ.get(variable)
+    return Path(value) if value and Path(value).is_absolute() else Path(home) / suffix
+
+
 def sync_directory(path):
     fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
     try:
@@ -24,7 +33,10 @@ def write(path, data, mode=0o600):
             stream.flush()
             os.fsync(stream.fileno())
         temporary.replace(path)
-        sync_directory(path.parent)
+        try:
+            sync_directory(path.parent)
+        except OSError as error:
+            raise DurabilityError(f'{path} was written, but durability could not be confirmed: {error}') from error
     finally:
         temporary.unlink(missing_ok=True)
 

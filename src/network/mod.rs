@@ -31,8 +31,18 @@ pub struct NetworkMenu {
     switching: Cell<bool>,
     generation: Cell<u64>,
     detail_network: RefCell<Option<Network>>,
+    rows: RefCell<std::collections::HashMap<String, gtk::Button>>,
     #[cfg(test)]
     captured_actions: RefCell<Option<Vec<Action>>>,
+}
+
+fn network_id(network: &Network) -> String {
+    let source = if network.strength.is_some() {
+        "access-point"
+    } else {
+        network.profile.as_deref().unwrap_or(&network.access_point)
+    };
+    format!("{:?}:{:?}:{source}", network.ssid, network.security)
 }
 
 fn label(text: &str, class: &str) -> gtk::Label {
@@ -63,6 +73,7 @@ impl NetworkMenu {
             switching: Cell::new(false),
             generation: Cell::new(0),
             detail_network: RefCell::new(None),
+            rows: RefCell::new(Default::default()),
             #[cfg(test)]
             captured_actions: RefCell::new(None),
         });
@@ -195,6 +206,7 @@ impl NetworkMenu {
                 menu.generation.set(menu.generation.get().wrapping_add(1));
                 menu.detail_network.borrow_mut().take();
                 menu.view.borrow_mut().take();
+                menu.rows.borrow_mut().clear();
             }
         });
         let weak = Rc::downgrade(self);
@@ -353,7 +365,19 @@ impl NetworkMenu {
             snapshot.enabled && snapshot.hardware_enabled && snapshot.device.is_some(),
         );
         let names: Vec<_> = snapshot.adapters.iter().map(|a| a.name.as_str()).collect();
-        view.adapter.set_model(Some(&gtk::StringList::new(&names)));
+        let same =
+            view.adapter
+                .model()
+                .and_downcast::<gtk::StringList>()
+                .is_some_and(|model| {
+                    model.n_items() as usize == names.len()
+                        && names.iter().enumerate().all(|(index, name)| {
+                            model.string(index as u32).as_deref() == Some(*name)
+                        })
+                });
+        if !same {
+            view.adapter.set_model(Some(&gtk::StringList::new(&names)));
+        }
         view.adapter.set_visible(names.len() > 1);
         if let Some(index) = snapshot
             .adapters
@@ -370,14 +394,16 @@ impl NetworkMenu {
             return;
         };
         let snapshot = self.snapshot.borrow().clone();
-        while let Some(child) = view.list.first_child() {
-            view.list.remove(&child);
-        }
+        let mut widgets = Vec::<gtk::Widget>::new();
+        let mut retained = std::collections::HashSet::new();
         let Some(snapshot) = snapshot else {
-            view.list
-                .append(&label("Reading network status…", "network-empty"));
+            crate::ui::reconcile_box(
+                &view.list,
+                &[label("Reading network status…", "network-empty").upcast()],
+            );
             return;
         };
+        retained.extend(snapshot.networks.iter().map(network_id));
         let empty = if snapshot.adapters.is_empty() {
             Some("No Wi-Fi adapter found")
         } else if !snapshot.hardware_enabled {
@@ -388,7 +414,7 @@ impl NetworkMenu {
             None
         };
         if let Some(text) = empty {
-            view.list.append(&label(text, "network-empty"));
+            widgets.push(label(text, "network-empty").upcast());
         }
         let query = view.search.text().to_lowercase();
         let mut count = 0;
@@ -406,37 +432,107 @@ impl NetworkMenu {
                 "SAVED NETWORKS"
             };
             if heading != section {
-                view.list.append(&label(heading, "network-section"));
+                widgets.push(label(heading, "network-section").upcast());
                 section = heading;
             }
-            let row = gtk::Button::new();
-            row.add_css_class("network-row");
-            if network.active {
-                row.add_css_class("connected");
-            }
-            let content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-            let icon = label(
+            let key = network_id(network);
+            retained.insert(key.clone());
+            let existing = self.rows.borrow().get(&key).cloned();
+            let row = if let Some(row) = existing {
+                row
+            } else {
+                let row = gtk::Button::new();
+                row.add_css_class("network-row");
                 if network.active {
-                    "󰤨"
-                } else {
-                    match network.strength.unwrap_or(0) {
-                        75.. => "󰤨",
-                        50.. => "󰤥",
-                        25.. => "󰤢",
-                        _ => "󰤟",
+                    row.add_css_class("connected");
+                }
+                let content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+                let icon = label(
+                    if network.active {
+                        "󰤨"
+                    } else {
+                        match network.strength.unwrap_or(0) {
+                            75.. => "󰤨",
+                            50.. => "󰤥",
+                            25.. => "󰤢",
+                            _ => "󰤟",
+                        }
+                    },
+                    "network-icon",
+                );
+                content.append(&icon);
+                let text = gtk::Box::new(gtk::Orientation::Vertical, 3);
+                text.set_hexpand(true);
+                let name = gtk::Label::new(Some(&network.name));
+                name.set_xalign(0.0);
+                name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                name.set_max_width_chars(25);
+                name.add_css_class("network-name");
+                text.append(&name);
+                let detail = if network.active {
+                    if snapshot.address.is_empty() {
+                        "Connected".into()
+                    } else {
+                        snapshot.address.clone()
                     }
-                },
-                "network-icon",
-            );
-            content.append(&icon);
-            let text = gtk::Box::new(gtk::Orientation::Vertical, 3);
-            text.set_hexpand(true);
-            let name = gtk::Label::new(Some(&network.name));
-            name.set_xalign(0.0);
-            name.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            name.set_max_width_chars(25);
-            name.add_css_class("network-name");
-            text.append(&name);
+                } else if network.profile.is_some() {
+                    format!("Saved · {}", network.security.label())
+                } else {
+                    network.security.label().into()
+                };
+                text.append(&label(&detail, "network-meta"));
+                content.append(&text);
+                let signal = label(
+                    &network
+                        .strength
+                        .map_or_else(|| "—".into(), |s| format!("{s}%")),
+                    "network-signal",
+                );
+                signal.set_wrap(false);
+                content.append(&signal);
+                row.set_child(Some(&content));
+                row.set_tooltip_text(Some(&network.name));
+                let weak = Rc::downgrade(self);
+                let id = key.clone();
+                row.connect_clicked(move |_| {
+                    if let Some(menu) = weak.upgrade() {
+                        let network = menu.snapshot.borrow().as_ref().and_then(|snapshot| {
+                            snapshot
+                                .networks
+                                .iter()
+                                .find(|network| network_id(network) == id)
+                                .cloned()
+                        });
+                        if let Some(network) = network {
+                            menu.network_form(network);
+                        }
+                    }
+                });
+                self.rows.borrow_mut().insert(key, row.clone());
+                row
+            };
+            let content = row.child().unwrap().downcast::<gtk::Box>().unwrap();
+            let icon = content
+                .first_child()
+                .unwrap()
+                .downcast::<gtk::Label>()
+                .unwrap();
+            icon.set_text(if network.active {
+                "󰤨"
+            } else {
+                match network.strength.unwrap_or(0) {
+                    75.. => "󰤨",
+                    50.. => "󰤥",
+                    25.. => "󰤢",
+                    _ => "󰤟",
+                }
+            });
+            let text = icon.next_sibling().unwrap().downcast::<gtk::Box>().unwrap();
+            text.first_child()
+                .unwrap()
+                .downcast::<gtk::Label>()
+                .unwrap()
+                .set_text(&network.name);
             let detail = if network.active {
                 if snapshot.address.is_empty() {
                     "Connected".into()
@@ -448,38 +544,47 @@ impl NetworkMenu {
             } else {
                 network.security.label().into()
             };
-            text.append(&label(&detail, "network-meta"));
-            content.append(&text);
-            let signal = label(
-                &network
-                    .strength
-                    .map_or_else(|| "—".into(), |s| format!("{s}%")),
-                "network-signal",
-            );
-            signal.set_wrap(false);
-            content.append(&signal);
-            row.set_child(Some(&content));
+            text.last_child()
+                .unwrap()
+                .downcast::<gtk::Label>()
+                .unwrap()
+                .set_text(&detail);
+            content
+                .last_child()
+                .unwrap()
+                .downcast::<gtk::Label>()
+                .unwrap()
+                .set_text(
+                    &network
+                        .strength
+                        .map_or_else(|| "—".into(), |strength| format!("{strength}%")),
+                );
             row.set_tooltip_text(Some(&network.name));
-            let network = network.clone();
-            let weak = Rc::downgrade(self);
-            row.connect_clicked(move |_| {
-                if let Some(menu) = weak.upgrade() {
-                    menu.network_form(network.clone());
-                }
-            });
-            view.list.append(&row);
+            if network.active {
+                row.add_css_class("connected");
+            } else {
+                row.remove_css_class("connected");
+            }
+            widgets.push(row.upcast());
             count += 1;
         }
         if count == 0 && empty.is_none() {
-            view.list.append(&label(
-                if query.is_empty() {
-                    "No networks found. Try scanning again."
-                } else {
-                    "No matching networks"
-                },
-                "network-empty",
-            ));
+            widgets.push(
+                label(
+                    if query.is_empty() {
+                        "No networks found. Try scanning again."
+                    } else {
+                        "No matching networks"
+                    },
+                    "network-empty",
+                )
+                .upcast(),
+            );
         }
+        self.rows
+            .borrow_mut()
+            .retain(|key, _| retained.contains(key));
+        crate::ui::reconcile_box(&view.list, &widgets);
     }
 
     fn show_list(self: &Rc<Self>) {
@@ -681,6 +786,10 @@ impl NetworkMenu {
                 && let Some(device) = menu.form_device(&device_path, generation)
             {
                 let name = ssid.text().to_string();
+                if name.is_empty() || name.len() > 32 {
+                    menu.message("Network names must contain 1–32 bytes", true);
+                    return;
+                }
                 let security = match security.selected() {
                     1 => Security::Sae,
                     2 => Security::Open,
@@ -750,6 +859,42 @@ pub fn regression_checks(anchor: &gtk::Button) {
         networks: vec![network.clone()],
         address: String::new(),
     };
+    menu.receive(&Ok(snapshot.clone()));
+    let key = network_id(&network);
+    let stable = menu.rows.borrow()[&key].clone();
+    let model = menu
+        .view
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .adapter
+        .model()
+        .unwrap();
+    for strength in 0..100 {
+        snapshot.networks[0].strength = Some(strength);
+        menu.receive(&Ok(snapshot.clone()));
+        assert_eq!(menu.rows.borrow()[&key], stable);
+        assert_eq!(menu.rows.borrow().len(), 1);
+        assert_eq!(
+            menu.view
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .adapter
+                .model()
+                .unwrap(),
+            model
+        );
+    }
+    let search = menu.view.borrow().as_ref().unwrap().search.clone();
+    search.set_text("missing");
+    search.emit_by_name::<()>("search-changed", &[]);
+    assert_eq!(menu.rows.borrow()[&key], stable);
+    assert!(stable.parent().is_none());
+    search.set_text("");
+    search.emit_by_name::<()>("search-changed", &[]);
+    assert_eq!(menu.rows.borrow()[&key], stable);
+    assert!(stable.parent().is_some());
     for active in [true, false] {
         snapshot.device = Some(adapters[0].clone());
         snapshot.networks[0].active = active;
@@ -787,6 +932,17 @@ pub fn regression_checks(anchor: &gtk::Button) {
         assert!(menu.captured_actions.borrow().as_ref().unwrap().is_empty());
         assert!(view.controls.is_sensitive());
     }
+    let mut duplicates = snapshot.clone();
+    duplicates.networks[0].strength = None;
+    duplicates.networks[0].profile = Some("/profile/one".into());
+    let mut second = duplicates.networks[0].clone();
+    second.profile = Some("/profile/two".into());
+    duplicates.networks.push(second);
+    menu.receive(&Ok(duplicates));
+    assert_eq!(menu.rows.borrow().len(), 2);
+    let rows = menu.rows.borrow().values().cloned().collect::<Vec<_>>();
+    assert_ne!(rows[0], rows[1]);
+    menu.receive(&Ok(snapshot.clone()));
     menu.network_form(snapshot.networks[0].clone());
     let view = menu.view.borrow().clone().unwrap();
     let old_button = view

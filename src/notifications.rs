@@ -84,6 +84,7 @@ pub enum PowerNotice {
     Disconnected,
     ChargingStarted,
     ChargingComplete,
+    ChargingStopped,
 }
 
 pub fn network_transition(
@@ -109,11 +110,11 @@ pub fn network_transition(
 }
 
 pub fn power_transition(
-    previous: Option<(bool, bool)>,
+    previous: Option<(bool, crate::modules::BatteryState)>,
     plugged: bool,
-    charging: bool,
+    state: crate::modules::BatteryState,
 ) -> Option<PowerNotice> {
-    let (was_plugged, was_charging) = previous?;
+    let (was_plugged, previous_state) = previous?;
     if was_plugged != plugged {
         return Some(if plugged {
             PowerNotice::Connected
@@ -121,12 +122,18 @@ pub fn power_transition(
             PowerNotice::Disconnected
         });
     }
-    if plugged && was_charging != charging {
-        return Some(if charging {
-            PowerNotice::ChargingStarted
-        } else {
-            PowerNotice::ChargingComplete
-        });
+    use crate::modules::BatteryState;
+    if plugged && previous_state != state {
+        if state == BatteryState::Charging {
+            return Some(PowerNotice::ChargingStarted);
+        }
+        if previous_state == BatteryState::Charging {
+            return Some(if state == BatteryState::Full {
+                PowerNotice::ChargingComplete
+            } else {
+                PowerNotice::ChargingStopped
+            });
+        }
     }
     None
 }
@@ -528,7 +535,10 @@ mod tests {
     #[test]
     fn initial_connection_state_does_not_emit_notification() {
         assert_eq!(network_transition(None, true, Some("home")), None);
-        assert_eq!(power_transition(None, true, true), None);
+        assert_eq!(
+            power_transition(None, true, crate::modules::BatteryState::Charging),
+            None
+        );
     }
 
     #[test]
@@ -549,21 +559,30 @@ mod tests {
 
     #[test]
     fn power_transition_reports_adapter_and_charging_edges() {
+        use crate::modules::BatteryState::{Charging, Discharging, Full, NotCharging};
         assert_eq!(
-            power_transition(Some((false, false)), true, true),
+            power_transition(Some((false, Discharging)), true, Charging),
             Some(PowerNotice::Connected)
         );
         assert_eq!(
-            power_transition(Some((true, true)), false, false),
+            power_transition(Some((true, Charging)), false, Discharging),
             Some(PowerNotice::Disconnected)
         );
         assert_eq!(
-            power_transition(Some((true, false)), true, true),
+            power_transition(Some((true, NotCharging)), true, Charging),
             Some(PowerNotice::ChargingStarted)
         );
         assert_eq!(
-            power_transition(Some((true, true)), true, false),
+            power_transition(Some((true, Charging)), true, Full),
             Some(PowerNotice::ChargingComplete)
+        );
+        assert_eq!(
+            power_transition(Some((true, Charging)), true, NotCharging),
+            Some(PowerNotice::ChargingStopped)
+        );
+        assert_eq!(
+            power_transition(Some((true, NotCharging)), true, Full),
+            None
         );
     }
 
