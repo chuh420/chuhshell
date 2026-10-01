@@ -12,6 +12,7 @@ enum Page {
     Bar,
     Modules,
     Settings,
+    System,
     Info,
     Bluetooth,
     Weather,
@@ -35,6 +36,8 @@ enum Action {
     SelectWallpaper(String),
     Notice,
     Wip,
+    Poweroff,
+    Reboot,
 }
 
 fn entries(page: Page) -> Vec<(String, String, Action)> {
@@ -46,7 +49,13 @@ fn entries(page: Page) -> Vec<(String, String, Action)> {
             ("Info", "", Action::Page(Page::Info)),
             ("Appearance", "", Action::Page(Page::Appearance)),
             ("Keybindings", "", Action::Page(Page::Keybindings)),
-            ("System", "WIP", Action::Wip),
+            ("System", "", Action::Page(Page::System)),
+        ],
+        Page::System => vec![
+            ("Poweroff", "", Action::Poweroff),
+            ("Reboot", "", Action::Reboot),
+            ("Screensaver", "WIP", Action::Wip),
+            ("Lock", "WIP", Action::Wip),
         ],
         Page::Settings => vec![("Bluetooth", "", Action::Page(Page::Bluetooth))],
         Page::Appearance => vec![("Wallpaper", "", Action::Page(Page::Wallpaper))],
@@ -228,6 +237,63 @@ fn run_wallpaper_action_with(
     });
 }
 
+fn run_system_action(
+    action: Action,
+    message: glib::WeakRef<gtk::Label>,
+    list: glib::WeakRef<gtk::ListBox>,
+    busy: Rc<std::cell::Cell<bool>>,
+    program: PathBuf,
+) {
+    let (argument, text) = match action {
+        Action::Poweroff => ("poweroff", "Poweroff requested"),
+        Action::Reboot => ("reboot", "Reboot requested"),
+        _ => return,
+    };
+    let Some(active_list) = list.upgrade().filter(|list| list.is_sensitive()) else {
+        return;
+    };
+    if busy.replace(true) {
+        if let Some(message) = message.upgrade() {
+            message.set_text("A system operation is already running");
+            message.set_visible(true);
+        }
+        return;
+    }
+    active_list.set_sensitive(false);
+    let (sender, receiver) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let result = crate::process::run_command(
+            std::process::Command::new(program).args(["--no-ask-password", argument]),
+            std::time::Duration::from_secs(30),
+        );
+        let _ = sender.send_blocking(result);
+    });
+    glib::MainContext::default().spawn_local(async move {
+        let result = receiver.recv().await;
+        busy.set(false);
+        if let Some(list) = list.upgrade() {
+            list.set_sensitive(true);
+        }
+        if let Some(message) = message.upgrade() {
+            match result {
+                Ok(Ok(_)) => {
+                    message.remove_css_class("menu-error");
+                    message.set_text(text);
+                }
+                Ok(Err(error)) => {
+                    message.add_css_class("menu-error");
+                    message.set_text(&error);
+                }
+                Err(_) => {
+                    message.add_css_class("menu-error");
+                    message.set_text("System operation failed");
+                }
+            }
+            message.set_visible(true);
+        }
+    });
+}
+
 fn first_focusable(widget: &gtk::Widget) -> Option<gtk::Widget> {
     if widget.is_focusable() && widget.is_visible() && widget.is_sensitive() {
         return Some(widget.clone());
@@ -386,6 +452,7 @@ fn render_entries(
         Page::Launcher
         | Page::Bar
         | Page::Settings
+        | Page::System
         | Page::Info
         | Page::Keybindings
         | Page::Appearance => Some(Page::Home),
@@ -454,6 +521,7 @@ fn render_entries(
     let title = gtk::Label::new(Some(match page {
         Page::Keybindings => "Keybindings",
         Page::Settings => "Settings",
+        Page::System => "System",
         Page::Info => "Info",
         Page::Bluetooth => "Bluetooth",
         Page::Weather => "Weather",
@@ -692,6 +760,18 @@ fn render_entries(
                     }
                 }
                 Action::Wip | Action::Notice => {}
+                action @ (Action::Poweroff | Action::Reboot) => {
+                    if let Some(message) = message.upgrade() {
+                        message.set_visible(false);
+                        run_system_action(
+                            action,
+                            message.downgrade(),
+                            weak_list.clone(),
+                            state.system_busy.clone(),
+                            PathBuf::from("systemctl"),
+                        );
+                    }
+                }
                 action @ (Action::NextWallpaper
                 | Action::OpenWallpapersFolder
                 | Action::SelectWallpaper(_)) => {
@@ -816,6 +896,54 @@ fn render_entries(
 #[cfg(test)]
 pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
     use std::os::unix::fs::PermissionsExt;
+    let system_script =
+        std::env::temp_dir().join(format!("chuhshell-system-{}", std::process::id()));
+    std::fs::write(
+        &system_script,
+        "#!/bin/sh\nsleep 0.1\n[ \"$#\" = 2 ] && [ \"$1\" = --no-ask-password ] || exit 9\ncase \"$2\" in\npoweroff) printf 'poweroff test failure' >&2; exit 7;;\nreboot) exit 0;;\n*) exit 9;;\nesac\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&system_script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let system_list = gtk::ListBox::new();
+    let system_message = gtk::Label::new(None);
+    run_system_action(
+        Action::Poweroff,
+        system_message.downgrade(),
+        system_list.downgrade(),
+        state.system_busy.clone(),
+        system_script.clone(),
+    );
+    assert!(!system_list.is_sensitive());
+    let other_system_list = gtk::ListBox::new();
+    run_system_action(
+        Action::Reboot,
+        system_message.downgrade(),
+        other_system_list.downgrade(),
+        state.system_busy.clone(),
+        system_script.clone(),
+    );
+    assert!(other_system_list.is_sensitive());
+    assert_eq!(
+        system_message.text(),
+        "A system operation is already running"
+    );
+    crate::ui_tests::pump(300);
+    assert!(system_list.is_sensitive());
+    assert!(!state.system_busy.get());
+    assert!(system_message.text().contains("poweroff test failure"));
+    assert!(system_message.has_css_class("menu-error"));
+    run_system_action(
+        Action::Reboot,
+        system_message.downgrade(),
+        system_list.downgrade(),
+        state.system_busy.clone(),
+        system_script.clone(),
+    );
+    crate::ui_tests::pump(300);
+    assert_eq!(system_message.text(), "Reboot requested");
+    assert!(!system_message.has_css_class("menu-error"));
+    assert!(system_list.is_sensitive());
+    std::fs::remove_file(system_script).unwrap();
     let script = std::env::temp_dir().join(format!("chuhshell-wallpaper-{}", std::process::id()));
     std::fs::write(
         &script,
@@ -927,6 +1055,26 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
     assert!(!window.is_anchor(gtk4_layer_shell::Edge::Top));
     crate::ui_tests::capture("menu");
     assert_eq!(crate::launcher::visible_rows(&list(&window)).len(), 7);
+    let home = list(&window);
+    home.select_row(home.row_at_index(6).as_ref());
+    press(&window, gdk::Key::Return);
+    crate::ui_tests::pump(100);
+    assert_eq!(window.title().as_deref(), Some("System"));
+    let system = list(&window);
+    assert_eq!(crate::launcher::visible_rows(&system).len(), 4);
+    for index in [2, 3] {
+        let row = system.row_at_index(index).unwrap();
+        assert!(row.has_css_class("menu-wip"));
+        system.select_row(Some(&row));
+        press(&window, gdk::Key::Return);
+        assert_eq!(window.title().as_deref(), Some("System"));
+        assert!(!state.system_busy.get());
+    }
+    crate::ui_tests::capture("system");
+    press(&window, gdk::Key::Home);
+    press(&window, gdk::Key::Return);
+    crate::ui_tests::pump(100);
+    assert_eq!(window.title().as_deref(), Some("chuh menu"));
     press(&window, gdk::Key::Right);
     assert_eq!(window.title().as_deref(), Some("chuh menu"));
     press(&window, gdk::Key::Return);

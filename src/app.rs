@@ -22,6 +22,7 @@ pub struct AppState {
     pub launcher: RefCell<Option<gtk::Window>>,
     pub menu: RefCell<Option<gtk::Window>>,
     pub wallpaper_busy: Rc<Cell<bool>>,
+    pub system_busy: Rc<Cell<bool>>,
     pub clipboard: Rc<crate::clipboard::History>,
     pub layouts: crate::layout::Layouts,
     pub bar_modules: crate::bar_settings::BarModules,
