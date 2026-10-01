@@ -410,6 +410,47 @@ fn render_entries(
         header.append(&back);
         back
     });
+    if matches!(page, Page::Home) {
+        let logo = gtk::DrawingArea::new();
+        logo.set_content_width(32);
+        logo.set_content_height(32);
+        logo.set_valign(gtk::Align::Center);
+        logo.set_draw_func(|_, context, width, height| {
+            context.translate(f64::from(width) / 2.0, f64::from(height) / 2.0);
+            context.set_source_rgb(1.0, 1.0, 1.0);
+            context.arc(0.0, 0.0, 15.0, 0.0, std::f64::consts::TAU);
+            let _ = context.fill();
+            context.set_source_rgb(0.0, 0.0, 0.0);
+            context.arc(0.0, 0.0, 13.5, 0.0, std::f64::consts::TAU);
+            let _ = context.fill();
+            context.set_source_rgb(1.0, 1.0, 1.0);
+            context.set_line_width(8.0);
+            context.set_line_cap(gtk::cairo::LineCap::Round);
+            context.move_to(-3.0, -6.0);
+            context.line_to(3.0, -6.0);
+            context.line_to(3.0, 3.0);
+            context.line_to(-3.0, 3.0);
+            context.close_path();
+            let _ = context.stroke();
+            context.set_source_rgb(0.0, 0.0, 0.0);
+            context.rectangle(-5.0, -7.0, 10.0, 6.0);
+            let _ = context.fill();
+            for x in [-4.0, 4.0] {
+                context.arc(x, 3.0, 1.5, 0.0, std::f64::consts::TAU);
+                let _ = context.fill();
+            }
+            context.set_source_rgb(1.0, 1.0, 1.0);
+            context.set_line_width(1.5);
+            context.move_to(-4.0, 7.0);
+            context.line_to(-7.0, 11.0);
+            context.move_to(4.0, 7.0);
+            context.line_to(7.0, 11.0);
+            context.move_to(-5.5, 9.0);
+            context.line_to(5.5, 9.0);
+            let _ = context.stroke();
+        });
+        header.append(&logo);
+    }
     let title = gtk::Label::new(Some(match page {
         Page::Keybindings => "Keybindings",
         Page::Settings => "Settings",
