@@ -37,7 +37,7 @@ pub fn pause(duration: Duration) -> bool {
     !stopped()
 }
 
-pub struct ManagedChild(pub Child);
+pub struct ManagedChild(pub Child, bool);
 
 impl ManagedChild {
     pub fn spawn(command: &mut Command) -> Result<Self, String> {
@@ -67,7 +67,7 @@ impl ManagedChild {
             .spawn()
             .map_err(|e| e.to_string())?;
         children.insert(child.id());
-        Ok(Self(child))
+        Ok(Self(child, true))
     }
 }
 
@@ -77,8 +77,10 @@ impl Drop for ManagedChild {
             .get_or_init(Default::default)
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        unsafe {
-            libc::kill(-(self.0.id() as i32), libc::SIGKILL);
+        if self.1 {
+            unsafe {
+                libc::kill(-(self.0.id() as i32), libc::SIGKILL);
+            }
         }
         let _ = self.0.wait();
         children.remove(&self.0.id());
@@ -99,6 +101,18 @@ pub fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> Resu
 }
 
 pub fn run_command(command: &mut Command, timeout: Duration) -> Result<String, String> {
+    run_command_with(command, timeout, false)
+}
+
+pub fn run_background_command(command: &mut Command, timeout: Duration) -> Result<String, String> {
+    run_command_with(command, timeout, true)
+}
+
+fn run_command_with(
+    command: &mut Command,
+    timeout: Duration,
+    keep_background: bool,
+) -> Result<String, String> {
     let program = command.get_program().to_string_lossy().into_owned();
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = ManagedChild::spawn(command).map_err(|e| format!("{program}: {e}"))?;
@@ -144,6 +158,9 @@ pub fn run_command(command: &mut Command, timeout: Duration) -> Result<String, S
         }
         std::thread::sleep(Duration::from_millis(10));
     };
+    if keep_background && result.is_ok() {
+        child.1 = false;
+    }
     drop(child);
     finished.store(true, Ordering::Release);
     let bytes = reader
@@ -242,6 +259,62 @@ mod tests {
                 .unwrap_err()
                 .contains("timed out")
         );
+        let pid = std::fs::read_to_string(&path)
+            .unwrap()
+            .trim()
+            .parse::<u32>()
+            .unwrap();
+        for _ in 0..50 {
+            if !running(pid) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!running(pid));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn background_commands_preserve_children_only_after_success() {
+        for (status, survives) in [(0, true), (7, false)] {
+            let path = std::env::temp_dir().join(format!(
+                "chuhshell-background-{}-{status}",
+                std::process::id()
+            ));
+            let mut command = Command::new("sh");
+            command
+                .args(["-c", "sleep 300 & echo $! > \"$1\"; exit \"$2\"", "sh"])
+                .arg(&path)
+                .arg(status.to_string());
+            let result = run_background_command(&mut command, Duration::from_secs(2));
+            let pid = std::fs::read_to_string(&path)
+                .unwrap()
+                .trim()
+                .parse::<u32>()
+                .unwrap();
+            assert_eq!(result.is_ok(), survives);
+            for _ in 0..50 {
+                if running(pid) == survives {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let alive = running(pid);
+            unsafe {
+                libc::kill(pid as i32, libc::SIGKILL);
+            }
+            std::fs::remove_file(path).unwrap();
+            assert_eq!(alive, survives);
+        }
+        let path = std::env::temp_dir().join(format!(
+            "chuhshell-background-timeout-{}",
+            std::process::id()
+        ));
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "sleep 300 & echo $! > \"$1\"; wait", "sh"])
+            .arg(&path);
+        assert!(run_background_command(&mut command, Duration::from_millis(100)).is_err());
         let pid = std::fs::read_to_string(&path)
             .unwrap()
             .trim()

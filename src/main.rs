@@ -37,7 +37,13 @@ use std::rc::Rc;
 fn valid_command(command: &str) -> bool {
     matches!(
         command,
-        "clipboard" | "menu" | "launcher" | "manage" | "notifications" | "background-apps"
+        "wallpaper"
+            | "clipboard"
+            | "menu"
+            | "launcher"
+            | "manage"
+            | "notifications"
+            | "background-apps"
     ) || notifications::is_command(command)
 }
 
@@ -92,7 +98,7 @@ fn main() -> glib::ExitCode {
             }
             "--help" | "-h" => {
                 println!(
-                    "chuhshell [menu|clipboard|launcher|manage|notifications|background-apps|doctor [--json]]\nMedia commands: volume-up, volume-down, volume-mute, microphone-mute, brightness-up, brightness-down, brightness-key-up, brightness-key-down, brightness-scroll-up, brightness-scroll-down"
+                    "chuhshell [menu|wallpaper|clipboard|launcher|manage|notifications|background-apps|doctor [--json]]\nMedia commands: volume-up, volume-down, volume-mute, microphone-mute, brightness-up, brightness-down, brightness-key-up, brightness-key-down, brightness-scroll-up, brightness-scroll-down"
                 );
                 return glib::ExitCode::SUCCESS;
             }
@@ -184,6 +190,7 @@ fn main() -> glib::ExitCode {
                     }
                 }
                 Some("clipboard") => menu::show_clipboard(app, &state),
+                Some("wallpaper") => menu::show_wallpaper(app, &state),
                 Some("menu") => menu::show(app, &state),
                 Some("launcher") => launcher::show(app, &state, LauncherMode::Normal),
                 Some("manage") => launcher::show(app, &state, LauncherMode::Manage),

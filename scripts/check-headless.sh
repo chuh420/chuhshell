@@ -14,6 +14,14 @@ export XDG_STATE_HOME="$test_dir/state"
 export XDG_DATA_DIRS="$test_dir/empty"
 export NIRI_SOCKET="$test_dir/no-niri.sock"
 mkdir -p "$XDG_RUNTIME_DIR" "$XDG_CONFIG_HOME/chuhshell" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$test_dir/labwc" "$test_dir/bin"
+if [[ -d /usr/share/glycin-loaders ]]; then
+    mkdir -p "$test_dir/empty"
+    ln -s /usr/share/glycin-loaders "$test_dir/empty/glycin-loaders"
+fi
+if [[ -d /usr/share/mime ]]; then
+    mkdir -p "$test_dir/empty"
+    ln -s /usr/share/mime "$test_dir/empty/mime"
+fi
 chmod 700 "$XDG_RUNTIME_DIR"
 printf '%s\n' '{"notification_history_limit":10}' > "$XDG_CONFIG_HOME/chuhshell/config.json"
 for helper in pactl udevadm; do

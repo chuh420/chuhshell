@@ -366,6 +366,40 @@ pub fn installation_plan(
         let executable = kdl::KdlValue::String(destination.to_string_lossy().into_owned());
         text.push_str(&format!("\nbinds {{\n    Mod+Space hotkey-overlay-title=\"chuh menu\" {{ spawn {executable} \"menu\"; }}\n    Mod+C hotkey-overlay-title=\"clipboard history\" {{ spawn {executable} \"clipboard\"; }}\n}}\n"));
     }
+    if !catalog.bindings.iter().any(|binding| {
+        normalize(&binding.key, &catalog.mod_key) == normalize("Ctrl+B", &catalog.mod_key)
+    }) {
+        let executable = kdl::KdlValue::String(destination.to_string_lossy().into_owned());
+        let mut doc = document(text)?;
+        let addition = document(&format!(
+            "binds {{\n    Ctrl+B hotkey-overlay-title=\"wallpaper manager\" {{ spawn {executable} \"wallpaper\"; }}\n}}\n"
+        ))?;
+        if let Some(bindings) = doc
+            .nodes_mut()
+            .iter_mut()
+            .find(|node| node.name().value() == "binds")
+        {
+            if bindings.children().is_none() {
+                bindings.set_children(KdlDocument::new());
+            }
+            bindings
+                .children_mut()
+                .as_mut()
+                .unwrap()
+                .nodes_mut()
+                .extend(
+                    addition.nodes()[0]
+                        .children()
+                        .unwrap()
+                        .nodes()
+                        .iter()
+                        .cloned(),
+                );
+        } else {
+            doc.nodes_mut().push(addition.nodes()[0].clone());
+        }
+        *text = doc.to_string();
+    }
     if !has_startup {
         text.push_str(&format!("\n{startup}"));
     }
@@ -435,6 +469,7 @@ fn describe(node: Option<&KdlNode>, shell: bool) -> String {
             "menu" => "Open chuh menu",
             "launcher" => "Open app launcher",
             "clipboard" => "Open clipboard history",
+            "wallpaper" => "Open wallpaper manager",
             "manage" => "Manage visible apps",
             "notifications" => "Open notifications",
             "background-apps" => "Open background apps",
@@ -572,6 +607,7 @@ mod tests {
             }
             std::fs::write(entry["path"].as_str().unwrap(), text).unwrap();
         }
+        assert!(std::fs::read_to_string(&root).unwrap().contains("Ctrl+B"));
         let next = installation_plan(Path::new("/usr/bin/chuhshell"), Some(&root), true).unwrap();
         assert!(
             next.as_array()

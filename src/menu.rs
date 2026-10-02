@@ -22,7 +22,6 @@ enum Page {
     Keybindings,
     Appearance,
     Wallpaper,
-    SelectWallpaper,
 }
 
 #[derive(Clone)]
@@ -31,10 +30,8 @@ enum Action {
     Launch(LauncherMode),
     Toggle(&'static str),
     Configure(bool),
-    NextWallpaper,
     OpenWallpapersFolder,
     SelectWallpaper(String),
-    Notice,
     Wip,
     Poweroff,
     Reboot,
@@ -59,11 +56,7 @@ fn entries(page: Page) -> Vec<(String, String, Action)> {
         ],
         Page::Settings => vec![("Bluetooth", "", Action::Page(Page::Bluetooth))],
         Page::Appearance => vec![("Wallpaper", "", Action::Page(Page::Wallpaper))],
-        Page::Wallpaper => vec![
-            ("Next wallpaper", "", Action::NextWallpaper),
-            ("Select wallpaper", "", Action::Page(Page::SelectWallpaper)),
-            ("Open wallpapers folder", "", Action::OpenWallpapersFolder),
-        ],
+        Page::Wallpaper => Vec::new(),
         Page::Info => vec![
             ("Weather", "", Action::Page(Page::Weather)),
             ("Calendar", "", Action::Page(Page::Calendar)),
@@ -75,8 +68,7 @@ fn entries(page: Page) -> Vec<(String, String, Action)> {
         | Page::Calendar
         | Page::Clipboard
         | Page::Todo
-        | Page::Keybindings
-        | Page::SelectWallpaper => Vec::new(),
+        | Page::Keybindings => Vec::new(),
         Page::Launcher => vec![
             (
                 "Open app launcher",
@@ -125,6 +117,249 @@ fn wallpaper_files(folder: &Path) -> Result<Vec<String>, String> {
     Ok(files)
 }
 
+fn wallpaper_view(state: &Rc<AppState>) -> gtk::Box {
+    wallpaper_view_with(state, wallpaper_folder())
+}
+
+fn wallpaper_view_with(state: &Rc<AppState>, folder_path: PathBuf) -> gtk::Box {
+    let outer = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    let strip = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    let scrolled = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Automatic)
+        .vscrollbar_policy(gtk::PolicyType::Never)
+        .min_content_width(620)
+        .child(&strip)
+        .build();
+    outer.append(&scrolled);
+    let controls = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let previous = gtk::Button::with_label("←");
+    let next = gtk::Button::with_label("→");
+    let apply = gtk::Button::with_label("Apply");
+    let folder = gtk::Button::with_label("Open folder");
+    for button in [&previous, &next, &apply, &folder] {
+        button.add_css_class("network-action");
+        controls.append(button);
+    }
+    outer.append(&controls);
+    let message = gtk::Label::new(Some("Loading wallpapers…"));
+    message.add_css_class("menu-hint");
+    message.set_wrap(true);
+    outer.append(&message);
+    let gate = gtk::ListBox::new();
+    gate.set_visible(false);
+    outer.append(&gate);
+    let names = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let cards = Rc::new(std::cell::RefCell::new(
+        Vec::<glib::WeakRef<gtk::Button>>::new(),
+    ));
+    let selected = Rc::new(std::cell::Cell::new(0usize));
+    let select: Rc<dyn Fn(usize)> = Rc::new({
+        let cards = cards.clone();
+        let selected = selected.clone();
+        let scrolled = scrolled.downgrade();
+        move |index| {
+            let cards: Vec<_> = cards
+                .borrow()
+                .iter()
+                .filter_map(|card| card.upgrade())
+                .collect();
+            if cards.is_empty() {
+                return;
+            }
+            let index = index.min(cards.len() - 1);
+            selected.set(index);
+            for (i, card) in cards.iter().enumerate() {
+                if i == index {
+                    card.add_css_class("suggested-action");
+                } else {
+                    card.remove_css_class("suggested-action");
+                }
+            }
+            cards[index].grab_focus();
+            if let Some(scrolled) = scrolled.upgrade() {
+                let adjustment = scrolled.hadjustment();
+                let Some(bounds) = cards[index]
+                    .parent()
+                    .and_then(|parent| cards[index].compute_bounds(&parent))
+                else {
+                    return;
+                };
+                let left = f64::from(bounds.x());
+                let right = left + f64::from(bounds.width());
+                if left < adjustment.value() {
+                    adjustment.set_value(left);
+                } else if right > adjustment.value() + adjustment.page_size() {
+                    adjustment.set_value(right - adjustment.page_size());
+                }
+            }
+        }
+    });
+    for (button, forward) in [(&previous, false), (&next, true)] {
+        let select = select.clone();
+        let selected = selected.clone();
+        button.connect_clicked(move |_| {
+            select(if forward {
+                selected.get().saturating_add(1)
+            } else {
+                selected.get().saturating_sub(1)
+            });
+        });
+    }
+    apply.connect_clicked({
+        let names = names.clone();
+        let selected = selected.clone();
+        let message = message.downgrade();
+        let gate = gate.downgrade();
+        let busy = state.wallpaper_busy.clone();
+        move |_| {
+            if let Some(name) = names.borrow().get(selected.get()) {
+                run_wallpaper_action(
+                    Action::SelectWallpaper(name.clone()),
+                    message.clone(),
+                    gate.clone(),
+                    busy.clone(),
+                );
+            }
+        }
+    });
+    folder.connect_clicked({
+        let message = message.downgrade();
+        let gate = gate.downgrade();
+        let busy = state.wallpaper_busy.clone();
+        move |_| {
+            run_wallpaper_action(
+                Action::OpenWallpapersFolder,
+                message.clone(),
+                gate.clone(),
+                busy.clone(),
+            )
+        }
+    });
+    let key = gtk::EventControllerKey::new();
+    key.set_propagation_phase(gtk::PropagationPhase::Capture);
+    key.connect_key_pressed({
+        let select = select.clone();
+        let selected = selected.clone();
+        let apply = apply.downgrade();
+        let cards = cards.clone();
+        move |_, key, _, _| {
+            match key {
+                gdk::Key::Left => select(selected.get().saturating_sub(1)),
+                gdk::Key::Right => select(selected.get().saturating_add(1)),
+                gdk::Key::Return | gdk::Key::KP_Enter
+                    if cards
+                        .borrow()
+                        .iter()
+                        .filter_map(|card| card.upgrade())
+                        .any(|card| card.has_focus()) =>
+                {
+                    if let Some(apply) = apply.upgrade() {
+                        apply.emit_clicked();
+                    }
+                }
+                _ => return glib::Propagation::Proceed,
+            }
+            glib::Propagation::Stop
+        }
+    });
+    outer.add_controller(key);
+    let (sender, receiver) = async_channel::bounded(2);
+    std::thread::spawn(move || {
+        let files = wallpaper_files(&folder_path);
+        let Ok(files) = files else {
+            let _ = sender.send_blocking(Err(files.unwrap_err()));
+            return;
+        };
+        for name in files {
+            let pixels = gtk::gdk_pixbuf::Pixbuf::from_file_at_scale(
+                folder_path.join(&name),
+                240,
+                150,
+                true,
+            )
+            .map_err(|error| error.to_string())
+            .map(|p| {
+                (
+                    p.read_pixel_bytes().as_ref().to_vec(),
+                    p.width(),
+                    p.height(),
+                    p.rowstride(),
+                    p.has_alpha(),
+                )
+            });
+            if sender.send_blocking(Ok((name, pixels))).is_err() {
+                return;
+            }
+        }
+    });
+    glib::MainContext::default().spawn_local({
+        let strip = strip.downgrade();
+        let message = message.downgrade();
+        async move {
+            while let Ok(result) = receiver.recv().await {
+                let (Some(strip), Some(message)) = (strip.upgrade(), message.upgrade()) else {
+                    return;
+                };
+                match result {
+                    Ok((name, pixels)) => {
+                        let index = names.borrow().len();
+                        let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
+                        let picture = gtk::Picture::new();
+                        picture.set_size_request(240, 150);
+                        if let Ok((bytes, width, height, stride, alpha)) = pixels {
+                            let pixbuf = gtk::gdk_pixbuf::Pixbuf::from_bytes(
+                                &glib::Bytes::from_owned(bytes),
+                                gtk::gdk_pixbuf::Colorspace::Rgb,
+                                alpha,
+                                8,
+                                width,
+                                height,
+                                stride,
+                            );
+                            picture.set_paintable(Some(&gdk::Texture::for_pixbuf(&pixbuf)));
+                        } else {
+                            picture.set_tooltip_text(Some(&format!(
+                                "Preview unavailable: {}",
+                                pixels.unwrap_err()
+                            )));
+                        }
+                        content.append(&picture);
+                        let label = gtk::Label::new(Some(&name));
+                        label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+                        label.set_max_width_chars(24);
+                        content.append(&label);
+                        let card = gtk::Button::new();
+                        card.set_child(Some(&content));
+                        card.set_tooltip_text(Some(&name));
+                        card.connect_clicked({
+                            let select = select.clone();
+                            move |_| select(index)
+                        });
+                        strip.append(&card);
+                        names.borrow_mut().push(name);
+                        cards.borrow_mut().push(card.downgrade());
+                        if index == 0 {
+                            select(0);
+                        }
+                        message.set_text("← / → Browse · Enter Apply");
+                    }
+                    Err(error) => {
+                        message.set_text(&error);
+                        message.add_css_class("menu-error");
+                    }
+                }
+            }
+            if names.borrow().is_empty()
+                && let Some(message) = message.upgrade()
+                && !message.has_css_class("menu-error")
+            {
+                message.set_text("No wallpapers found");
+            }
+        }
+    });
+    outer
+}
+
 fn run_wallpaper_command(
     script: &Path,
     argument: Option<String>,
@@ -134,7 +369,7 @@ fn run_wallpaper_command(
     if let Some(argument) = argument {
         command.arg(argument);
     }
-    crate::process::run_command(&mut command, timeout).map(|_| ())
+    crate::process::run_background_command(&mut command, timeout).map(|_| ())
 }
 
 fn run_wallpaper_action(
@@ -201,10 +436,6 @@ fn run_wallpaper_action_with(
     let (sender, receiver) = async_channel::bounded(1);
     std::thread::spawn(move || {
         let result = match action {
-            Action::NextWallpaper => {
-                run_wallpaper_command(&script, Some("--next".to_owned()), timeout)
-                    .map(|()| "Wallpaper changed")
-            }
             Action::SelectWallpaper(name) => {
                 run_wallpaper_command(&script, Some(name), timeout).map(|()| "Wallpaper selected")
             }
@@ -328,6 +559,18 @@ pub fn show(app: &gtk::Application, state: &Rc<AppState>) {
     show_page(app, state, Page::Home);
 }
 
+pub fn show_wallpaper(app: &gtk::Application, state: &Rc<AppState>) {
+    if state
+        .menu
+        .borrow()
+        .as_ref()
+        .is_some_and(|window| window.title().as_deref() != Some("Wallpaper"))
+    {
+        close(state);
+    }
+    show_page(app, state, Page::Wallpaper);
+}
+
 pub fn show_clipboard(app: &gtk::Application, state: &Rc<AppState>) {
     let other_page = state
         .menu
@@ -382,59 +625,7 @@ fn show_page(app: &gtk::Application, state: &Rc<AppState>, page: Page) {
 }
 
 fn render(window: &gtk::ApplicationWindow, state: &Rc<AppState>, page: Page) {
-    if matches!(page, Page::SelectWallpaper) {
-        render_entries(
-            window,
-            state,
-            page,
-            vec![("Loading wallpapers…".into(), String::new(), Action::Notice)],
-        );
-        let current = window.child().map(|child| child.downgrade());
-        let weak_window = window.downgrade();
-        let weak_state = Rc::downgrade(state);
-        let (sender, receiver) = async_channel::bounded(1);
-        std::thread::spawn(move || {
-            let _ = sender.send_blocking(wallpaper_files(&wallpaper_folder()));
-        });
-        glib::MainContext::default().spawn_local(async move {
-            let (Ok(result), Some(window), Some(state), Some(current)) = (
-                receiver.recv().await,
-                weak_window.upgrade(),
-                weak_state.upgrade(),
-                current.and_then(|child| child.upgrade()),
-            ) else {
-                return;
-            };
-            if window.child().as_ref() != Some(&current) {
-                return;
-            }
-            match result {
-                Ok(files) if !files.is_empty() => render_entries(
-                    &window,
-                    &state,
-                    page,
-                    files
-                        .into_iter()
-                        .map(|name| (name.clone(), String::new(), Action::SelectWallpaper(name)))
-                        .collect(),
-                ),
-                Ok(_) => render_entries(
-                    &window,
-                    &state,
-                    page,
-                    vec![("No wallpapers found".into(), String::new(), Action::Notice)],
-                ),
-                Err(error) => render_entries(
-                    &window,
-                    &state,
-                    page,
-                    vec![(error, String::new(), Action::Notice)],
-                ),
-            }
-        });
-    } else {
-        render_entries(window, state, page, entries(page));
-    }
+    render_entries(window, state, page, entries(page));
 }
 
 fn render_entries(
@@ -457,7 +648,6 @@ fn render_entries(
         | Page::Keybindings
         | Page::Appearance => Some(Page::Home),
         Page::Wallpaper => Some(Page::Appearance),
-        Page::SelectWallpaper => Some(Page::Wallpaper),
         Page::Bluetooth => Some(Page::Settings),
         Page::Weather | Page::Calendar | Page::Clipboard | Page::Todo => Some(Page::Info),
         Page::Modules => Some(Page::Bar),
@@ -534,7 +724,6 @@ fn render_entries(
         Page::Modules => "Modules",
         Page::Appearance => "Appearance",
         Page::Wallpaper => "Wallpaper",
-        Page::SelectWallpaper => "Select wallpaper",
     }));
     window.set_title(Some(&title.text()));
     title.add_css_class("menu-heading");
@@ -544,6 +733,7 @@ fn render_entries(
     outer.append(&header);
     let keybindings = matches!(page, Page::Keybindings).then(crate::keybindings::view);
     let leaf = match page {
+        Page::Wallpaper => Some(wallpaper_view(state)),
         Page::Keybindings => keybindings.as_ref().map(|view| view.widget.clone()),
         Page::Bluetooth => Some(crate::bluetooth::view()),
         Page::Weather => Some(crate::weather::view()),
@@ -658,7 +848,6 @@ fn render_entries(
             }
             Action::Page(_) => "›",
             Action::Wip => "WIP",
-            Action::Notice => "",
             _ => "",
         }));
         status.add_css_class("menu-state");
@@ -759,7 +948,7 @@ fn render_entries(
                         crate::layout::show(&app, &state, bar);
                     }
                 }
-                Action::Wip | Action::Notice => {}
+                Action::Wip => {}
                 action @ (Action::Poweroff | Action::Reboot) => {
                     if let Some(message) = message.upgrade() {
                         message.set_visible(false);
@@ -772,9 +961,7 @@ fn render_entries(
                         );
                     }
                 }
-                action @ (Action::NextWallpaper
-                | Action::OpenWallpapersFolder
-                | Action::SelectWallpaper(_)) => {
+                action @ (Action::OpenWallpapersFolder | Action::SelectWallpaper(_)) => {
                     if let Some(message) = message.upgrade() {
                         message.set_visible(false);
                         run_wallpaper_action(
@@ -954,7 +1141,7 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
     let wallpaper_list = gtk::ListBox::new();
     let wallpaper_message = gtk::Label::new(None);
     run_wallpaper_action_with(
-        Action::NextWallpaper,
+        Action::SelectWallpaper("test.png".into()),
         wallpaper_message.downgrade(),
         wallpaper_list.downgrade(),
         state.wallpaper_busy.clone(),
@@ -963,7 +1150,7 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
     );
     assert!(!wallpaper_list.is_sensitive());
     run_wallpaper_action_with(
-        Action::NextWallpaper,
+        Action::SelectWallpaper("test.png".into()),
         wallpaper_message.downgrade(),
         wallpaper_list.downgrade(),
         state.wallpaper_busy.clone(),
@@ -972,7 +1159,7 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
     );
     let other_list = gtk::ListBox::new();
     run_wallpaper_action_with(
-        Action::NextWallpaper,
+        Action::SelectWallpaper("test.png".into()),
         wallpaper_message.downgrade(),
         other_list.downgrade(),
         state.wallpaper_busy.clone(),
@@ -986,7 +1173,7 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
     assert!(wallpaper_message.text().contains("wallpaper test failure"));
     std::fs::write(&script, "#!/bin/sh\nsleep 300 &\nwait\n").unwrap();
     run_wallpaper_action_with(
-        Action::NextWallpaper,
+        Action::SelectWallpaper("test.png".into()),
         wallpaper_message.downgrade(),
         wallpaper_list.downgrade(),
         state.wallpaper_busy.clone(),
@@ -1049,6 +1236,84 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
         }
         None
     }
+    let previews = std::env::temp_dir().join(format!("chuhshell-previews-{}", std::process::id()));
+    std::fs::create_dir_all(&previews).unwrap();
+    let pixbuf =
+        gtk::gdk_pixbuf::Pixbuf::new(gtk::gdk_pixbuf::Colorspace::Rgb, false, 8, 32, 20).unwrap();
+    pixbuf.fill(0x667788ff);
+    for name in ["a.png", "b.png", "c.png"] {
+        pixbuf.savev(previews.join(name), "png", &[]).unwrap();
+    }
+    let view = wallpaper_view_with(state, previews.clone());
+    let preview_window = gtk::ApplicationWindow::builder()
+        .application(app)
+        .child(&view)
+        .build();
+    preview_window.present();
+    crate::ui_tests::pump(200);
+    let scroll = view
+        .first_child()
+        .unwrap()
+        .downcast::<gtk::ScrolledWindow>()
+        .unwrap();
+    let strip = scroll
+        .child()
+        .unwrap()
+        .first_child()
+        .unwrap()
+        .downcast::<gtk::Box>()
+        .unwrap();
+    let first = strip
+        .first_child()
+        .unwrap()
+        .downcast::<gtk::Button>()
+        .unwrap();
+    assert!(first.has_css_class("suggested-action"));
+    let picture = first
+        .child()
+        .unwrap()
+        .first_child()
+        .unwrap()
+        .downcast::<gtk::Picture>()
+        .unwrap();
+    assert!(
+        picture.paintable().is_some(),
+        "{:?}",
+        picture.tooltip_text()
+    );
+    let controller = view
+        .observe_controllers()
+        .item(0)
+        .unwrap()
+        .downcast::<gtk::EventControllerKey>()
+        .unwrap();
+    controller.emit_by_name::<bool>(
+        "key-pressed",
+        &[&gdk::Key::Right, &0u32, &gdk::ModifierType::empty()],
+    );
+    let second = first.next_sibling().unwrap();
+    assert!(second.has_css_class("suggested-action"));
+    assert!(!first.has_css_class("suggested-action"));
+    controller.emit_by_name::<bool>(
+        "key-pressed",
+        &[&gdk::Key::Left, &0u32, &gdk::ModifierType::empty()],
+    );
+    assert!(first.has_css_class("suggested-action"));
+    let weak_first = first.downgrade();
+    preview_window.close();
+    gtk::prelude::GtkWindowExt::set_focus(&preview_window, gtk::Widget::NONE);
+    preview_window.set_child(gtk::Widget::NONE);
+    drop(preview_window);
+    drop(controller);
+    drop(picture);
+    drop(first);
+    drop(second);
+    drop(strip);
+    drop(scroll);
+    drop(view);
+    crate::ui_tests::pump(350);
+    assert!(weak_first.upgrade().is_none());
+    std::fs::remove_dir_all(previews).unwrap();
     show(app, state);
     crate::ui_tests::pump(100);
     let window = state.menu.borrow().as_ref().unwrap().clone();

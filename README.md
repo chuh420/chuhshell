@@ -20,7 +20,7 @@ info contains weather, a monthly calendar, clipboard history and todo. weather s
 
 todo saves tasks under your xdg data home. add a task, mark it done or delete it from the info menu.
 
-appearance contains wallpaper controls. place images in `~/Pictures/Wallpapers` and provide `~/.local/bin/wallpaper.sh`; the shell calls it with `--next` or a selected filename. scripts have a 30-second timeout and failures are shown in the menu.
+appearance opens a wallpaper preview strip. use left/right arrows to browse and enter to apply, or click a preview and apply. ctrl and b opens it directly (`chuhshell wallpaper`). place images in `~/Pictures/Wallpapers` and provide `~/.local/bin/wallpaper.sh`; the shell calls it with the selected filename. scripts have a 30-second timeout and failures are shown in the menu.
 
 mod and c opens clipboard history. it keeps up to 100 text and png entries in memory for the current session (2 mib per item, 20 mib for retained contents and search data). search and press enter to copy an item and close the menu. press delete to remove an item, or use the buttons to pause recording and clear history. clipboard contents are never saved to disk.
 
