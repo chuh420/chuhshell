@@ -11,7 +11,7 @@ enum Page {
     Launcher,
     Bar,
     Modules,
-    Settings,
+    Trigger,
     System,
     Info,
     Bluetooth,
@@ -42,7 +42,7 @@ fn entries(page: Page) -> Vec<(String, String, Action)> {
         Page::Home => vec![
             ("App launcher", "", Action::Page(Page::Launcher)),
             ("Bar", "", Action::Page(Page::Bar)),
-            ("Settings", "", Action::Page(Page::Settings)),
+            ("Trigger", "", Action::Page(Page::Trigger)),
             ("Info", "", Action::Page(Page::Info)),
             ("Appearance", "", Action::Page(Page::Appearance)),
             ("Keybindings", "", Action::Page(Page::Keybindings)),
@@ -54,14 +54,18 @@ fn entries(page: Page) -> Vec<(String, String, Action)> {
             ("Screensaver", "WIP", Action::Wip),
             ("Lock", "WIP", Action::Wip),
         ],
-        Page::Settings => vec![("Bluetooth", "", Action::Page(Page::Bluetooth))],
+        Page::Trigger => vec![
+            ("Bluetooth", "", Action::Page(Page::Bluetooth)),
+            ("Todo", "", Action::Page(Page::Todo)),
+            ("Clipboard", "", Action::Page(Page::Clipboard)),
+            ("Reminder", "WIP", Action::Wip),
+            ("Toggle idle lock", "WIP", Action::Wip),
+        ],
         Page::Appearance => vec![("Wallpaper", "", Action::Page(Page::Wallpaper))],
         Page::Wallpaper => Vec::new(),
         Page::Info => vec![
             ("Weather", "", Action::Page(Page::Weather)),
             ("Calendar", "", Action::Page(Page::Calendar)),
-            ("Clipboard", "", Action::Page(Page::Clipboard)),
-            ("Todo", "", Action::Page(Page::Todo)),
         ],
         Page::Bluetooth
         | Page::Weather
@@ -642,14 +646,14 @@ fn render_entries(
         Page::Home => None,
         Page::Launcher
         | Page::Bar
-        | Page::Settings
+        | Page::Trigger
         | Page::System
         | Page::Info
         | Page::Keybindings
         | Page::Appearance => Some(Page::Home),
         Page::Wallpaper => Some(Page::Appearance),
-        Page::Bluetooth => Some(Page::Settings),
-        Page::Weather | Page::Calendar | Page::Clipboard | Page::Todo => Some(Page::Info),
+        Page::Bluetooth | Page::Clipboard | Page::Todo => Some(Page::Trigger),
+        Page::Weather | Page::Calendar => Some(Page::Info),
         Page::Modules => Some(Page::Bar),
     };
     let back = parent.map(|parent| {
@@ -710,7 +714,7 @@ fn render_entries(
     }
     let title = gtk::Label::new(Some(match page {
         Page::Keybindings => "Keybindings",
-        Page::Settings => "Settings",
+        Page::Trigger => "Trigger",
         Page::System => "System",
         Page::Info => "Info",
         Page::Bluetooth => "Bluetooth",
@@ -1410,9 +1414,9 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
     menu.select_row(menu.row_at_index(2).as_ref());
     press(&window, gdk::Key::Return);
     assert_eq!(list(&window).row_at_index(0).unwrap().index(), 0);
-    assert_eq!(window.title().as_deref(), Some("Settings"));
+    assert_eq!(window.title().as_deref(), Some("Trigger"));
     press(&window, gdk::Key::Left);
-    assert_eq!(window.title().as_deref(), Some("Settings"));
+    assert_eq!(window.title().as_deref(), Some("Trigger"));
     press(&window, gdk::Key::Up);
     assert!(back_is_focused(
         &window,
@@ -1423,7 +1427,7 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
     let menu = list(&window);
     menu.select_row(menu.row_at_index(3).as_ref());
     press(&window, gdk::Key::Return);
-    assert_eq!(crate::launcher::visible_rows(&list(&window)).len(), 4);
+    assert_eq!(crate::launcher::visible_rows(&list(&window)).len(), 2);
     let menu = list(&window);
     menu.select_row(menu.row_at_index(1).as_ref());
     press(&window, gdk::Key::Return);
@@ -1441,8 +1445,16 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
     ));
     press(&window, gdk::Key::Return);
     assert_eq!(window.title().as_deref(), Some("Info"));
-    let info = list(&window);
-    info.select_row(info.row_at_index(3).as_ref());
+    find(window.upcast_ref(), "menu-back")
+        .unwrap()
+        .downcast::<gtk::Button>()
+        .unwrap()
+        .emit_clicked();
+    let home = list(&window);
+    home.select_row(home.row_at_index(2).as_ref());
+    press(&window, gdk::Key::Return);
+    let trigger = list(&window);
+    trigger.select_row(trigger.row_at_index(1).as_ref());
     press(&window, gdk::Key::Return);
     assert_eq!(window.title().as_deref(), Some("Todo"));
     crate::ui_tests::pump(100);
@@ -1474,7 +1486,7 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
     assert!(crate::todo::load(&crate::todo::path()).unwrap().is_empty());
     let back = find(window.upcast_ref(), "menu-back").unwrap();
     back.downcast::<gtk::Button>().unwrap().emit_clicked();
-    assert_eq!(window.title().as_deref(), Some("Info"));
+    assert_eq!(window.title().as_deref(), Some("Trigger"));
     show_clipboard(app, state);
     let window = state.menu.borrow().as_ref().unwrap().clone();
     assert_eq!(window.title().as_deref(), Some("Clipboard"));
