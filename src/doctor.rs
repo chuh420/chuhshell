@@ -82,8 +82,6 @@ pub fn run(json: bool) -> glib::ExitCode {
         ("wl-paste", true),
         ("wl-copy", true),
         ("curl", true),
-        ("foot", false),
-        ("btop", false),
     ] {
         let path = std::env::var_os("PATH").and_then(|paths| {
             std::env::split_paths(&paths)

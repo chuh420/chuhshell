@@ -197,6 +197,10 @@ dropdown popover > contents {
 dropdown popover listview { background: transparent; color: @shell_text; }
 dropdown popover row { padding: 8px 10px; border-radius: 6px; }
 dropdown popover row:hover, dropdown popover row:selected { background: #403d52; }
+.control-scale trough { background: #403d52; border: 0; border-radius: 6px; min-height: 6px; }
+.control-scale highlight { background: @shell_handle; border: 0; border-radius: 6px; min-width: 0; min-height: 6px; margin: 0; padding: 0; }
+.control-scale slider { background: @shell_handle; border: 1px solid #403d52; border-radius: 50%; min-width: 14px; min-height: 14px; margin: 0; padding: 0; box-shadow: none; }
+.control-scale value { color: @shell_text; }
 separator { background: #403d52; min-height: 1px; min-width: 1px; }
 scrollbar { background: transparent; }
 scrollbar slider { background: #403d52; border: 0; border-radius: 8px; min-width: 4px; min-height: 4px; }

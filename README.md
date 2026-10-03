@@ -2,13 +2,16 @@
 
 a personal desktop shell for niri, written in rust with gtk4. the panel, launcher, menus and notifications share one process and one look.
 
-i made this for my own desktop. i think it should work on other people's desktops too, but i'm not sure. it only supports the niri window manager. feel free to use it, change it, share it or borrow ideas — i don't mind what you do with it.
+i made this for my own desktop. i think it should work on other people's desktops too, but i'm not sure. it only supports the niri window manager. feel free to use it, change it, share it or borrow ideas - i don't mind what you do with it.
 
 ## what it does
 
 - a panel across multiple monitors, with workspaces, background apps, clock, notifications, volume, brightness, keyboard layout, temperature, wifi and battery.
 - an app launcher with fuzzy search, pinned apps, usage-based or alphabetical sorting, and controls to hide apps.
 - wifi and bluetooth controls, including pairing prompts inside the shell. enterprise wifi needs an existing networkmanager profile.
+- keyboard layout selection and volume/brightness sliders, with scroll controls on the panel.
+- a system monitor menu with cpu/gpu usage, ram usage and cpu/gpu temperatures.
+- a battery menu with uptime and economy, balance and performance profiles through power-profiles-daemon.
 - weather from open-meteo, a calendar, saved tasks and clipboard history.
 - app notification popups and a drawer, separate from the volume and brightness osd.
 - editors for panel modules, launcher placement and niri keybindings. some menu sections are still marked wip.
@@ -21,13 +24,19 @@ in menus, use up/down to move, enter or right to select, left to go back and esc
 
 chuh menu lets you toggle and arrange panel modules, move or resize the launcher, and edit shortcuts. save applies changes; cancel or escape discards them. niri bindings include their source files and are validated before saving.
 
+click the keyboard layout module to select a configured layout. click volume or brightness for a slider; scrolling still adjusts them. volume stays within 0-100%, and moving its slider unmutes audio. brightness stays within 1-100%.
+
+click the temperature module for live system metrics, refreshed every two seconds. gpu collection runs only while the menu is open. gpu usage falls back to the busiest engine across accessible applications when the driver has no global usage counter. missing sensors show unavailable; integrated intel graphics may have no separate gpu temperature sensor.
+
+the battery menu selects performance on external power, balance on battery, and economy below 20% on battery. manual selection lasts until the power source or charge threshold changes; the automatic button immediately restores automatic selection. unsupported profiles are disabled and service errors appear in the menu. install and enable power-profiles-daemon for these controls.
+
 clipboard history keeps up to 100 text and png entries in memory, never on disk. search and press enter to copy; delete removes an entry. you can pause recording or clear the history.
 
 for wallpapers, put images in `~/Pictures/Wallpapers` and provide `~/.local/bin/wallpaper.sh`. the picker calls that script with the selected filename and shows failures.
 
 ## installation
 
-on arch, building needs rust 1.92+, pkgconf, gtk4, gtk4-layer-shell and glib 2.80+. desktop controls use niri, wireplumber, pactl, networkmanager, brightnessctl, udevadm, bluez, wl-clipboard and curl. foot and btop are optional, for the temperature shortcut. the intended font is inputsans nerd font.
+on arch, building needs rust 1.92+, pkgconf, gtk4, gtk4-layer-shell and glib 2.80+. desktop controls use niri, wireplumber, pactl, networkmanager, brightnessctl, udevadm, bluez, wl-clipboard and curl. the intended font is inputsans nerd font.
 
 run this from the project directory in your niri session:
 
@@ -41,6 +50,13 @@ the active niri config is detected automatically. to choose one explicitly:
 
 ```sh
 scripts/install.sh --config /path/to/config.kdl
+```
+
+for battery power profiles, install and enable the system service:
+
+```sh
+sudo pacman -S power-profiles-daemon
+sudo systemctl enable --now power-profiles-daemon.service
 ```
 
 for bluetooth, enable the system service with `sudo systemctl enable --now bluetooth.service`.

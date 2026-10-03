@@ -160,6 +160,12 @@ fn ui_regressions() {
     crate::keybindings::regression_checks(&app);
     crate::bluetooth::regression_checks(&app);
     crate::network::regression_checks(&network_button);
+    let battery_button = find_button(state.bars.borrow()[0].1.upcast_ref(), "battery").unwrap();
+    crate::power::regression_checks(&battery_button);
+    let temperature_button =
+        find_button(state.bars.borrow()[0].1.upcast_ref(), "temperature").unwrap();
+    crate::monitor::regression_checks(&temperature_button);
+    crate::controls::regression_checks(&temperature_button);
     crate::weather::regression_checks(&app);
     crate::layout::regression_checks(&app, &state);
     crate::bar_editor::regression_checks(&app, &state);

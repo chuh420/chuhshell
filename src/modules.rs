@@ -43,6 +43,7 @@ impl BatteryState {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BatteryStatus {
+    pub capacity: Option<u8>,
     pub text: String,
     pub level: String,
     pub tooltip: String,
@@ -61,16 +62,6 @@ pub fn child_process(program: &str, args: &[&str]) -> Option<String> {
     process::run(program, args)
         .map_err(|error| eprintln!("chuhshell: {error}"))
         .ok()
-}
-
-pub fn spawn_detached(program: &str, args: &[&str]) -> bool {
-    let Ok(mut child) = Command::new(program).args(args).spawn() else {
-        return false;
-    };
-    thread::spawn(move || {
-        let _ = child.wait();
-    });
-    true
 }
 
 fn read_trim(path: &Path) -> Option<String> {
@@ -241,6 +232,7 @@ pub fn battery_status() -> BatteryStatus {
         "normal"
     };
     BatteryStatus {
+        capacity: Some(capacity_num as u8),
         text: format!("{icon} {capacity}%"),
         level: level.to_owned(),
         tooltip: format!("{capacity}% • {}", battery_estimate(&battery, &status)),
@@ -319,27 +311,6 @@ pub fn spawn_audio_poller(sender: Sender<Option<String>>) {
                 return;
             }
             if !process::pause(Duration::from_secs(2)) {
-                return;
-            }
-        }
-    });
-}
-
-pub fn spawn_temperature_poller(sender: Sender<Option<i64>>) {
-    thread::spawn(move || {
-        let mut sensor = thermal_sensor_path();
-        loop {
-            if sensor.is_none() {
-                sensor = thermal_sensor_path();
-            }
-            let value = sensor
-                .as_deref()
-                .and_then(read_trim)
-                .and_then(|text| text.parse::<i64>().ok());
-            if value.is_none() {
-                sensor = None;
-            }
-            if sender.send_blocking(value).is_err() || !process::pause(Duration::from_secs(3)) {
                 return;
             }
         }

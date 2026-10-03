@@ -7,7 +7,7 @@ url='https://github.com/chuh420/chuhshell'
 license=('LicenseRef-unlicensed')
 depends=('gtk4' 'gtk4-layer-shell' 'glib2>=2.80' 'niri' 'wireplumber' 'libpulse' 'networkmanager' 'brightnessctl' 'systemd' 'bluez' 'wl-clipboard' 'curl')
 makedepends=('cargo' 'git')
-optdepends=('foot: terminal for the temperature monitor' 'btop: process tool' 'ttf-input: interface font')
+optdepends=('power-profiles-daemon: battery power profiles' 'ttf-input: interface font')
 source=("$pkgname-$pkgver.tar.gz")
 sha256sums=('SOURCE_ARCHIVE_CHECKSUM')
 

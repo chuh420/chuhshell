@@ -1,5 +1,5 @@
 use crate::{
-    app::AppState, background_apps::BackgroundManager, modules, niri,
+    app::AppState, background_apps::BackgroundManager, niri,
     notification_center::NotificationCenter, notifications, services::Services, ui,
 };
 use gtk::prelude::*;
@@ -35,6 +35,9 @@ pub fn create(app: &gtk::Application, state: &Rc<AppState>, center: &Rc<Notifica
         return;
     }
     *state.services.borrow_mut() = Some(Services::new(state));
+    *state.controls.borrow_mut() = Some(crate::controls::Controls::new(
+        state.services.borrow().as_ref().unwrap(),
+    ));
     *state.background_manager.borrow_mut() = Some(BackgroundManager::new(app));
     *state.network_menu.borrow_mut() = Some(crate::network::NetworkMenu::new(
         state.services.borrow().as_ref().unwrap().network.clone(),
@@ -172,7 +175,11 @@ fn build(
     let audio = module("--", "audio", "Audio unavailable");
     let brightness = module("--", "brightness", "Screen brightness");
     let language = module("--", "language", "Keyboard layout");
-    let temperature = module("--", "temperature", "CPU temperature");
+    let temperature = module(
+        "--",
+        "temperature",
+        "CPU temperature · click for system monitor",
+    );
     let network = module("󰖪", "network", "Wi-Fi unavailable");
     let battery = module("", "battery", "Battery");
     let mut module_widgets = vec![("workspaces", state.bar_modules.wrap("workspaces", &left))];
@@ -192,12 +199,16 @@ fn build(
     state
         .bar_modules
         .register(window.upcast_ref(), &groups, module_widgets);
-    audio.connect_clicked({
-        let state = Rc::clone(state);
-        move |_| {
-            notifications::handle_command(&state, "volume-mute");
-        }
-    });
+    for (button, kind) in [
+        (&audio, crate::controls::Kind::Volume),
+        (&brightness, crate::controls::Kind::Brightness),
+        (&language, crate::controls::Kind::Layout),
+    ] {
+        button.connect_clicked({
+            let controls = state.controls.borrow().as_ref().unwrap().clone();
+            move |button| controls.toggle(kind, button)
+        });
+    }
     scroll(&audio, state, "volume-up", "volume-down");
     scroll(
         &brightness,
@@ -209,11 +220,14 @@ fn build(
         let menu = state.network_menu.borrow().as_ref().unwrap().clone();
         move |button| menu.toggle(button)
     });
-    temperature.connect_clicked(|_| {
-        modules::spawn_detached("foot", &["-e", "btop"]);
+    temperature.connect_clicked({
+        let monitor = state.services.borrow().as_ref().unwrap().monitor.clone();
+        move |button| monitor.toggle(button)
     });
-    language.set_focusable(false);
-    battery.set_focusable(false);
+    battery.connect_clicked({
+        let power = state.services.borrow().as_ref().unwrap().power.clone();
+        move |button| power.toggle(button)
+    });
     let output = monitor.connector().map(|s| s.to_string());
     let old_workspaces = RefCell::new(Vec::new());
     let workspace_buttons = RefCell::new(std::collections::HashMap::<u64, gtk::Button>::new());

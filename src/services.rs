@@ -54,6 +54,8 @@ impl Changes {
 type Listener = Box<dyn Fn(&SystemState, Changes) -> bool>;
 
 pub struct Services {
+    pub monitor: Rc<crate::monitor::Service>,
+    pub power: Rc<crate::power::Service>,
     pub network: Rc<crate::network::service::Service>,
     data: RefCell<SystemState>,
     listeners: RefCell<Vec<Listener>>,
@@ -64,6 +66,8 @@ impl Services {
     pub fn new(state: &Rc<AppState>) -> Rc<Self> {
         let services = Rc::new(Self {
             network: crate::network::service::Service::new(),
+            power: crate::power::Service::new(),
+            monitor: crate::monitor::Service::new(),
             data: RefCell::new(SystemState::default()),
             listeners: RefCell::new(Vec::new()),
             _catalog: crate::apps::watch(),
@@ -117,9 +121,14 @@ impl Services {
         let (tx, rx) = async_channel::bounded(1);
         modules::spawn_audio_poller(tx);
         Self::consume(&services, rx, |data, value| data.audio = value);
-        let (tx, rx) = async_channel::bounded(1);
-        modules::spawn_temperature_poller(tx);
-        Self::consume(&services, rx, |data, value| data.temperature = value);
+        let weak = Rc::downgrade(&services);
+        services.monitor.subscribe_temperature(move |temperature| {
+            let Some(services) = weak.upgrade() else {
+                return false;
+            };
+            services.update(|data| data.temperature = temperature);
+            true
+        });
         let weak = Rc::downgrade(&services);
         let state = osd_state.clone();
         services.network.subscribe(move |result| {
@@ -250,7 +259,7 @@ impl Services {
         });
     }
 
-    fn update(&self, update: impl FnOnce(&mut SystemState)) {
+    pub(crate) fn update(&self, update: impl FnOnce(&mut SystemState)) {
         let mut data = self.data.borrow_mut();
         let previous = data.clone();
         update(&mut data);

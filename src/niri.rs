@@ -80,6 +80,15 @@ pub fn command(request: &str) -> bool {
     self::request(request).is_some()
 }
 
+pub fn keyboard_layouts() -> Option<KeyboardLayouts> {
+    serde_json::from_value(
+        request("\"KeyboardLayouts\"")?
+            .get("KeyboardLayouts")?
+            .clone(),
+    )
+    .ok()
+}
+
 pub fn window_processes() -> Option<Vec<WindowProcess>> {
     serde_json::from_value(request("\"Windows\"")?.get("Windows")?.clone()).ok()
 }

@@ -452,7 +452,7 @@ fn execute(command: &str, count: u32) -> Result<Notice, String> {
     }
 }
 
-fn parse_wpctl_volume(value: &str) -> Option<(u8, bool)> {
+pub(crate) fn parse_wpctl_volume(value: &str) -> Option<(u8, bool)> {
     let volume = value.split_whitespace().nth(1)?.parse::<f32>().ok()?;
     Some((
         (volume * 100.0).round().clamp(0.0, 100.0) as u8,
