@@ -22,6 +22,7 @@ enum Page {
     Calendar,
     Clipboard,
     Todo,
+    Reminder,
     Keybindings,
     Appearance,
     Wallpaper,
@@ -36,7 +37,6 @@ enum Action {
     OpenWallpapersFolder,
     SelectWallpaper(String),
     IdleShow(bool),
-    Wip,
     Poweroff,
     Reboot,
 }
@@ -62,7 +62,7 @@ fn entries(page: Page) -> Vec<(String, String, Action)> {
             ("Bluetooth", "", Action::Page(Page::Bluetooth)),
             ("Todo", "", Action::Page(Page::Todo)),
             ("Clipboard", "", Action::Page(Page::Clipboard)),
-            ("Reminder", "WIP", Action::Wip),
+            ("Reminder", "", Action::Page(Page::Reminder)),
             ("Idle", "", Action::Page(Page::Idle)),
         ],
         Page::Idle => vec![
@@ -81,6 +81,7 @@ fn entries(page: Page) -> Vec<(String, String, Action)> {
         | Page::Calendar
         | Page::Clipboard
         | Page::Todo
+        | Page::Reminder
         | Page::Keybindings => Vec::new(),
         Page::Launcher => vec![
             (
@@ -674,7 +675,7 @@ fn render_entries(
         Page::Idle => Some(Page::Trigger),
         Page::Screensaver | Page::Lockscreen => Some(Page::Idle),
         Page::Wallpaper => Some(Page::Appearance),
-        Page::Bluetooth | Page::Clipboard | Page::Todo => Some(Page::Trigger),
+        Page::Bluetooth | Page::Clipboard | Page::Todo | Page::Reminder => Some(Page::Trigger),
         Page::Weather | Page::Calendar => Some(Page::Info),
         Page::Modules => Some(Page::Bar),
     };
@@ -747,6 +748,7 @@ fn render_entries(
         Page::Calendar => "Calendar",
         Page::Clipboard => "Clipboard",
         Page::Todo => "Todo",
+        Page::Reminder => "Reminder",
         Page::Home => "chuh menu",
         Page::Launcher => "App launcher",
         Page::Bar => "Bar",
@@ -770,6 +772,7 @@ fn render_entries(
         Page::Weather => Some(crate::weather::view()),
         Page::Calendar => Some(crate::info::calendar()),
         Page::Todo => Some(crate::todo::view()),
+        Page::Reminder => Some(crate::reminder::view(state)),
         Page::Clipboard => {
             let weak = Rc::downgrade(state);
             Some(state.clipboard.view(move || {
@@ -862,7 +865,7 @@ fn render_entries(
         label.add_css_class("menu-title");
         label.set_xalign(0.0);
         text.append(&label);
-        if !hint.is_empty() && !matches!(action, Action::Wip) {
+        if !hint.is_empty() {
             let hint = gtk::Label::new(Some(hint));
             hint.add_css_class("menu-hint");
             hint.set_xalign(0.0);
@@ -878,14 +881,9 @@ fn render_entries(
                 }
             }
             Action::Page(_) => "›",
-            Action::Wip => "WIP",
             _ => "",
         }));
         status.add_css_class("menu-state");
-        if matches!(action, Action::Wip) {
-            row.add_css_class("menu-wip");
-            status.add_css_class("menu-hint");
-        }
         if matches!(action, Action::Toggle(id) if state.bar_modules.enabled(id)) {
             status.add_css_class("enabled");
         }
@@ -988,7 +986,6 @@ fn render_entries(
                         }
                     }
                 },
-                Action::Wip => {}
                 action @ (Action::Poweroff | Action::Reboot) => {
                     if let Some(message) = message.upgrade() {
                         message.set_visible(false);
@@ -1477,6 +1474,16 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
         .downcast::<gtk::Button>()
         .unwrap()
         .emit_clicked();
+    list(&window).select_row(list(&window).row_at_index(3).as_ref());
+    press(&window, gdk::Key::Return);
+    assert_eq!(window.title().as_deref(), Some("Reminder"));
+    crate::reminder::regression_checks(&window, state);
+    find(window.upcast_ref(), "menu-back")
+        .unwrap()
+        .downcast::<gtk::Button>()
+        .unwrap()
+        .emit_clicked();
+    assert_eq!(window.title().as_deref(), Some("Trigger"));
     list(&window).select_row(list(&window).row_at_index(0).as_ref());
     press(&window, gdk::Key::Left);
     assert_eq!(window.title().as_deref(), Some("Trigger"));

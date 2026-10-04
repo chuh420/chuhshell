@@ -14,7 +14,7 @@ i made this for my own desktop. i think it should work on other people's desktop
 - a battery menu with uptime and economy, balance and performance profiles through power-profiles-daemon.
 - weather from open-meteo, a calendar, saved tasks and clipboard history.
 - app notification popups and a drawer, separate from the volume and brightness osd.
-- editors for panel modules, launcher placement and niri keybindings. some menu sections are still marked wip.
+- editors for panel modules, launcher placement and niri keybindings.
 
 ## getting around
 
@@ -106,3 +106,5 @@ optional headless modes:
 for a local arch package, run `python scripts/package-source.py /tmp/chuhshell-package`, then `makepkg` in that directory. this generates the source archive and checksum without installing or restarting the shell.
 
 idle settings live under trigger → idle, with separate enabled flags and minute timers for screensaver (15 minutes) and lockscreen (40 minutes). system → screensaver / lock starts them immediately. both use the delta corps priest 1 figlet artwork; the lockscreen accepts pin `2121` followed by enter. wayland session-lock and idle-notify support are required.
+
+trigger → reminder schedules one-time notifications with text and a local date/time. upcoming reminders appear below the form and can be deleted. reminders are saved in `$XDG_DATA_HOME/chuhshell/reminders.json` and removed when delivered; overdue reminders arrive when the shell starts again.

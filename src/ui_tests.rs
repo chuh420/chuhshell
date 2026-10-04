@@ -96,6 +96,7 @@ fn ui_regressions() {
     crate::notification_center::regression_checks(&app);
     let state = Rc::new(crate::app::AppState::default());
     let center = crate::notification_center::NotificationCenter::new(&app);
+    crate::reminder::start(&state, &center);
     crate::bar::create(&app, &state, &center);
     pump(300);
     assert_eq!(state.bars.borrow().len(), 2);

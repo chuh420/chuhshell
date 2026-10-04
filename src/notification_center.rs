@@ -240,6 +240,36 @@ impl NotificationCenter {
         }
     }
 
+    #[cfg(test)]
+    pub fn reminder_count(&self, text: &str) -> usize {
+        self.notifications
+            .borrow()
+            .iter()
+            .filter(|notification| {
+                notification.view.summary == "Reminder" && notification.view.body == text
+            })
+            .count()
+    }
+
+    pub fn reminder(self: &Rc<Self>, text: &str) -> u32 {
+        self.notify(
+            0,
+            NotificationView {
+                id: 0,
+                app: "chuhshell".into(),
+                icon: "alarm-symbolic".into(),
+                summary: "Reminder".into(),
+                body: limited(text, 4096),
+                actions: Vec::new(),
+                desktop_id: None,
+                resident: false,
+                transient: false,
+                image: None,
+            },
+            10_000,
+        )
+    }
+
     fn notify(self: &Rc<Self>, replaces_id: u32, mut view: NotificationView, timeout: i32) -> u32 {
         let replacing = self
             .notifications

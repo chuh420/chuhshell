@@ -122,14 +122,20 @@ window#chuh-menu { background: transparent; color: @shell_text; }
 .menu-hint { font-size: 12px; }
 .menu-state { color: #908caa; font-size: 13px; }
 .menu-state.enabled { color: #9ccfd8; }
+.reminder-row, .reminder-schedule { background: #26233a; border-radius: 8px; padding: 12px; }
+.reminder-date > button { background: #1f1d2e; color: @shell_text; border: 1px solid #403d52; border-radius: 8px; box-shadow: none; padding: 7px 10px; }
+.reminder-date > button:hover { background: #403d52; }
+.reminder-calendar { background: #26233a; color: @shell_text; border: 1px solid #403d52; border-radius: 8px; padding: 10px; }
+.reminder-calendar button { background: transparent; color: @shell_text; border: 0; box-shadow: none; }
+.reminder-calendar label:selected { background: #31748f; color: @shell_text; border-radius: 4px; }
 .idle-setting-row { background: #26233a; border-radius: 8px; padding: 12px; }
 .idle-toggle { min-width: 44px; background: #1f1d2e; }
-.idle-settings spinbutton { background: #1f1d2e; color: @shell_text; border: 1px solid #403d52; border-radius: 8px; box-shadow: none; }
-.idle-settings spinbutton:focus-within { border-color: @shell_accent; }
-.idle-settings spinbutton text { background: transparent; color: @shell_text; padding: 7px 8px; min-width: 36px; }
-.idle-settings spinbutton button { background: transparent; color: #9ccfd8; border: 0; box-shadow: none; border-radius: 6px; min-width: 24px; padding: 4px; }
-.idle-settings spinbutton button:hover { background: #403d52; }
-.idle-settings spinbutton button:disabled { color: #6e6a86; }
+.idle-settings spinbutton, .reminder spinbutton { background: #1f1d2e; color: @shell_text; border: 1px solid #403d52; border-radius: 8px; box-shadow: none; }
+.idle-settings spinbutton:focus-within, .reminder spinbutton:focus-within { border-color: @shell_accent; }
+.idle-settings spinbutton text, .reminder spinbutton text { background: transparent; color: @shell_text; padding: 7px 8px; min-width: 36px; }
+.idle-settings spinbutton button, .reminder spinbutton button { background: transparent; color: #9ccfd8; border: 0; box-shadow: none; border-radius: 6px; min-width: 24px; padding: 4px; }
+.idle-settings spinbutton button:hover, .reminder spinbutton button:hover { background: #403d52; }
+.idle-settings spinbutton button:disabled, .reminder spinbutton button:disabled { color: #6e6a86; }
 .menu-error { color: #eb6f92; }
 .calendar-weekday { color: #908caa; padding: 6px 0; }
 .calendar-day { min-width: 28px; min-height: 26px; padding: 6px; }
