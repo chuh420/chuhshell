@@ -5,6 +5,7 @@ use std::sync::OnceLock;
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    pub idle: crate::idle::Settings,
     pub keybindings: std::collections::BTreeMap<String, String>,
     pub launcher_layout: Option<crate::layout::Geometry>,
     #[serde(rename = "bar_layout")]
@@ -25,6 +26,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            idle: Default::default(),
             keybindings: Default::default(),
             launcher_layout: None,
             _legacy_bar_layout: None,
@@ -61,6 +63,12 @@ pub fn read() -> Result<Config, String> {
         if name.is_empty() || name.contains('/') || name == "." || name == ".." {
             return Err("Device names must be simple directory names".into());
         }
+    }
+    if [config.idle.screensaver, config.idle.lockscreen]
+        .iter()
+        .any(|timer| !(1..=1440).contains(&timer.minutes))
+    {
+        return Err("Idle timers must be between 1 and 1440 minutes".into());
     }
     config.notification_history_limit = config.notification_history_limit.clamp(10, 1000);
     Ok(config)

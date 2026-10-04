@@ -14,6 +14,7 @@ pub enum LauncherMode {
 
 #[derive(Default)]
 pub struct AppState {
+    pub idle: RefCell<Option<Rc<crate::idle::Service>>>,
     pub bars: RefCell<Vec<(gtk::gdk::Monitor, gtk::Window)>>,
     pub services: RefCell<Option<Rc<crate::services::Services>>>,
     pub commands: RefCell<Option<async_channel::Sender<crate::notifications::CommandRequest>>>,

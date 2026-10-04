@@ -11,6 +11,7 @@ mod controls;
 mod css;
 mod doctor;
 mod fuzzy;
+mod idle;
 mod info;
 mod keybindings;
 mod launcher;
@@ -40,7 +41,9 @@ use std::rc::Rc;
 fn valid_command(command: &str) -> bool {
     matches!(
         command,
-        "wallpaper"
+        "screensaver"
+            | "lock"
+            | "wallpaper"
             | "clipboard"
             | "menu"
             | "launcher"
@@ -101,7 +104,7 @@ fn main() -> glib::ExitCode {
             }
             "--help" | "-h" => {
                 println!(
-                    "chuhshell [menu|wallpaper|clipboard|launcher|manage|notifications|background-apps|doctor [--json]]\nMedia commands: volume-up, volume-down, volume-mute, microphone-mute, brightness-up, brightness-down, brightness-key-up, brightness-key-down, brightness-scroll-up, brightness-scroll-down"
+                    "chuhshell [menu|screensaver|lock|wallpaper|clipboard|launcher|manage|notifications|background-apps|doctor [--json]]\nMedia commands: volume-up, volume-down, volume-mute, microphone-mute, brightness-up, brightness-down, brightness-key-up, brightness-key-down, brightness-scroll-up, brightness-scroll-down"
                 );
                 return glib::ExitCode::SUCCESS;
             }
@@ -160,6 +163,7 @@ fn main() -> glib::ExitCode {
             command_line.printerr_literal("Unknown command or extra arguments\n");
             return glib::ExitCode::FAILURE;
         }
+        crate::idle::start(&state);
         state.clipboard.start(&state);
         bar::create(app, &state, &center);
         if let Some(command) = command
@@ -186,6 +190,12 @@ fn main() -> glib::ExitCode {
             });
         } else {
             match command.as_deref() {
+                Some("screensaver" | "lock") => {
+                    if let Err(error) = idle::show(&state, command.as_deref() == Some("lock")) {
+                        command_line.printerr_literal(&format!("chuhshell: {error}\n"));
+                        return glib::ExitCode::FAILURE;
+                    }
+                }
                 Some("notifications") => center.toggle_drawer(),
                 Some("background-apps") => {
                     if let Some(manager) = state.background_manager.borrow().as_ref() {

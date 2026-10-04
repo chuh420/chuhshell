@@ -12,7 +12,7 @@ def create(destination):
     name = f"{metadata['name']}-{metadata['version']}"
     destination.mkdir(parents=True, exist_ok=True)
     archive = destination / (name + '.tar.gz')
-    files = [root / filename for filename in ['Cargo.toml', 'Cargo.lock', 'README.md', 'config.example.json']]
+    files = [root / filename for filename in ['Cargo.toml', 'Cargo.lock', 'README.md', 'config.example.json', 'assets/idle-art.txt', 'assets/README.md']]
     for folder in ['src', 'scripts', 'packaging']:
         files.extend(path for path in (root / folder).rglob('*') if path.is_file() and '__pycache__' not in path.parts and path.suffix in ['.rs', '.py', '.sh', '.service'])
     with archive.open('wb') as raw, gzip.GzipFile(fileobj=raw, mode='wb', filename='', mtime=0) as compressed, tarfile.open(fileobj=compressed, mode='w') as tar:

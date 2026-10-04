@@ -12,6 +12,9 @@ enum Page {
     Bar,
     Modules,
     Trigger,
+    Idle,
+    Screensaver,
+    Lockscreen,
     System,
     Info,
     Bluetooth,
@@ -32,6 +35,7 @@ enum Action {
     Configure(bool),
     OpenWallpapersFolder,
     SelectWallpaper(String),
+    IdleShow(bool),
     Wip,
     Poweroff,
     Reboot,
@@ -51,16 +55,21 @@ fn entries(page: Page) -> Vec<(String, String, Action)> {
         Page::System => vec![
             ("Poweroff", "", Action::Poweroff),
             ("Reboot", "", Action::Reboot),
-            ("Screensaver", "WIP", Action::Wip),
-            ("Lock", "WIP", Action::Wip),
+            ("Screensaver", "", Action::IdleShow(false)),
+            ("Lock", "", Action::IdleShow(true)),
         ],
         Page::Trigger => vec![
             ("Bluetooth", "", Action::Page(Page::Bluetooth)),
             ("Todo", "", Action::Page(Page::Todo)),
             ("Clipboard", "", Action::Page(Page::Clipboard)),
             ("Reminder", "WIP", Action::Wip),
-            ("Toggle idle lock", "WIP", Action::Wip),
+            ("Idle", "", Action::Page(Page::Idle)),
         ],
+        Page::Idle => vec![
+            ("Screensaver", "", Action::Page(Page::Screensaver)),
+            ("Lockscreen", "", Action::Page(Page::Lockscreen)),
+        ],
+        Page::Screensaver | Page::Lockscreen => Vec::new(),
         Page::Appearance => vec![("Wallpaper", "", Action::Page(Page::Wallpaper))],
         Page::Wallpaper => Vec::new(),
         Page::Info => vec![
@@ -629,7 +638,18 @@ fn show_page(app: &gtk::Application, state: &Rc<AppState>, page: Page) {
 }
 
 fn render(window: &gtk::ApplicationWindow, state: &Rc<AppState>, page: Page) {
-    render_entries(window, state, page, entries(page));
+    let mut items = entries(page);
+    if matches!(page, Page::Idle) {
+        for ((_, hint, _), lock) in items.iter_mut().zip([false, true]) {
+            let timer = crate::idle::timer(state, lock);
+            *hint = format!(
+                "{} · {} min",
+                if timer.enabled { "On" } else { "Off" },
+                timer.minutes
+            );
+        }
+    }
+    render_entries(window, state, page, items);
 }
 
 fn render_entries(
@@ -651,6 +671,8 @@ fn render_entries(
         | Page::Info
         | Page::Keybindings
         | Page::Appearance => Some(Page::Home),
+        Page::Idle => Some(Page::Trigger),
+        Page::Screensaver | Page::Lockscreen => Some(Page::Idle),
         Page::Wallpaper => Some(Page::Appearance),
         Page::Bluetooth | Page::Clipboard | Page::Todo => Some(Page::Trigger),
         Page::Weather | Page::Calendar => Some(Page::Info),
@@ -714,6 +736,9 @@ fn render_entries(
     }
     let title = gtk::Label::new(Some(match page {
         Page::Keybindings => "Keybindings",
+        Page::Idle => "Idle",
+        Page::Screensaver => "Screensaver",
+        Page::Lockscreen => "Lockscreen",
         Page::Trigger => "Trigger",
         Page::System => "System",
         Page::Info => "Info",
@@ -737,6 +762,8 @@ fn render_entries(
     outer.append(&header);
     let keybindings = matches!(page, Page::Keybindings).then(crate::keybindings::view);
     let leaf = match page {
+        Page::Screensaver => Some(crate::idle::view(state, false)),
+        Page::Lockscreen => Some(crate::idle::view(state, true)),
         Page::Wallpaper => Some(wallpaper_view(state)),
         Page::Keybindings => keybindings.as_ref().map(|view| view.widget.clone()),
         Page::Bluetooth => Some(crate::bluetooth::view()),
@@ -952,6 +979,15 @@ fn render_entries(
                         crate::layout::show(&app, &state, bar);
                     }
                 }
+                Action::IdleShow(lock) => match crate::idle::show(&state, lock) {
+                    Ok(()) => close(&state),
+                    Err(error) => {
+                        if let Some(message) = message.upgrade() {
+                            message.set_text(&error);
+                            message.set_visible(true);
+                        }
+                    }
+                },
                 Action::Wip => {}
                 action @ (Action::Poweroff | Action::Reboot) => {
                     if let Some(message) = message.upgrade() {
@@ -1333,11 +1369,11 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
     assert_eq!(crate::launcher::visible_rows(&system).len(), 4);
     for index in [2, 3] {
         let row = system.row_at_index(index).unwrap();
-        assert!(row.has_css_class("menu-wip"));
-        system.select_row(Some(&row));
-        press(&window, gdk::Key::Return);
-        assert_eq!(window.title().as_deref(), Some("System"));
-        assert!(!state.system_busy.get());
+        assert!(!row.has_css_class("menu-wip"));
+        assert!(matches!(
+            entries(Page::System)[index as usize].2,
+            Action::IdleShow(_)
+        ));
     }
     crate::ui_tests::capture("system");
     press(&window, gdk::Key::Home);
@@ -1415,6 +1451,33 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
     press(&window, gdk::Key::Return);
     assert_eq!(list(&window).row_at_index(0).unwrap().index(), 0);
     assert_eq!(window.title().as_deref(), Some("Trigger"));
+    let trigger = list(&window);
+    trigger.select_row(trigger.row_at_index(4).as_ref());
+    press(&window, gdk::Key::Return);
+    assert_eq!(window.title().as_deref(), Some("Idle"));
+    for (index, title) in [(0, "Screensaver"), (1, "Lockscreen")] {
+        let idle = list(&window);
+        idle.select_row(idle.row_at_index(index).as_ref());
+        press(&window, gdk::Key::Return);
+        assert_eq!(window.title().as_deref(), Some(title));
+        crate::ui_tests::capture(if index == 0 {
+            "idle-screensaver-settings"
+        } else {
+            "idle-lockscreen-settings"
+        });
+        find(window.upcast_ref(), "menu-back")
+            .unwrap()
+            .downcast::<gtk::Button>()
+            .unwrap()
+            .emit_clicked();
+        assert_eq!(window.title().as_deref(), Some("Idle"));
+    }
+    find(window.upcast_ref(), "menu-back")
+        .unwrap()
+        .downcast::<gtk::Button>()
+        .unwrap()
+        .emit_clicked();
+    list(&window).select_row(list(&window).row_at_index(0).as_ref());
     press(&window, gdk::Key::Left);
     assert_eq!(window.title().as_deref(), Some("Trigger"));
     press(&window, gdk::Key::Up);

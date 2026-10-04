@@ -9,5 +9,15 @@
   "wifi": null,
   "temperature_sensor": null,
   "keybindings": {},
-  "launcher_layout": null
+  "launcher_layout": null,
+  "idle": {
+    "screensaver": {
+      "enabled": true,
+      "minutes": 15
+    },
+    "lockscreen": {
+      "enabled": true,
+      "minutes": 40
+    }
+  }
 }

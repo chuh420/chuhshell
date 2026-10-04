@@ -90,6 +90,7 @@ fn ui_regressions() {
     assert!(heartbeats.get() >= 5);
     glib::MainContext::default().block_on(delayed).unwrap();
     heartbeat.remove();
+    crate::idle::regression_checks();
     crate::launcher::regression_checks(&app);
     crate::bar::regression_checks();
     crate::notification_center::regression_checks(&app);

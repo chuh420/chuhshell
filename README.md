@@ -104,3 +104,5 @@ optional headless modes:
 `scripts/report-environment.sh` records toolchain and package versions. build a release with `cargo build --release --locked`.
 
 for a local arch package, run `python scripts/package-source.py /tmp/chuhshell-package`, then `makepkg` in that directory. this generates the source archive and checksum without installing or restarting the shell.
+
+idle settings live under trigger → idle, with separate enabled flags and minute timers for screensaver (15 minutes) and lockscreen (40 minutes). system → screensaver / lock starts them immediately. both use the delta corps priest 1 figlet artwork; the lockscreen accepts pin `2121` followed by enter. wayland session-lock and idle-notify support are required.
