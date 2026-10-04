@@ -251,6 +251,22 @@ impl NotificationCenter {
             .count()
     }
 
+    #[cfg(test)]
+    pub fn remove_test_reminder(self: &Rc<Self>, text: &str) {
+        let ids: Vec<_> = self
+            .notifications
+            .borrow()
+            .iter()
+            .filter(|notification| {
+                notification.view.summary == "Reminder" && notification.view.body == text
+            })
+            .map(|notification| notification.view.id)
+            .collect();
+        for id in ids {
+            self.remove(id);
+        }
+    }
+
     pub fn reminder(self: &Rc<Self>, text: &str) -> u32 {
         self.notify(
             0,

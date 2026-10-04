@@ -638,6 +638,9 @@ pub fn regression_checks(window: &gtk::Window, state: &Rc<crate::app::AppState>)
     settled(&service);
     assert!(load(&service.path).unwrap().is_empty());
     assert_eq!(center.reminder_count("Keep on failure"), 0);
+    center.remove_test_reminder("Due reminder");
+    assert_eq!(center.reminder_count("Due reminder"), 0);
+    crate::ui_tests::pump(250);
     let temporary = view(state);
     let weak = temporary.downgrade();
     drop(temporary);
