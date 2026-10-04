@@ -64,10 +64,7 @@ pub fn read() -> Result<Config, String> {
             return Err("Device names must be simple directory names".into());
         }
     }
-    if [config.idle.screensaver, config.idle.lockscreen]
-        .iter()
-        .any(|timer| !(1..=1440).contains(&timer.minutes))
-    {
+    if !(1..=1440).contains(&config.idle.screensaver.minutes) {
         return Err("Idle timers must be between 1 and 1440 minutes".into());
     }
     config.notification_history_limit = config.notification_history_limit.clamp(10, 1000);

@@ -538,10 +538,7 @@ fn create(
             let entries = state_for_activate.launcher_apps.borrow().clone();
             let target_id = id.clone();
             let saved = crate::storage::run(move || {
-                let hidden = apps::toggled_hidden(&entries, &target_id, apps::read_hidden())
-                    .ok_or("Application no longer exists")?;
-                apps::write_hidden(&hidden).map_err(|e| e.to_string())?;
-                Ok(hidden.contains(&target_id))
+                apps::change_hidden(&entries, &target_id).map_err(|e| e.to_string())
             });
             row.set_sensitive(false);
             let row = row.downgrade();

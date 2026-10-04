@@ -87,6 +87,170 @@ impl Drop for ManagedChild {
     }
 }
 
+pub struct IdleChild {
+    child: Option<Child>,
+}
+
+impl IdleChild {
+    pub fn spawn(command: &mut Command) -> Result<Self, String> {
+        if stopped() {
+            return Err("Shell is stopping".into());
+        }
+        let child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .process_group(0)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        let worker = Self { child: Some(child) };
+        let fd = worker
+            .child
+            .as_ref()
+            .unwrap()
+            .stdin
+            .as_ref()
+            .unwrap()
+            .as_raw_fd();
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        Ok(worker)
+    }
+
+    pub fn send(&mut self, bytes: &[u8]) -> Result<(), String> {
+        use std::io::Write;
+        if bytes.len() > 4096 {
+            return Err("Idle command exceeds size limit".into());
+        }
+        let input = self
+            .child
+            .as_mut()
+            .and_then(|child| child.stdin.as_mut())
+            .ok_or("Idle input closed")?;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut remaining = bytes;
+        while !remaining.is_empty() {
+            if Instant::now() >= deadline {
+                return Err("Idle command timed out".into());
+            }
+            match input.write(remaining) {
+                Ok(0) => return Err("Idle input closed".into()),
+                Ok(count) => remaining = &remaining[count..],
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    let mut fd = libc::pollfd {
+                        fd: input.as_raw_fd(),
+                        events: libc::POLLOUT,
+                        revents: 0,
+                    };
+                    if unsafe { libc::poll(&mut fd, 1, 50) } < 0 {
+                        let error = std::io::Error::last_os_error();
+                        if error.kind() != std::io::ErrorKind::Interrupted {
+                            return Err(error.to_string());
+                        }
+                    }
+                }
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        Ok(())
+    }
+
+    pub fn try_wait(&mut self) -> Result<Option<std::process::ExitStatus>, String> {
+        self.child
+            .as_mut()
+            .ok_or("Idle worker already stopped")?
+            .try_wait()
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn locked(&mut self) -> Result<bool, String> {
+        let output = self
+            .child
+            .as_mut()
+            .and_then(|child| child.stdout.as_mut())
+            .ok_or("Idle output closed")?;
+        let deadline = Instant::now() + Duration::from_secs(4);
+        let mut line = Vec::new();
+        loop {
+            if Instant::now() >= deadline {
+                return Err("Idle status timed out".into());
+            }
+            let mut fd = libc::pollfd {
+                fd: output.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            if unsafe { libc::poll(&mut fd, 1, 100) } < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error.to_string());
+            }
+            if fd.revents == 0 {
+                continue;
+            }
+            let mut byte = [0];
+            if output.read(&mut byte).map_err(|e| e.to_string())? == 0 {
+                return Err("Idle output closed".into());
+            }
+            line.push(byte[0]);
+            if line.len() > 4096 {
+                return Err("Idle status exceeds size limit".into());
+            }
+            if byte[0] == b'\n' {
+                if line.ends_with(b"idle-locked=true\n") {
+                    return Ok(true);
+                }
+                if line.ends_with(b"idle-locked=false\n") {
+                    return Ok(false);
+                }
+                line.clear();
+            }
+        }
+    }
+
+    pub fn finish(&mut self) -> Result<std::process::ExitStatus, String> {
+        let child = self.child.as_mut().ok_or("Idle worker already stopped")?;
+        child.stdin.take();
+        let deadline = Instant::now() + Duration::from_secs(7);
+        loop {
+            if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+                self.child.take();
+                return Ok(status);
+            }
+            if Instant::now() >= deadline {
+                let mut child = self.child.take().unwrap();
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+                return Err(
+                    "Idle worker did not stop; left alive to release its session lock".into(),
+                );
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[cfg(test)]
+    pub fn id(&self) -> u32 {
+        self.child.as_ref().unwrap().id()
+    }
+}
+
+impl Drop for IdleChild {
+    fn drop(&mut self) {
+        if self.child.is_some()
+            && let Err(error) = self.finish()
+        {
+            eprintln!("chuhshell: {error}");
+        }
+    }
+}
+
 pub fn run(program: &str, args: &[&str]) -> Result<String, String> {
     run_with_timeout(program, args, Duration::from_secs(4))
 }
@@ -225,6 +389,24 @@ fn read_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn idle_input_backpressure_times_out_without_killing_the_child() {
+        let mut command = Command::new("sleep");
+        command.arg("300");
+        let mut child = IdleChild::spawn(&mut command).unwrap();
+        let bytes = [b'x'; 4096];
+        let error = loop {
+            match child.send(&bytes) {
+                Ok(()) => {}
+                Err(error) => break error,
+            }
+        };
+        assert_eq!(error, "Idle command timed out");
+        assert!(child.try_wait().unwrap().is_none());
+        child.child.as_mut().unwrap().kill().unwrap();
+        child.finish().unwrap();
+    }
+
     #[test]
     fn commands_report_failure_and_timeout() {
         assert_eq!(run("printf", &["hello"]).unwrap(), "hello");

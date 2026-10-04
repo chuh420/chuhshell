@@ -12,6 +12,35 @@ enum Target {
     Local(&'static local::Shortcut),
 }
 
+fn submit_save(
+    target: Target,
+    catalog: Option<niri::Catalog>,
+    value: String,
+) -> impl std::future::Future<Output = Result<(), String>> {
+    crate::storage::run(move || match target {
+        Target::Niri(binding) => catalog
+            .ok_or("Refresh the configuration first".into())
+            .and_then(|catalog| catalog.save(&binding, &value)),
+        Target::Local(shortcut) => local::save(shortcut.id, &value),
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn queue_shutdown_saves(root: &std::path::Path) {
+    let catalog = niri::Catalog::load(root).unwrap();
+    let binding = catalog.bindings[0].clone();
+    drop(submit_save(
+        Target::Niri(binding),
+        Some(catalog),
+        "Mod+Shift+T".into(),
+    ));
+    let shortcut = local::SHORTCUTS
+        .iter()
+        .find(|shortcut| shortcut.id == "launcher.close")
+        .unwrap();
+    drop(submit_save(Target::Local(shortcut), None, "Ctrl+q".into()));
+}
+
 struct Panel {
     root: std::path::PathBuf,
     catalog: RefCell<Option<niri::Catalog>>,
@@ -341,21 +370,10 @@ impl Panel {
         self.recording.set(false);
         self.busy(true);
         self.status("Validating and saving…", false);
-        let (tx, rx) = async_channel::bounded(1);
-        std::thread::spawn(move || {
-            let result = match target {
-                Target::Niri(binding) => catalog
-                    .ok_or("Refresh the configuration first".into())
-                    .and_then(|catalog| catalog.save(&binding, &value)),
-                Target::Local(shortcut) => local::save(shortcut.id, &value),
-            };
-            let _ = tx.send_blocking(result);
-        });
+        let saved = submit_save(target, catalog, value);
         let weak = Rc::downgrade(self);
         glib::MainContext::default().spawn_local(async move {
-            let Ok(result) = rx.recv().await else {
-                return;
-            };
+            let result = saved.await;
             let Some(panel) = weak.upgrade() else {
                 return;
             };

@@ -3,8 +3,8 @@ use std::io::Write;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd};
 use std::sync::mpsc;
 use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_registry, wl_seat, wl_shm,
-    wl_shm_pool, wl_surface, wl_touch,
+    wl_buffer, wl_callback, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_registry,
+    wl_seat, wl_shm, wl_shm_pool, wl_surface, wl_touch,
 };
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
 use wayland_protocols::ext::idle_notify::v1::client::{
@@ -22,7 +22,16 @@ struct Screen {
     size: (u32, u32),
 }
 
+type RetiredScreens = (
+    Vec<Screen>,
+    Vec<(wl_buffer::WlBuffer, wl_surface::WlSurface)>,
+);
+
 struct State {
+    connection: Connection,
+    qh: QueueHandle<Self>,
+    retired: std::collections::HashMap<u64, RetiredScreens>,
+    next_retired: u64,
     buffers: std::cell::RefCell<Vec<(wl_buffer::WlBuffer, wl_surface::WlSurface)>>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
     pointer: Option<wl_pointer::WlPointer>,
@@ -36,91 +45,33 @@ struct State {
     notifications: Vec<ext_idle_notification_v1::ExtIdleNotificationV1>,
     lock: Option<ext_session_lock_v1::ExtSessionLockV1>,
     locked: bool,
-    password_required: bool,
-    input: String,
-    failed: bool,
-    attempts: u32,
-    retry: std::time::Instant,
+    stopping: bool,
+    synced: bool,
     screens: Vec<Screen>,
 }
 
 impl State {
-    fn key(&mut self, key: u32, qh: &QueueHandle<Self>) {
-        if !self.locked {
-            return;
-        }
-        if !self.password_required {
-            self.unlock();
-            return;
-        }
-        if std::time::Instant::now() < self.retry {
-            return;
-        }
-        self.failed = false;
-        match key {
-            28 | 96 => {
-                if self.input == "2121" {
-                    self.unlock();
-                    return;
-                }
-                self.input.clear();
-                self.failed = true;
-                self.attempts = self.attempts.saturating_add(1);
-                self.retry = std::time::Instant::now()
-                    + std::time::Duration::from_secs(u64::from(self.attempts.min(10)));
-            }
-            14 => {
-                self.input.pop();
-            }
-            1 => self.input.clear(),
-            2..=10 if self.input.len() < 64 => self.input.push(char::from(b'1' + (key - 2) as u8)),
-            11 if self.input.len() < 64 => self.input.push('0'),
-            79..=81 if self.input.len() < 64 => {
-                self.input.push(char::from(b'1' + (key - 79) as u8))
-            }
-            75..=77 if self.input.len() < 64 => {
-                self.input.push(char::from(b'4' + (key - 75) as u8))
-            }
-            71..=73 if self.input.len() < 64 => {
-                self.input.push(char::from(b'7' + (key - 71) as u8))
-            }
-            82 if self.input.len() < 64 => self.input.push('0'),
-            _ => {}
-        }
-        self.redraw(qh);
-    }
-
     fn timers(&mut self, settings: Settings, qh: &QueueHandle<Self>) {
         for notification in self.notifications.drain(..) {
             notification.destroy();
         }
         if let (Some(notifier), Some(seat)) = (&self.notifier, &self.seat) {
-            for (lock, timer) in [(false, settings.screensaver), (true, settings.lockscreen)] {
-                if timer.enabled {
-                    self.notifications.push(notifier.get_idle_notification(
-                        timer.minutes.clamp(1, 1440) * 60_000,
-                        seat,
-                        qh,
-                        lock,
-                    ));
-                }
+            let timer = settings.screensaver;
+            if timer.enabled {
+                self.notifications.push(notifier.get_idle_notification(
+                    timer.minutes.clamp(1, 1440) * 60_000,
+                    seat,
+                    qh,
+                    (),
+                ));
             }
         }
     }
 
-    fn show(&mut self, password: bool, qh: &QueueHandle<Self>) {
-        if self.lock.is_some() {
-            if password && !self.password_required {
-                self.password_required = true;
-                self.input.clear();
-                self.redraw(qh);
-            }
+    fn show(&mut self, qh: &QueueHandle<Self>) {
+        if self.stopping || self.lock.is_some() {
             return;
         }
-        self.password_required = password;
-        self.input.clear();
-        self.failed = false;
-        self.attempts = 0;
         self.lock = Some(self.manager.as_ref().unwrap().lock(qh, ()));
         for output in self.outputs.clone() {
             self.add_screen(output, qh);
@@ -150,21 +101,21 @@ impl State {
         if let Some(lock) = self.lock.take() {
             lock.unlock_and_destroy();
         }
-        for screen in self.screens.drain(..) {
-            screen.role.destroy();
-            screen.surface.destroy();
-        }
-        for (buffer, _) in self.buffers.borrow_mut().drain(..) {
-            buffer.destroy();
-        }
+        let serial = self.next_retired;
+        self.next_retired += 1;
+        self.retired.insert(
+            serial,
+            (
+                std::mem::take(&mut self.screens),
+                std::mem::take(&mut *self.buffers.borrow_mut()),
+            ),
+        );
+        self.connection.display().sync(&self.qh, serial);
         self.locked = false;
-        self.input.clear();
     }
 
     fn activity(&mut self) {
-        if !self.password_required {
-            self.unlock();
-        }
+        self.unlock();
     }
 
     fn redraw(&self, qh: &QueueHandle<Self>) {
@@ -191,7 +142,7 @@ impl State {
                 continue;
             }
             if let Err(error) = self.draw(screen, qh) {
-                eprintln!("chuhshell: lock rendering: {error}");
+                eprintln!("chuhshell: screensaver rendering: {error}");
             }
         }
     }
@@ -203,7 +154,7 @@ impl State {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let (width, height) = screen.size;
         if width > 16384 || height > 16384 || u64::from(width) * u64::from(height) > 33_554_432 {
-            return Err("Lock surface exceeds rendering limit".into());
+            return Err("Screensaver surface exceeds rendering limit".into());
         }
         let mut image = gtk::cairo::ImageSurface::create(
             gtk::cairo::Format::ARgb32,
@@ -237,44 +188,12 @@ impl State {
             );
             context.show_text(line)?;
         }
-        if self.password_required {
-            let field_width = 360.0_f64.min(f64::from(width) * 0.8);
-            let field_x = (f64::from(width) - field_width) / 2.0;
-            let field_y = f64::from(height) * 0.82 - 36.0;
-            context.set_source_rgb(31.0 / 255.0, 29.0 / 255.0, 46.0 / 255.0);
-            context.rectangle(field_x, field_y, field_width, 56.0);
-            context.fill_preserve()?;
-            context.set_source_rgb(196.0 / 255.0, 167.0 / 255.0, 231.0 / 255.0);
-            context.set_line_width(1.0);
-            context.stroke()?;
-            context.set_font_size(24.0);
-            let text = if self.input.is_empty() {
-                "Password".to_owned()
-            } else {
-                "•".repeat(self.input.len().min(16))
-            };
-            let extent = context.text_extents(&text)?;
-            context.move_to(
-                (f64::from(width) - extent.x_advance()) / 2.0,
-                field_y + 36.0,
-            );
-            context.show_text(&text)?;
-            if self.failed {
-                context.set_font_size(16.0);
-                context.set_source_rgb(235.0 / 255.0, 111.0 / 255.0, 146.0 / 255.0);
-                let extent = context.text_extents("Incorrect password")?;
-                context.move_to(
-                    (f64::from(width) - extent.x_advance()) / 2.0,
-                    field_y + 84.0,
-                );
-                context.show_text("Incorrect password")?;
-            }
-        }
         drop(context);
         image.flush();
         let stride = image.stride();
         let bytes = image.data()?;
-        let fd = unsafe { libc::memfd_create(c"chuhshell-lock".as_ptr(), libc::MFD_CLOEXEC) };
+        let fd =
+            unsafe { libc::memfd_create(c"chuhshell-screensaver".as_ptr(), libc::MFD_CLOEXEC) };
         if fd < 0 {
             return Err(std::io::Error::last_os_error().into());
         }
@@ -313,6 +232,10 @@ fn connect()
     let qh = queue.handle();
     connection.display().get_registry(&qh, ());
     let mut state = State {
+        connection: connection.clone(),
+        qh: qh.clone(),
+        retired: Default::default(),
+        next_retired: 0,
         buffers: Default::default(),
         keyboard: None,
         pointer: None,
@@ -326,11 +249,8 @@ fn connect()
         notifications: Vec::new(),
         lock: None,
         locked: false,
-        password_required: false,
-        input: String::new(),
-        failed: false,
-        attempts: 0,
-        retry: std::time::Instant::now(),
+        stopping: false,
+        synced: false,
         screens: Vec::new(),
     };
     queue.roundtrip(&mut state)?;
@@ -369,20 +289,49 @@ pub(super) fn run(
     let (connection, mut queue, mut state) = connect()?;
     let qh = queue.handle();
     state.timers(settings, &qh);
+    let mut deadline = None;
+    let mut sync_sent = false;
+    let mut warned = false;
     loop {
         queue.dispatch_pending(&mut state)?;
-        loop {
+        state.stopping |= super::worker::stopping();
+        for _ in 0..16 {
             match receiver.try_recv() {
                 Ok(Command::Settings(settings)) => state.timers(settings, &qh),
-                Ok(Command::Show(lock)) => state.show(lock, &qh),
+                Ok(Command::Show) => state.show(&qh),
+                Ok(Command::Stop) => state.stopping = true,
                 #[cfg(test)]
                 Ok(Command::ReleaseScreensaver) => state.activity(),
-                #[cfg(test)]
                 Ok(Command::Check(sender)) => {
                     let _ = sender.send(state.locked);
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    state.stopping = true;
+                    break;
+                }
+            }
+        }
+        if state.stopping {
+            let limit = deadline.get_or_insert_with(|| {
+                std::time::Instant::now() + std::time::Duration::from_secs(5)
+            });
+            for notification in state.notifications.drain(..) {
+                notification.destroy();
+            }
+            state.unlock();
+            if state.lock.is_none() && state.retired.is_empty() && !sync_sent {
+                connection.display().sync(&qh, ());
+                sync_sent = true;
+            }
+            if state.synced {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= *limit && !warned {
+                eprintln!(
+                    "chuhshell: compositor is slow to release screensaver; lock client will keep waiting"
+                );
+                warned = true;
             }
         }
         let flushed = completed_io(connection.flush())?;
@@ -401,6 +350,42 @@ pub(super) fn run(
                 return Err(std::io::Error::last_os_error().into());
             }
         }
+    }
+}
+
+impl Dispatch<wl_callback::WlCallback, u64> for State {
+    fn event(
+        state: &mut Self,
+        _: &wl_callback::WlCallback,
+        _: wl_callback::Event,
+        serial: &u64,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let Some((screens, buffers)) = state.retired.remove(serial) {
+            for screen in screens {
+                screen.role.destroy();
+                screen.surface.destroy();
+            }
+            for (buffer, _) in buffers {
+                if buffer.is_alive() {
+                    buffer.destroy();
+                }
+            }
+        }
+    }
+}
+
+impl Dispatch<wl_callback::WlCallback, ()> for State {
+    fn event(
+        state: &mut Self,
+        _: &wl_callback::WlCallback,
+        _: wl_callback::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        state.synced = true;
     }
 }
 
@@ -515,17 +500,17 @@ impl Dispatch<wl_seat::WlSeat, ()> for State {
     }
 }
 
-impl Dispatch<ext_idle_notification_v1::ExtIdleNotificationV1, bool> for State {
+impl Dispatch<ext_idle_notification_v1::ExtIdleNotificationV1, ()> for State {
     fn event(
         state: &mut Self,
         _: &ext_idle_notification_v1::ExtIdleNotificationV1,
         event: ext_idle_notification_v1::Event,
-        lock: &bool,
+        _: &(),
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
         if matches!(event, ext_idle_notification_v1::Event::Idled) {
-            state.show(*lock, qh);
+            state.show(qh);
         } else if matches!(event, ext_idle_notification_v1::Event::Resumed) {
             state.activity();
         }
@@ -535,7 +520,7 @@ impl Dispatch<ext_idle_notification_v1::ExtIdleNotificationV1, bool> for State {
 impl Dispatch<ext_session_lock_v1::ExtSessionLockV1, ()> for State {
     fn event(
         state: &mut Self,
-        lock: &ext_session_lock_v1::ExtSessionLockV1,
+        _: &ext_session_lock_v1::ExtSessionLockV1,
         event: ext_session_lock_v1::Event,
         _: &(),
         _: &Connection,
@@ -544,9 +529,13 @@ impl Dispatch<ext_session_lock_v1::ExtSessionLockV1, ()> for State {
         match event {
             ext_session_lock_v1::Event::Locked => state.locked = true,
             ext_session_lock_v1::Event::Finished => {
-                lock.destroy();
-                state.lock = None;
-                state.locked = false;
+                if state.locked {
+                    state.unlock();
+                    return;
+                }
+                if let Some(lock) = state.lock.take() {
+                    lock.destroy();
+                }
                 eprintln!("chuhshell: compositor refused session lock");
                 for (buffer, _) in state.buffers.borrow_mut().drain(..) {
                     buffer.destroy();
@@ -592,15 +581,14 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
         event: wl_keyboard::Event,
         _: &(),
         _: &Connection,
-        qh: &QueueHandle<Self>,
+        _: &QueueHandle<Self>,
     ) {
         if let wl_keyboard::Event::Key {
-            key,
             state: wayland_client::WEnum::Value(wl_keyboard::KeyState::Pressed),
             ..
         } = event
         {
-            state.key(key, qh);
+            state.activity();
         }
     }
 }
@@ -683,10 +671,10 @@ impl Dispatch<wl_touch::WlTouch, ()> for State {
 
 #[cfg(test)]
 pub(super) fn regression_checks() {
-    let (connection, mut queue, mut state) = connect().unwrap();
+    let (_connection, mut queue, mut state) = connect().unwrap();
     let qh = queue.handle();
     queue.roundtrip(&mut state).unwrap();
-    state.show(false, &qh);
+    state.show(&qh);
     for _ in 0..3 {
         queue.roundtrip(&mut state).unwrap();
     }
@@ -695,39 +683,7 @@ pub(super) fn regression_checks() {
     assert!(state.screens.iter().all(|screen| screen.size.0 > 0));
     crate::ui_tests::capture("screensaver");
     state.timers(Settings::default(), &qh);
-    assert_eq!(state.notifications.len(), 2);
-    let notification = state.notifications[1].clone();
-    <State as Dispatch<ext_idle_notification_v1::ExtIdleNotificationV1, bool>>::event(
-        &mut state,
-        &notification,
-        ext_idle_notification_v1::Event::Idled,
-        &true,
-        &connection,
-        &qh,
-    );
-    state.activity();
-    assert!(state.locked);
-    assert!(state.password_required);
-    queue.roundtrip(&mut state).unwrap();
-    crate::ui_tests::capture("lockscreen");
-    let press = |state: &mut State, key| state.key(key, &qh);
-    press(&mut state, 28);
-    assert!(state.locked);
-    assert!(state.failed);
-    state.retry = std::time::Instant::now();
-    for key in [3, 2, 3, 2] {
-        press(&mut state, key);
-    }
-    assert_eq!(state.input, "2121");
-    press(&mut state, 28);
-    assert!(!state.locked);
-    assert!(state.lock.is_none());
-    queue.roundtrip(&mut state).unwrap();
-    state.show(false, &qh);
-    for _ in 0..3 {
-        queue.roundtrip(&mut state).unwrap();
-    }
-    assert!(state.locked);
+    assert_eq!(state.notifications.len(), 1);
     state.activity();
     assert!(!state.locked);
     queue.roundtrip(&mut state).unwrap();
@@ -736,10 +692,6 @@ pub(super) fn regression_checks() {
         screensaver: super::Timer {
             enabled: false,
             minutes: 15,
-        },
-        lockscreen: super::Timer {
-            enabled: false,
-            minutes: 40,
         },
     };
     let worker =
@@ -764,13 +716,143 @@ pub(super) fn regression_checks() {
         }
     };
     for _ in 0..20 {
-        sender.send(Command::Show(false)).unwrap();
+        sender.send(Command::Show).unwrap();
         wait_locked(true);
         sender.send(Command::ReleaseScreensaver).unwrap();
         wait_locked(false);
     }
+    sender.send(Command::Show).unwrap();
+    wait_locked(true);
     drop(sender);
     worker.join().unwrap().unwrap();
+    state.show(&qh);
+    for _ in 0..3 {
+        queue.roundtrip(&mut state).unwrap();
+    }
+    assert!(state.locked, "Disconnected worker left compositor locked");
+    state.unlock();
+    queue.roundtrip(&mut state).unwrap();
+    let (sender, receiver) = mpsc::sync_channel(16);
+    let worker = std::thread::spawn(move || run(settings, receiver).map_err(|e| e.to_string()));
+    sender.send(Command::Show).unwrap();
+    sender.send(Command::Stop).unwrap();
+    worker.join().unwrap().unwrap();
+    state.show(&qh);
+    for _ in 0..3 {
+        queue.roundtrip(&mut state).unwrap();
+    }
+    assert!(
+        state.locked,
+        "Stopping during lock acquisition left compositor locked"
+    );
+    let (_, mut refused_queue, mut refused) = connect().unwrap();
+    refused.show(&refused_queue.handle());
+    for _ in 0..3 {
+        refused_queue.roundtrip(&mut refused).unwrap();
+    }
+    assert!(refused.lock.is_none());
+    assert!(!refused.locked);
+    let lock = state.lock.clone().unwrap();
+    <State as Dispatch<ext_session_lock_v1::ExtSessionLockV1, ()>>::event(
+        &mut state,
+        &lock,
+        ext_session_lock_v1::Event::Finished,
+        &(),
+        &_connection,
+        &qh,
+    );
+    queue.roundtrip(&mut state).unwrap();
+    assert!(!state.locked);
+    assert!(state.lock.is_none());
+    state.show(&qh);
+    for _ in 0..3 {
+        queue.roundtrip(&mut state).unwrap();
+    }
+    assert!(
+        state.locked,
+        "Finished after Locked did not release session lock"
+    );
+    state.unlock();
+    queue.roundtrip(&mut state).unwrap();
+    queue.roundtrip(&mut state).unwrap();
+    for signal in [libc::SIGKILL, libc::SIGABRT] {
+        let ready = crate::paths::state().join(format!("idle-crash-ready-{signal}"));
+        std::fs::create_dir_all(ready.parent().unwrap()).unwrap();
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "idle::tests::crash_controller",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("CHUHSHELL_IDLE_TEST_READY", &ready)
+            .stdout(std::process::Stdio::null());
+        let mut controller = crate::process::ManagedChild::spawn(&mut command).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !ready.exists() {
+            assert!(
+                controller.0.try_wait().unwrap().is_none(),
+                "Crash controller failed"
+            );
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Crash controller did not lock"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let helper_pid: i32 = std::fs::read_to_string(&ready).unwrap().parse().unwrap();
+        assert_eq!(unsafe { libc::kill(controller.0.id() as i32, signal) }, 0);
+        controller.0.wait().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            state.show(&qh);
+            for _ in 0..3 {
+                queue.roundtrip(&mut state).unwrap();
+            }
+            if state.locked {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Parent crash left compositor locked"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        state.unlock();
+        queue.roundtrip(&mut state).unwrap();
+        queue.roundtrip(&mut state).unwrap();
+        while let Ok(stat) = std::fs::read_to_string(format!("/proc/{helper_pid}/stat")) {
+            if stat
+                .rsplit_once(')')
+                .unwrap()
+                .1
+                .trim_start()
+                .starts_with('Z')
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Orphaned lock client did not exit"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        std::fs::remove_file(ready).unwrap();
+    }
+    let mut child = super::worker::spawn().unwrap();
+    super::worker::show_and_check(&mut child);
+    assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGTERM) }, 0);
+    assert!(child.finish().unwrap().success());
+    state.show(&qh);
+    for _ in 0..3 {
+        queue.roundtrip(&mut state).unwrap();
+    }
+    assert!(state.locked, "SIGTERM left compositor locked");
+    state.unlock();
+    queue.roundtrip(&mut state).unwrap();
+    queue.roundtrip(&mut state).unwrap();
 }
 
 #[cfg(test)]

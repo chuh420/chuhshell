@@ -43,7 +43,6 @@ fn valid_command(command: &str) -> bool {
     matches!(
         command,
         "screensaver"
-            | "lock"
             | "wallpaper"
             | "clipboard"
             | "menu"
@@ -56,6 +55,9 @@ fn valid_command(command: &str) -> bool {
 
 fn main() -> glib::ExitCode {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
+    if arguments.as_slice() == ["--idle-worker"] {
+        return idle::worker_main();
+    }
     if arguments.first().is_some_and(|s| s == "installation-plan") {
         let result = (|| {
             let destination = arguments.get(1).ok_or("Missing installation destination")?;
@@ -105,7 +107,7 @@ fn main() -> glib::ExitCode {
             }
             "--help" | "-h" => {
                 println!(
-                    "chuhshell [menu|screensaver|lock|wallpaper|clipboard|launcher|manage|notifications|background-apps|doctor [--json]]\nMedia commands: volume-up, volume-down, volume-mute, microphone-mute, brightness-up, brightness-down, brightness-key-up, brightness-key-down, brightness-scroll-up, brightness-scroll-down"
+                    "chuhshell [menu|screensaver|wallpaper|clipboard|launcher|manage|notifications|background-apps|doctor [--json]]\nMedia commands: volume-up, volume-down, volume-mute, microphone-mute, brightness-up, brightness-down, brightness-key-up, brightness-key-down, brightness-scroll-up, brightness-scroll-down"
                 );
                 return glib::ExitCode::SUCCESS;
             }
@@ -129,22 +131,28 @@ fn main() -> glib::ExitCode {
         .application_id("dev.chuh.chuhshell")
         .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE)
         .build();
-    app.connect_startup(|app| {
-        css::install();
-        let guard = app.hold();
-        app.connect_shutdown(move |_| {
-            let _ = &guard;
-            crate::storage::shutdown();
-            process::shutdown();
-        });
-        for signal in [libc::SIGTERM, libc::SIGINT] {
-            let weak = app.downgrade();
-            glib_unix::unix_signal_add_local(signal, move || {
-                if let Some(app) = weak.upgrade() {
-                    app.quit();
-                }
-                glib::ControlFlow::Break
+    let state = Rc::new(AppState::default());
+    app.connect_startup({
+        let state = Rc::clone(&state);
+        move |app| {
+            css::install();
+            let guard = app.hold();
+            let state = Rc::clone(&state);
+            app.connect_shutdown(move |_| {
+                let _ = &guard;
+                idle::shutdown(&state);
+                crate::storage::shutdown();
+                process::shutdown();
             });
+            for signal in [libc::SIGTERM, libc::SIGINT] {
+                let weak = app.downgrade();
+                glib_unix::unix_signal_add_local(signal, move || {
+                    if let Some(app) = weak.upgrade() {
+                        app.quit();
+                    }
+                    glib::ControlFlow::Break
+                });
+            }
         }
     });
     let center = notification_center::NotificationCenter::new(&app);
@@ -152,7 +160,6 @@ fn main() -> glib::ExitCode {
         let center = Rc::clone(&center);
         move |_| center.start()
     });
-    let state = Rc::new(AppState::default());
     app.connect_command_line(move |app, command_line| {
         let arguments = command_line.arguments();
         let command = arguments.get(1).map(|s| s.to_string_lossy().into_owned());
@@ -192,8 +199,8 @@ fn main() -> glib::ExitCode {
             });
         } else {
             match command.as_deref() {
-                Some("screensaver" | "lock") => {
-                    if let Err(error) = idle::show(&state, command.as_deref() == Some("lock")) {
+                Some("screensaver") => {
+                    if let Err(error) = idle::show(&state) {
                         command_line.printerr_literal(&format!("chuhshell: {error}\n"));
                         return glib::ExitCode::FAILURE;
                     }

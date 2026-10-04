@@ -12,7 +12,7 @@ ExecStart=/usr/bin/chuhshell
 Restart=on-failure
 RestartSec=2
 TimeoutStartSec=15
-TimeoutStopSec=5
+TimeoutStopSec=300
 KillMode=process
 
 [Install]

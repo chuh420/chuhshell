@@ -1,7 +1,6 @@
 use gtk::prelude::*;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::OnceLock;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Task {
@@ -14,11 +13,6 @@ enum Command {
     Add(String),
     Toggle(usize),
     Delete(usize),
-}
-
-struct Request {
-    command: Command,
-    reply: async_channel::Sender<Result<Vec<Task>, String>>,
 }
 
 pub(crate) fn path() -> PathBuf {
@@ -80,18 +74,11 @@ fn update(path: &Path, command: Command) -> Result<Vec<Task>, String> {
     Ok(tasks)
 }
 
-fn sender() -> &'static async_channel::Sender<Request> {
-    static SENDER: OnceLock<async_channel::Sender<Request>> = OnceLock::new();
-    SENDER.get_or_init(|| {
-        let (sender, receiver) = async_channel::bounded::<Request>(8);
-        std::thread::spawn(move || {
-            while let Ok(request) = receiver.recv_blocking() {
-                let result = update(&path(), request.command);
-                let _ = request.reply.send_blocking(result);
-            }
-        });
-        sender
-    })
+fn submit(
+    path: PathBuf,
+    command: Command,
+) -> impl std::future::Future<Output = Result<Vec<Task>, String>> {
+    crate::storage::run(move || update(&path, command))
 }
 
 struct TodoView {
@@ -108,16 +95,10 @@ impl TodoView {
             return;
         };
         root.set_sensitive(false);
+        let saved = submit(path(), command);
         let view = self.clone();
         glib::MainContext::default().spawn_local(async move {
-            let (reply, receiver) = async_channel::bounded(1);
-            let result = match sender().send(Request { command, reply }).await {
-                Ok(()) => receiver
-                    .recv()
-                    .await
-                    .unwrap_or_else(|_| Err("Task service stopped".into())),
-                Err(_) => Err("Task service stopped".into()),
-            };
+            let result = saved.await;
             let (Some(root), Some(message)) = (view.root.upgrade(), view.message.upgrade()) else {
                 return;
             };
@@ -250,6 +231,73 @@ pub fn view() -> gtk::Box {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "isolated shutdown subprocess"]
+    fn shutdown_child() {
+        let directory =
+            std::path::PathBuf::from(std::env::var_os("CHUHSHELL_SHUTDOWN_TEST").unwrap());
+        let (release, wait) = std::sync::mpsc::channel();
+        let (started, ready) = std::sync::mpsc::channel();
+        drop(crate::storage::run(move || {
+            started.send(()).unwrap();
+            wait.recv().unwrap();
+            Ok(())
+        }));
+        ready.recv().unwrap();
+        drop(submit(
+            directory.join("todo.json"),
+            Command::Add("Saved before exit".into()),
+        ));
+        crate::keybindings::queue_shutdown_saves(&directory.join("config.kdl"));
+        crate::reminder::queue_shutdown_delivery(directory.join("reminders.json"));
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            release.send(()).unwrap();
+        });
+        crate::storage::shutdown();
+        crate::process::shutdown();
+    }
+
+    #[test]
+    fn shutdown_drains_todo_and_both_keybinding_writes_without_a_main_loop() {
+        let directory =
+            std::env::temp_dir().join(format!("chuhshell-shutdown-{}", std::process::id()));
+        let config_directory = directory.join("config/chuhshell");
+        std::fs::create_dir_all(&config_directory).unwrap();
+        std::fs::write(
+            directory.join("config.kdl"),
+            "binds { Mod+T { spawn \"foot\"; }; }\n",
+        )
+        .unwrap();
+        std::fs::write(config_directory.join("config.json"), b"{}").unwrap();
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "todo::tests::shutdown_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("CHUHSHELL_SHUTDOWN_TEST", &directory)
+            .env("XDG_CONFIG_HOME", directory.join("config"));
+        crate::process::run_command(&mut command, std::time::Duration::from_secs(10)).unwrap();
+        assert_eq!(
+            load(&directory.join("todo.json")).unwrap()[0].text,
+            "Saved before exit"
+        );
+        assert!(
+            std::fs::read_to_string(directory.join("config.kdl"))
+                .unwrap()
+                .contains("Mod+Shift+T")
+        );
+        let config: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(config_directory.join("config.json")).unwrap())
+                .unwrap();
+        assert_eq!(config["keybindings"]["launcher.close"], "Ctrl+q");
+        crate::reminder::check_shutdown_delivery(&directory.join("reminders.json"));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn task_files_are_bounded_before_parsing() {

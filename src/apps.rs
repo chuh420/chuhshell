@@ -23,17 +23,91 @@ fn config_path() -> PathBuf {
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct LauncherPreferences {
     pub pinned: std::collections::BTreeSet<String>,
     pub alphabetical: bool,
 }
 
+const LAUNCHER_DATA_LIMIT: usize = 1024 * 1024;
+
+fn read_optional(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
+    match crate::storage::read_limited(path, LAUNCHER_DATA_LIMIT) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(std::io::Error::new(
+            error.kind(),
+            format!("{}: {error}", path.display()),
+        )),
+    }
+}
+
+fn read_json<T: serde::de::DeserializeOwned + Default>(path: &Path) -> std::io::Result<T> {
+    parse_json(path, read_optional(path)?.as_deref())
+}
+
+fn parse_json<T: serde::de::DeserializeOwned + Default>(
+    path: &Path,
+    bytes: Option<&[u8]>,
+) -> std::io::Result<T> {
+    match bytes {
+        Some(bytes) => serde_json::from_slice(bytes).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{}: {error}", path.display()),
+            )
+        }),
+        None => Ok(T::default()),
+    }
+}
+
+fn display_data<T: Default>(result: std::io::Result<T>) -> T {
+    result.unwrap_or_else(|error| {
+        eprintln!("chuhshell: launcher data unavailable; saving requires a valid file: {error}");
+        T::default()
+    })
+}
+
+fn write_bounded(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if bytes.len() > LAUNCHER_DATA_LIMIT {
+        return Err(std::io::Error::other(format!(
+            "{}: Launcher data exceeds the size limit",
+            path.display()
+        )));
+    }
+    crate::storage::atomic_write(path, bytes)
+}
+
+fn write_expected(path: &Path, expected: Option<&[u8]>, bytes: &[u8]) -> std::io::Result<()> {
+    if read_optional(path)?.as_deref() != expected {
+        return Err(std::io::Error::other(format!(
+            "{}: File changed before saving; retry the operation",
+            path.display()
+        )));
+    }
+    write_bounded(path, bytes)
+}
+
 fn load_launcher_preferences() -> LauncherPreferences {
-    crate::storage::read_limited(&config_path().with_file_name("launcher.json"), 1024 * 1024)
-        .ok()
-        .and_then(|contents| serde_json::from_slice(&contents).ok())
-        .unwrap_or_default()
+    display_data(read_json(&config_path().with_file_name("launcher.json")))
+}
+
+fn change_preferences_at(
+    path: &Path,
+    change: PreferenceChange,
+) -> std::io::Result<LauncherPreferences> {
+    let expected = read_optional(path)?;
+    let mut next: LauncherPreferences = parse_json(path, expected.as_deref())?;
+    match change {
+        PreferenceChange::Pin(id) => {
+            if !next.pinned.remove(&id) {
+                next.pinned.insert(id);
+            }
+        }
+        PreferenceChange::Sort => next.alphabetical = !next.alphabetical,
+    }
+    write_expected(path, expected.as_deref(), &serde_json::to_vec(&next)?)?;
+    Ok(next)
 }
 
 static PREFERENCES: OnceLock<Mutex<LauncherPreferences>> = OnceLock::new();
@@ -59,26 +133,11 @@ pub fn change_launcher_preferences(
             .get_or_init(|| Mutex::new(load_launcher_preferences()))
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let mut next = preferences.clone();
-        match change {
-            PreferenceChange::Pin(id) => {
-                if !next.pinned.remove(&id) {
-                    next.pinned.insert(id);
-                }
-            }
-            PreferenceChange::Sort => next.alphabetical = !next.alphabetical,
-        }
-        write_launcher_preferences(&next).map_err(|e| e.to_string())?;
+        let next = change_preferences_at(&config_path().with_file_name("launcher.json"), change)
+            .map_err(|e| e.to_string())?;
         *preferences = next.clone();
         Ok(next)
     })
-}
-
-pub fn write_launcher_preferences(preferences: &LauncherPreferences) -> std::io::Result<()> {
-    crate::storage::atomic_write(
-        &config_path().with_file_name("launcher.json"),
-        &serde_json::to_vec(preferences)?,
-    )
 }
 
 fn launch_counts_path() -> PathBuf {
@@ -86,10 +145,7 @@ fn launch_counts_path() -> PathBuf {
 }
 
 pub fn read_launch_counts() -> HashMap<String, u64> {
-    crate::storage::read_text(&launch_counts_path(), 1024 * 1024)
-        .ok()
-        .and_then(|contents| serde_json::from_str(&contents).ok())
-        .unwrap_or_default()
+    display_data(read_json(&launch_counts_path()))
 }
 
 pub fn record_launch(counts: &mut HashMap<String, u64>, id: &str) -> std::io::Result<()> {
@@ -101,13 +157,13 @@ fn record_launch_at(
     counts: &mut HashMap<String, u64>,
     id: &str,
 ) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let count = counts.entry(id.to_owned()).or_default();
+    let expected = read_optional(path)?;
+    let mut next: HashMap<String, u64> = parse_json(path, expected.as_deref())?;
+    let count = next.entry(id.to_owned()).or_default();
     *count = count.saturating_add(1);
-    let contents = serde_json::to_vec(counts)?;
-    crate::storage::atomic_write(path, &contents)
+    write_expected(path, expected.as_deref(), &serde_json::to_vec(&next)?)?;
+    *counts = next;
+    Ok(())
 }
 
 pub fn toggled_hidden(
@@ -116,48 +172,55 @@ pub fn toggled_hidden(
     persisted: HashSet<String>,
 ) -> Option<HashSet<String>> {
     let target = apps.iter().find(|app| app.id == id)?;
-    let known: HashSet<&str> = apps.iter().map(|app| app.id.as_str()).collect();
-    let mut hidden: HashSet<String> = apps
-        .iter()
-        .filter(|app| {
-            if app.id == id {
-                !target.hidden
-            } else {
-                app.hidden
-            }
-        })
-        .map(|app| app.id.clone())
-        .collect();
-    hidden.extend(
-        persisted
-            .into_iter()
-            .filter(|id| !known.contains(id.as_str())),
-    );
+    let mut hidden = persisted;
+    if target.hidden {
+        hidden.remove(id);
+    } else {
+        hidden.insert(id.to_owned());
+    }
     Some(hidden)
 }
 
-pub fn read_hidden() -> HashSet<String> {
-    crate::storage::read_text(&config_path(), 1024 * 1024)
-        .unwrap_or_default()
+fn read_hidden_at(path: &Path) -> std::io::Result<HashSet<String>> {
+    parse_hidden(path, read_optional(path)?.unwrap_or_default())
+}
+
+fn parse_hidden(path: &Path, bytes: Vec<u8>) -> std::io::Result<HashSet<String>> {
+    let contents = String::from_utf8(bytes).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{}: {error}", path.display()),
+        )
+    })?;
+    Ok(contents
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .map(str::to_owned)
-        .collect()
+        .collect())
 }
 
-pub fn write_hidden(hidden: &HashSet<String>) -> std::io::Result<()> {
-    let path = config_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let mut ids: Vec<_> = hidden.iter().collect();
+pub fn read_hidden() -> HashSet<String> {
+    display_data(read_hidden_at(&config_path()))
+}
+
+fn change_hidden_at(path: &Path, apps: &[AppEntry], id: &str) -> std::io::Result<bool> {
+    let expected = read_optional(path)?;
+    let persisted = parse_hidden(path, expected.clone().unwrap_or_default())?;
+    let hidden = toggled_hidden(apps, id, persisted)
+        .ok_or_else(|| std::io::Error::other("Application no longer exists"))?;
+    let mut ids: Vec<_> = hidden.iter().map(String::as_str).collect();
     ids.sort();
-    let mut body = ids.into_iter().cloned().collect::<Vec<_>>().join("\n");
+    let mut body = ids.join("\n");
     if !body.is_empty() {
         body.push('\n');
     }
-    crate::storage::atomic_write(&path, body.as_bytes())
+    write_expected(path, expected.as_deref(), body.as_bytes())?;
+    Ok(hidden.contains(id))
+}
+
+pub fn change_hidden(apps: &[AppEntry], id: &str) -> std::io::Result<bool> {
+    change_hidden_at(&config_path(), apps, id)
 }
 
 pub fn parse_entry(id: &str, contents: &str, hidden: bool) -> Option<AppEntry> {
@@ -571,12 +634,119 @@ Exec=/usr/bin/firefox %u
     }
 
     #[test]
+    fn launcher_errors_preserve_all_persisted_files() {
+        let directory =
+            std::env::temp_dir().join(format!("chuhshell-launcher-errors-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let apps = vec![parse_entry("firefox.desktop", FIREFOX, false).unwrap()];
+        for bytes in [
+            b"{broken".to_vec(),
+            vec![b'x'; LAUNCHER_DATA_LIMIT + 1],
+            vec![0xff],
+        ] {
+            for name in ["launcher.json", "launch-counts.json", "hidden-apps"] {
+                let path = directory.join(name);
+                fs::write(&path, &bytes).unwrap();
+                let mut counts = HashMap::from([("existing".to_owned(), 7)]);
+                let result = match name {
+                    "launcher.json" => {
+                        change_preferences_at(&path, PreferenceChange::Sort).map(|_| ())
+                    }
+                    "launch-counts.json" => record_launch_at(&path, &mut counts, "firefox.desktop"),
+                    _ => change_hidden_at(&path, &apps, "firefox.desktop").map(|_| ()),
+                };
+                if name == "hidden-apps" && bytes == b"{broken" {
+                    assert!(result.is_ok());
+                    continue;
+                }
+                assert!(result.is_err(), "{name}");
+                assert_eq!(fs::read(&path).unwrap(), bytes);
+                assert_eq!(counts, HashMap::from([("existing".to_owned(), 7)]));
+            }
+        }
+        let path = directory.join("unreadable");
+        fs::create_dir(&path).unwrap();
+        assert!(change_preferences_at(&path, PreferenceChange::Sort).is_err());
+        assert!(record_launch_at(&path, &mut HashMap::new(), "app").is_err());
+        assert!(change_hidden_at(&path, &apps, "firefox.desktop").is_err());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn launcher_changes_use_current_disk_data_and_bound_growth() {
+        let directory =
+            std::env::temp_dir().join(format!("chuhshell-launcher-current-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("launcher.json");
+        let first = change_preferences_at(&path, PreferenceChange::Pin("first".into())).unwrap();
+        assert!(first.pinned.contains("first"));
+        fs::write(&path, br#"{"pinned":["external"],"alphabetical":true}"#).unwrap();
+        let updated = change_preferences_at(&path, PreferenceChange::Pin("second".into())).unwrap();
+        assert!(updated.alphabetical);
+        assert_eq!(
+            updated.pinned,
+            ["external".to_owned(), "second".to_owned()]
+                .into_iter()
+                .collect()
+        );
+        let before = fs::read(&path).unwrap();
+        assert!(
+            change_preferences_at(
+                &path,
+                PreferenceChange::Pin("x".repeat(LAUNCHER_DATA_LIMIT))
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let path = directory.join("counts.json");
+        fs::write(&path, br#"{"external":9,"firefox.desktop":4}"#).unwrap();
+        let mut counts = HashMap::from([("stale".to_owned(), 2)]);
+        record_launch_at(&path, &mut counts, "firefox.desktop").unwrap();
+        assert_eq!(counts.get("external"), Some(&9));
+        assert_eq!(counts.get("firefox.desktop"), Some(&5));
+        assert!(!counts.contains_key("stale"));
+        let path = directory.join("hidden-apps");
+        fs::write(&path, "external.desktop\n").unwrap();
+        let apps = vec![parse_entry("firefox.desktop", FIREFOX, false).unwrap()];
+        assert!(change_hidden_at(&path, &apps, "firefox.desktop").unwrap());
+        assert!(read_hidden_at(&path).unwrap().contains("external.desktop"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn stale_writes_and_growth_leave_launcher_files_unchanged() {
+        let directory =
+            std::env::temp_dir().join(format!("chuhshell-launcher-bounds-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("launcher.json");
+        fs::write(&path, b"{}").unwrap();
+        let expected = read_optional(&path).unwrap();
+        fs::write(&path, b"{\"alphabetical\":true}").unwrap();
+        let before = fs::read(&path).unwrap();
+        assert!(write_expected(&path, expected.as_deref(), b"{}").is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let path = directory.join("counts.json");
+        fs::write(&path, b"{}").unwrap();
+        let mut counts = HashMap::new();
+        assert!(record_launch_at(&path, &mut counts, &"x".repeat(LAUNCHER_DATA_LIMIT)).is_err());
+        assert!(counts.is_empty());
+        assert_eq!(fs::read(&path).unwrap(), b"{}");
+        let path = directory.join("hidden-apps");
+        let mut app = parse_entry("firefox.desktop", FIREFOX, false).unwrap();
+        app.id = "x".repeat(LAUNCHER_DATA_LIMIT);
+        assert!(change_hidden_at(&path, &[app.clone()], &app.id).is_err());
+        assert!(!path.exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn launch_counts_survive_writes_and_saturate() {
         let path = std::env::temp_dir().join(format!(
             "chuhshell-launch-counts-{}.json",
             std::process::id()
         ));
         let mut counts = HashMap::from([("firefox.desktop".to_owned(), u64::MAX - 1)]);
+        crate::storage::atomic_write(&path, &serde_json::to_vec(&counts).unwrap()).unwrap();
         record_launch_at(&path, &mut counts, "firefox.desktop").expect("save launch count");
         record_launch_at(&path, &mut counts, "firefox.desktop").expect("save saturated count");
         record_launch_at(&path, &mut counts, "foot.desktop").expect("save another app");

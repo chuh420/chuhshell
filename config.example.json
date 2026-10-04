@@ -14,10 +14,6 @@
     "screensaver": {
       "enabled": true,
       "minutes": 15
-    },
-    "lockscreen": {
-      "enabled": true,
-      "minutes": 40
     }
   }
 }

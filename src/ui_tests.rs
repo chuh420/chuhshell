@@ -183,6 +183,8 @@ fn ui_regressions() {
     pump(100);
     crate::launcher::profile(&app);
     soak(&app, &state, &center);
+    crate::idle::shutdown(&state);
+    crate::storage::shutdown();
     crate::process::shutdown();
     for (_, window) in state.bars.borrow().iter() {
         window.close();

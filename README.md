@@ -105,6 +105,8 @@ optional headless modes:
 
 for a local arch package, run `python scripts/package-source.py /tmp/chuhshell-package`, then `makepkg` in that directory. this generates the source archive and checksum without installing or restarting the shell.
 
-idle settings live under trigger → idle, with separate enabled flags and minute timers for screensaver (15 minutes) and lockscreen (40 minutes). system → screensaver / lock starts them immediately. both use the delta corps priest 1 figlet artwork; the lockscreen accepts pin `2121` followed by enter. wayland session-lock and idle-notify support are required.
+idle settings live under trigger → idle, with an enabled flag and minute timer for screensaver (15 minutes). system → screensaver starts it immediately. it uses the delta corps priest 1 figlet artwork and dismisses on input. wayland session-lock and idle-notify support are required. a separate lock client releases the screensaver on normal shutdown or when the main shell crashes. killing the lock client itself can leave the session locked.
 
-trigger → reminder schedules one-time notifications with text and a local date/time. upcoming reminders appear below the form and can be deleted. reminders are saved in `$XDG_DATA_HOME/chuhshell/reminders.json` and removed when delivered; overdue reminders arrive when the shell starts again.
+trigger → reminder schedules one-time notifications with text and a local date/time. upcoming reminders appear below the form and can be deleted. reminders are saved in `$XDG_DATA_HOME/chuhshell/reminders.json` and kept pending until the notification center accepts them. pending and overdue reminders arrive after restart; a crash before acknowledgement may show a reminder again.
+
+todo and keybinding writes share the settings queue and finish before normal shutdown. the user service allows up to five minutes to drain accepted writes.

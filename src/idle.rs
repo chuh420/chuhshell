@@ -5,6 +5,7 @@ use std::rc::Rc;
 use std::sync::mpsc;
 
 mod wayland;
+mod worker;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -22,31 +23,18 @@ impl Default for Timer {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
     pub screensaver: Timer,
-    pub lockscreen: Timer,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            screensaver: Timer::default(),
-            lockscreen: Timer {
-                enabled: true,
-                minutes: 40,
-            },
-        }
-    }
 }
 
 pub(super) enum Command {
     Settings(Settings),
-    Show(bool),
+    Show,
+    Stop,
     #[cfg(test)]
     ReleaseScreensaver,
-    #[cfg(test)]
     Check(mpsc::Sender<bool>),
 }
 
@@ -55,6 +43,17 @@ pub struct Service {
     saving: std::cell::Cell<bool>,
     error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     sender: mpsc::SyncSender<Command>,
+    worker: RefCell<Option<std::thread::JoinHandle<()>>>,
+}
+
+pub fn worker_main() -> glib::ExitCode {
+    match worker::run() {
+        Ok(()) => glib::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("chuhshell: idle worker: {error}");
+            glib::ExitCode::FAILURE
+        }
+    }
 }
 
 pub fn start(state: &Rc<crate::app::AppState>) {
@@ -65,8 +64,8 @@ pub fn start(state: &Rc<crate::app::AppState>) {
     let (sender, receiver) = mpsc::sync_channel(16);
     let error = std::sync::Arc::new(std::sync::Mutex::new(None));
     let worker_error = error.clone();
-    std::thread::spawn(move || {
-        if let Err(error) = wayland::run(settings, receiver) {
+    let worker = std::thread::spawn(move || {
+        if let Err(error) = worker::supervise(settings, receiver) {
             eprintln!("chuhshell: idle service: {error}");
             *worker_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
         }
@@ -76,10 +75,22 @@ pub fn start(state: &Rc<crate::app::AppState>) {
         saving: std::cell::Cell::new(false),
         error,
         sender,
+        worker: RefCell::new(Some(worker)),
     }));
 }
 
-pub fn show(state: &Rc<crate::app::AppState>, lock: bool) -> Result<(), String> {
+pub fn shutdown(state: &crate::app::AppState) {
+    if let Some(service) = state.idle.borrow_mut().take() {
+        let _ = service.sender.send(Command::Stop);
+        if let Some(worker) = service.worker.borrow_mut().take()
+            && worker.join().is_err()
+        {
+            eprintln!("chuhshell: idle worker interrupted during shutdown");
+        }
+    }
+}
+
+pub fn show(state: &Rc<crate::app::AppState>) -> Result<(), String> {
     start(state);
     let service = state.idle.borrow().as_ref().unwrap().clone();
     if let Some(error) = service
@@ -92,19 +103,15 @@ pub fn show(state: &Rc<crate::app::AppState>, lock: bool) -> Result<(), String> 
     }
     service
         .sender
-        .try_send(Command::Show(lock))
+        .try_send(Command::Show)
         .map_err(|e| e.to_string())
 }
 
-pub fn view(state: &Rc<crate::app::AppState>, lock: bool) -> gtk::Box {
+pub fn view(state: &Rc<crate::app::AppState>) -> gtk::Box {
     start(state);
     let service = state.idle.borrow().as_ref().unwrap().clone();
     let settings = *service.settings.borrow();
-    let timer = if lock {
-        settings.lockscreen
-    } else {
-        settings.screensaver
-    };
+    let timer = settings.screensaver;
     let outer = gtk::Box::new(gtk::Orientation::Vertical, 12);
     outer.add_css_class("idle-settings");
     let enabled = gtk::ToggleButton::with_label(if timer.enabled { "On" } else { "Off" });
@@ -125,11 +132,7 @@ pub fn view(state: &Rc<crate::app::AppState>, lock: bool) -> gtk::Box {
     });
     let automatic = setting_row(
         "Automatic trigger",
-        if lock {
-            "Lock the session when inactive"
-        } else {
-            "Show the screensaver when inactive"
-        },
+        "Show the screensaver when inactive",
         &enabled,
     );
     let minutes = gtk::SpinButton::with_range(1.0, 1440.0, 1.0);
@@ -173,11 +176,7 @@ pub fn view(state: &Rc<crate::app::AppState>, lock: bool) -> gtk::Box {
             enabled: enabled.is_active(),
             minutes: minutes.value_as_int() as u32,
         };
-        if lock {
-            settings.lockscreen = timer;
-        } else {
-            settings.screensaver = timer;
-        }
+        settings.screensaver = timer;
         button.set_sensitive(false);
         let button = button.downgrade();
         let service = service.clone();
@@ -221,18 +220,14 @@ fn setting_row(title: &str, hint: &str, control: &impl IsA<gtk::Widget>) -> gtk:
     row
 }
 
-pub fn timer(state: &Rc<crate::app::AppState>, lock: bool) -> Timer {
+pub fn timer(state: &Rc<crate::app::AppState>) -> Timer {
     let settings = state
         .idle
         .borrow()
         .as_ref()
         .map(|service| *service.settings.borrow())
         .unwrap_or(crate::config::get().idle);
-    if lock {
-        settings.lockscreen
-    } else {
-        settings.screensaver
-    }
+    settings.screensaver
 }
 
 #[cfg(test)]
@@ -243,12 +238,33 @@ pub fn regression_checks() {
 #[cfg(test)]
 mod tests {
     #[test]
+    #[ignore = "internal idle worker subprocess"]
+    fn worker_process() {
+        std::process::exit(super::worker_main().into());
+    }
+
+    #[test]
+    #[ignore = "headless crash controller subprocess"]
+    fn crash_controller() {
+        let limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_CORE, &limit) }, 0);
+        let mut child = super::worker::spawn().unwrap();
+        super::worker::show_and_check(&mut child);
+        let path = std::env::var_os("CHUHSHELL_IDLE_TEST_READY").unwrap();
+        std::fs::write(path, child.id().to_string()).unwrap();
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+
+    #[test]
     fn default_timers_and_partial_settings() {
         let settings: super::Settings = serde_json::from_str("{}").unwrap();
         assert!(settings.screensaver.enabled);
-        assert!(settings.lockscreen.enabled);
         assert_eq!(settings.screensaver.minutes, 15);
-        assert_eq!(settings.lockscreen.minutes, 40);
         assert!(serde_json::from_str::<super::Settings>(r#"{"unknown":true}"#).is_err());
     }
 }

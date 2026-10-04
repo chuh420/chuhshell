@@ -106,7 +106,13 @@ impl Worker {
             .try_send(Box::new(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation))
                     .unwrap_or_else(|_| Err("Settings worker interrupted".into()));
-                let _ = sender.try_send(result);
+                if let Err(undelivered) = sender.try_send(result)
+                    && let Err(error) = undelivered.into_inner()
+                {
+                    eprintln!(
+                        "chuhshell: settings operation failed after receiver closed: {error}"
+                    );
+                }
             }))
             .map_err(|_| "Settings queue is full or stopped".to_owned());
         async move {

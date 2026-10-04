@@ -12,6 +12,12 @@ struct Reminder {
     id: u64,
     text: String,
     due: i64,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pending: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 enum Command {
@@ -19,6 +25,7 @@ enum Command {
     Add { text: String, due: i64 },
     Delete(u64),
     Deliver,
+    Acknowledge(Vec<Reminder>),
 }
 
 struct Update {
@@ -59,7 +66,7 @@ fn load(path: &Path) -> Result<Vec<Reminder>, String> {
                 .into(),
         );
     }
-    reminders.sort_by_key(|reminder| (reminder.due, reminder.id));
+    reminders.sort_by_key(|reminder| (!reminder.pending, reminder.due, reminder.id));
     Ok(reminders)
 }
 
@@ -98,8 +105,9 @@ fn update(path: &Path, command: Command, timestamp: i64) -> Result<Update, Strin
                 id,
                 text: text.to_owned(),
                 due,
+                pending: false,
             });
-            reminders.sort_by_key(|reminder| (reminder.due, reminder.id));
+            reminders.sort_by_key(|reminder| (!reminder.pending, reminder.due, reminder.id));
         }
         Command::Delete(id) => {
             let index = reminders
@@ -111,7 +119,7 @@ fn update(path: &Path, command: Command, timestamp: i64) -> Result<Update, Strin
         Command::Deliver => {
             let count = reminders
                 .iter()
-                .take_while(|reminder| reminder.due <= timestamp)
+                .take_while(|reminder| reminder.pending || reminder.due <= timestamp)
                 .count()
                 .min(4);
             if count == 0 {
@@ -120,7 +128,13 @@ fn update(path: &Path, command: Command, timestamp: i64) -> Result<Update, Strin
                     delivered,
                 });
             }
-            delivered.extend(reminders.drain(..count));
+            for reminder in reminders.iter_mut().take(count) {
+                reminder.pending = true;
+                delivered.push(reminder.clone());
+            }
+        }
+        Command::Acknowledge(accepted) => {
+            reminders.retain(|reminder| !reminder.pending || !accepted.contains(reminder));
         }
     }
     let bytes = serde_json::to_vec(&reminders).map_err(|error| error.to_string())?;
@@ -132,6 +146,10 @@ fn update(path: &Path, command: Command, timestamp: i64) -> Result<Update, Strin
     })
 }
 
+fn update_reminders_ack(path: &Path, accepted: Vec<Reminder>) -> Result<Update, String> {
+    update(path, Command::Acknowledge(accepted), now())
+}
+
 pub struct Service {
     path: PathBuf,
     center: Weak<crate::notification_center::NotificationCenter>,
@@ -141,6 +159,7 @@ pub struct Service {
     ready: Cell<bool>,
     busy: Cell<bool>,
     retry_after: Cell<i64>,
+    shown: RefCell<Vec<Reminder>>,
 }
 
 impl Service {
@@ -154,6 +173,7 @@ impl Service {
             ready: Cell::new(false),
             busy: Cell::new(false),
             retry_after: Cell::new(0),
+            shown: RefCell::new(Vec::new()),
         });
         service.dispatch(Command::Load, None);
         let weak = Rc::downgrade(&service);
@@ -180,7 +200,7 @@ impl Service {
                 .reminders
                 .borrow()
                 .first()
-                .is_some_and(|reminder| reminder.due <= timestamp)
+                .is_some_and(|reminder| reminder.pending || reminder.due <= timestamp)
         {
             self.dispatch(Command::Deliver, None);
         }
@@ -198,8 +218,30 @@ impl Service {
         self.refresh();
         let service = self.clone();
         let path = self.path.clone();
+        let operation = crate::storage::run(move || update(&path, command, now()));
         glib::MainContext::default().spawn_local(async move {
-            let result = crate::storage::run(move || update(&path, command, now())).await;
+            let mut result = operation.await;
+            if let Ok(update) = &result {
+                *service.reminders.borrow_mut() = update.reminders.clone();
+                service
+                    .shown
+                    .borrow_mut()
+                    .retain(|shown| update.reminders.contains(shown));
+                if !update.delivered.is_empty()
+                    && let Some(center) = &center
+                {
+                    for reminder in &update.delivered {
+                        if !service.shown.borrow().contains(reminder) {
+                            center.reminder(&reminder.text);
+                            service.shown.borrow_mut().push(reminder.clone());
+                        }
+                    }
+                    let accepted = update.delivered.clone();
+                    let path = service.path.clone();
+                    result =
+                        crate::storage::run(move || update_reminders_ack(&path, accepted)).await;
+                }
+            }
             service.busy.set(false);
             let completed = match result {
                 Ok(update) => {
@@ -207,11 +249,10 @@ impl Service {
                     service.ready.set(true);
                     service.error.borrow_mut().take();
                     service.retry_after.set(0);
-                    if let Some(center) = center {
-                        for reminder in update.delivered {
-                            center.reminder(&reminder.text);
-                        }
-                    }
+                    service
+                        .shown
+                        .borrow_mut()
+                        .retain(|shown| service.reminders.borrow().contains(shown));
                     completed
                 }
                 Err(error) => {
@@ -502,6 +543,33 @@ pub fn view(state: &Rc<crate::app::AppState>) -> gtk::Box {
 }
 
 #[cfg(test)]
+pub(crate) fn queue_shutdown_delivery(path: PathBuf) {
+    update(
+        &path,
+        Command::Add {
+            text: "Pending at shutdown".into(),
+            due: 200,
+        },
+        100,
+    )
+    .unwrap();
+    drop(crate::storage::run(move || {
+        update(&path, Command::Deliver, 200)
+    }));
+}
+
+#[cfg(test)]
+pub(crate) fn check_shutdown_delivery(path: &Path) {
+    let saved = load(path).unwrap();
+    assert_eq!(saved.len(), 1);
+    assert!(saved[0].pending);
+    let recovered = update(path, Command::Deliver, 200).unwrap();
+    assert_eq!(recovered.delivered, saved);
+    update(path, Command::Acknowledge(recovered.delivered), 200).unwrap();
+    assert!(load(path).unwrap().is_empty());
+}
+
+#[cfg(test)]
 pub fn regression_checks(window: &gtk::Window, state: &Rc<crate::app::AppState>) {
     fn find(widget: &gtk::Widget, class: &str) -> Option<gtk::Widget> {
         if widget.has_css_class(class) {
@@ -640,6 +708,74 @@ pub fn regression_checks(window: &gtk::Window, state: &Rc<crate::app::AppState>)
     assert_eq!(center.reminder_count("Keep on failure"), 0);
     center.remove_test_reminder("Due reminder");
     assert_eq!(center.reminder_count("Due reminder"), 0);
+    for already_shown in [false, true] {
+        let path = service
+            .path
+            .with_file_name(format!("pending-recovery-{already_shown}.json"));
+        let text = format!("Recovered pending {already_shown}");
+        update(
+            &path,
+            Command::Add {
+                text: text.clone(),
+                due: 200,
+            },
+            100,
+        )
+        .unwrap();
+        update(&path, Command::Deliver, 200).unwrap();
+        if already_shown {
+            center.reminder(&text);
+        }
+        let recovered = Service::new(path.clone(), &center);
+        settled(&recovered);
+        recovered.tick();
+        settled(&recovered);
+        assert!(load(&path).unwrap().is_empty());
+        assert_eq!(
+            center.reminder_count(&text),
+            if already_shown { 2 } else { 1 }
+        );
+        center.remove_test_reminder(&text);
+        drop(recovered);
+        std::fs::remove_file(path).unwrap();
+    }
+    let path = service.path.with_file_name("pending-ack-failure.json");
+    let text = "Retry acknowledgement without another popup";
+    update(
+        &path,
+        Command::Add {
+            text: text.into(),
+            due: 200,
+        },
+        100,
+    )
+    .unwrap();
+    let retry = Service::new(path.clone(), &center);
+    settled(&retry);
+    retry.dispatch(Command::Deliver, None);
+    let corrupt_path = path.clone();
+    drop(crate::storage::run(move || {
+        std::fs::write(corrupt_path, b"invalid").map_err(|e| e.to_string())?;
+        Ok(())
+    }));
+    settled(&retry);
+    assert!(retry.error.borrow().is_some());
+    assert_eq!(center.reminder_count(text), 1);
+    assert_eq!(std::fs::read(&path).unwrap(), b"invalid");
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&*retry.reminders.borrow()).unwrap(),
+    )
+    .unwrap();
+    retry.retry_after.set(0);
+    retry.tick();
+    settled(&retry);
+    assert!(load(&path).unwrap().is_empty());
+    assert_eq!(center.reminder_count(text), 1);
+    assert!(retry.error.borrow().is_none());
+    center.remove_test_reminder(text);
+    drop(retry);
+    std::fs::remove_file(path).unwrap();
     crate::ui_tests::pump(250);
     let temporary = view(state);
     let weak = temporary.downgrade();
@@ -680,7 +816,7 @@ mod tests {
     }
 
     #[test]
-    fn delivery_removes_due_items_once_and_preserves_future_items() {
+    fn delivery_survives_restart_until_acknowledged_and_preserves_future_items() {
         let file = File::new();
         for (text, due) in [("later", 300), ("first", 200), ("same time", 200)] {
             update(
@@ -699,30 +835,33 @@ mod tests {
                 .delivered
                 .is_empty()
         );
-        let result = update(&file.path, Command::Deliver, 200).unwrap();
+        let staged = update(&file.path, Command::Deliver, 200).unwrap();
         assert_eq!(
-            result
+            staged
                 .delivered
                 .iter()
                 .map(|reminder| reminder.text.as_str())
                 .collect::<Vec<_>>(),
             ["first", "same time"]
         );
-        assert_eq!(load(&file.path).unwrap(), result.reminders);
-        assert_eq!(result.reminders[0].text, "later");
+        assert_eq!(load(&file.path).unwrap().len(), 3);
+        assert!(load(&file.path).unwrap()[0].pending);
+        let restarted = update(&file.path, Command::Deliver, 150).unwrap();
+        assert_eq!(restarted.delivered, staged.delivered);
+        let acknowledged =
+            update(&file.path, Command::Acknowledge(restarted.delivered), 150).unwrap();
+        assert_eq!(acknowledged.reminders.len(), 1);
+        assert_eq!(acknowledged.reminders[0].text, "later");
         assert!(
             update(&file.path, Command::Deliver, 200)
                 .unwrap()
                 .delivered
                 .is_empty()
         );
-        assert_eq!(
-            update(&file.path, Command::Deliver, 1000)
-                .unwrap()
-                .delivered[0]
-                .text,
-            "later"
-        );
+        let later = update(&file.path, Command::Deliver, 1000).unwrap();
+        assert_eq!(later.delivered[0].text, "later");
+        assert!(!load(&file.path).unwrap().is_empty());
+        update(&file.path, Command::Acknowledge(later.delivered), 1000).unwrap();
         assert!(load(&file.path).unwrap().is_empty());
     }
 
@@ -744,10 +883,40 @@ mod tests {
         update(&file.path, Command::Delete(pending[0].id), 201).unwrap();
         let result = update(&file.path, Command::Deliver, 500).unwrap();
         assert_eq!(result.delivered.len(), 4);
-        assert_eq!(result.reminders.len(), 5);
+        assert_eq!(result.reminders.len(), 9);
         assert!(result.delivered.iter().all(|reminder| reminder.text != "0"));
         assert!(update(&file.path, Command::Delete(pending[0].id), 500).is_err());
+        update(&file.path, Command::Acknowledge(result.delivered), 500).unwrap();
         assert_eq!(load(&file.path).unwrap().len(), 5);
+    }
+
+    #[test]
+    fn acknowledgement_matches_the_delivered_snapshot_and_old_files_still_load() {
+        let file = File::new();
+        std::fs::write(&file.path, br#"[{"id":1,"text":"old format","due":200}]"#).unwrap();
+        assert!(!load(&file.path).unwrap()[0].pending);
+        let staged = update(&file.path, Command::Deliver, 200).unwrap();
+        let mut modified = staged.reminders;
+        modified[0].text = "changed elsewhere".into();
+        std::fs::write(&file.path, serde_json::to_vec(&modified).unwrap()).unwrap();
+        update(&file.path, Command::Acknowledge(staged.delivered), 200).unwrap();
+        assert_eq!(load(&file.path).unwrap(), modified);
+        let again = update(&file.path, Command::Deliver, 200).unwrap();
+        update(&file.path, Command::Delete(1), 200).unwrap();
+        update(
+            &file.path,
+            Command::Add {
+                text: "new".into(),
+                due: 300,
+            },
+            200,
+        )
+        .unwrap();
+        update(&file.path, Command::Acknowledge(again.delivered), 200).unwrap();
+        assert_eq!(load(&file.path).unwrap()[0].text, "new");
+        std::fs::write(&file.path, b"invalid").unwrap();
+        assert!(update(&file.path, Command::Acknowledge(Vec::new()), 200).is_err());
+        assert_eq!(std::fs::read(&file.path).unwrap(), b"invalid");
     }
 
     #[test]
@@ -757,6 +926,7 @@ mod tests {
             id: 1,
             text: "one".into(),
             due: 200,
+            pending: false,
         };
         let invalid = [
             b"invalid".to_vec(),
@@ -823,6 +993,7 @@ mod tests {
                 id: id as u64,
                 text: "valid".into(),
                 due: 200,
+                pending: false,
             })
             .collect();
         std::fs::write(&file.path, serde_json::to_vec(&reminders).unwrap()).unwrap();
