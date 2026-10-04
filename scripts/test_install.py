@@ -6,6 +6,9 @@ import json
 import os
 import storage
 import subprocess
+import sys
+import time
+import commands
 from unittest.mock import patch
 import autologin
 from storage import snapshot, restore
@@ -13,6 +16,35 @@ from storage import snapshot, restore
 spec = importlib.util.spec_from_file_location('installer', Path(__file__).with_name('install.py'))
 installer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
+
+
+class CommandBudgets(unittest.TestCase):
+    def test_timeout_kills_descendants_and_inherited_pipes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / 'survived'
+            script = 'import subprocess, sys; subprocess.Popen([sys.executable, "-c", sys.argv[1]])'
+            child = f'import time; from pathlib import Path; time.sleep(0.5); Path({str(marker)!r}).touch()'
+            start = time.monotonic()
+            with self.assertRaisesRegex(RuntimeError, 'timed out'):
+                commands.run([sys.executable, '-c', script, child], timeout=0.15)
+            self.assertLess(time.monotonic() - start, 1)
+            time.sleep(0.6)
+            self.assertFalse(marker.exists())
+
+    def test_output_budget_checks_both_streams_even_without_check(self):
+        for stream in ['1', '2']:
+            with self.subTest(stream=stream), self.assertRaisesRegex(RuntimeError, 'output exceeds'):
+                commands.run([sys.executable, '-c', f'import os; os.write({stream}, b"x" * 8192)'],
+                             output_limit=1024, check=False)
+
+    def test_input_and_exit_status_are_preserved(self):
+        result = commands.run([sys.executable, '-c', 'import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())'],
+                              input=b'hello' * 10000)
+        self.assertEqual(result.stdout, 'hello' * 10000)
+        with self.assertRaises(subprocess.CalledProcessError) as error:
+            commands.run([sys.executable, '-c', 'import sys; print("failed", file=sys.stderr); sys.exit(7)'])
+        self.assertEqual(error.exception.returncode, 7)
+        self.assertEqual(error.exception.stderr, 'failed\n')
 
 
 class InstallationBackups(unittest.TestCase):
@@ -200,6 +232,20 @@ class InstallationTransaction(unittest.TestCase):
                     else:
                         with patch.object(installer, 'run', side_effect=self.original_run), patch.object(installer, 'write', side_effect=original_write):
                             installer.uninstall()
+
+    def test_timeout_during_install_and_recovery_keeps_journal_for_retry(self):
+        def timeout(*args, **kwargs):
+            if 'daemon-reload' in args:
+                return commands.run([sys.executable, '-c', 'import time; time.sleep(5)'], timeout=0.05)
+            return self.original_run(*args, **kwargs)
+        with patch.object(installer, 'run', side_effect=timeout), patch.object(installer, 'plan_configuration', return_value=self.plan):
+            with self.assertRaisesRegex(RuntimeError, 'timed out'):
+                installer.install(self.config)
+        self.assertTrue(installer.journal_path().exists())
+        with patch.object(installer, 'run', side_effect=self.original_run):
+            installer.recover()
+        self.assertEqual(self.config.read_text(), 'original')
+        self.assertFalse(installer.journal_path().exists())
 
     def test_interrupted_install_recovers_before_retry(self):
         installer.STATE.mkdir()
@@ -411,6 +457,25 @@ class AutologinTransaction(unittest.TestCase):
             with patch.object(autologin, 'write', side_effect=write), patch.object(autologin, 'run', return_value=subprocess.CompletedProcess([], 0)), patch.object(autologin, 'privileged_restore', side_effect=restore):
                 with self.assertRaises(OSError):
                     autologin.setup(root / 'backup', profile, dropin, 'test-user')
+            self.assertEqual(profile.read_text(), 'original')
+            self.assertFalse(dropin.exists())
+            self.assertFalse((root / 'backup/transaction.json').exists())
+
+    def test_autologin_timeout_and_failed_undo_keep_recovery_journal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile, dropin = root / 'profile', root / 'getty'
+            profile.write_text('original')
+            def timeout(*args, **kwargs):
+                if 'daemon-reload' in args:
+                    return commands.run([sys.executable, '-c', 'import time; time.sleep(5)'], timeout=0.05)
+                return subprocess.CompletedProcess(args, 0, '', '')
+            with patch.object(autologin, 'run', side_effect=timeout), patch.object(autologin, 'privileged_restore', side_effect=restore):
+                with self.assertRaisesRegex(RuntimeError, 'timed out'):
+                    autologin.setup(root / 'backup', profile, dropin, 'test-user')
+            self.assertTrue((root / 'backup/transaction.json').exists())
+            with patch.object(autologin, 'run', return_value=subprocess.CompletedProcess([], 0)), patch.object(autologin, 'privileged_restore', side_effect=restore):
+                autologin.setup(root / 'backup', profile, dropin, 'test-user', True)
             self.assertEqual(profile.read_text(), 'original')
             self.assertFalse(dropin.exists())
             self.assertFalse((root / 'backup/transaction.json').exists())

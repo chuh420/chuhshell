@@ -102,28 +102,172 @@ fn entries(page: Page) -> Vec<(String, String, Action)> {
 }
 
 fn wallpaper_folder() -> PathBuf {
-    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join("Pictures/Wallpapers")
+    crate::paths::home().join("Pictures/Wallpapers")
 }
 
 fn wallpaper_script() -> PathBuf {
-    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/bin/wallpaper.sh")
+    crate::paths::home().join(".local/bin/wallpaper.sh")
 }
 
-fn wallpaper_files(folder: &Path) -> Result<Vec<String>, String> {
-    let mut files = std::fs::read_dir(folder)
+const WALLPAPER_LIMIT: usize = 256;
+const PREVIEW_LIMIT: usize = 12;
+
+type PreviewPixels = (Vec<u8>, i32, i32, i32, bool);
+
+enum WallpaperResult {
+    Files(Vec<String>, bool),
+    Preview(usize, Result<PreviewPixels, String>),
+    Error(String),
+}
+
+fn wallpaper_files(
+    folder: &Path,
+    cancelled: impl Fn() -> bool,
+) -> Result<(Vec<String>, bool), String> {
+    let mut files = std::collections::BTreeSet::new();
+    let mut limited = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    for (index, entry) in std::fs::read_dir(folder)
         .map_err(|error| format!("{}: {error}", folder.display()))?
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            if !entry.file_type().ok()?.is_file() {
-                return None;
+        .enumerate()
+    {
+        if cancelled() {
+            return Err("Wallpaper loading cancelled".into());
+        }
+        if index >= 10_000 || std::time::Instant::now() >= deadline {
+            limited = true;
+            break;
+        }
+        let entry = entry.map_err(|error| error.to_string())?;
+        if !entry.path().is_file() {
+            continue;
+        }
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let extension = Path::new(&name)
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("");
+        if !["jpg", "png", "jpeg", "webp"]
+            .iter()
+            .any(|value| extension.eq_ignore_ascii_case(value))
+        {
+            continue;
+        }
+        files.insert(name);
+        if files.len() > WALLPAPER_LIMIT {
+            files.pop_last();
+            limited = true;
+        }
+    }
+    Ok((files.into_iter().collect(), limited))
+}
+
+fn preview_range(center: usize, length: usize) -> std::ops::Range<usize> {
+    let start = center.min(length.saturating_sub(1)).saturating_sub(4);
+    start..(start + PREVIEW_LIMIT).min(length)
+}
+
+fn wallpaper_preview(path: &Path, cancelled: impl Fn() -> bool) -> Result<PreviewPixels, String> {
+    let bytes =
+        crate::storage::read_limited(path, 16 * 1024 * 1024).map_err(|error| error.to_string())?;
+    let loader = gtk::gdk_pixbuf::PixbufLoader::new();
+    let oversized = Rc::new(std::cell::Cell::new(false));
+    loader.connect_size_prepared({
+        let oversized = oversized.clone();
+        move |loader, width, height| {
+            if width <= 0
+                || height <= 0
+                || width > 16384
+                || height > 16384
+                || i64::from(width) * i64::from(height) > 64 * 1024 * 1024
+            {
+                oversized.set(true);
+                loader.set_size(1, 1);
+                return;
             }
-            let name = entry.file_name().into_string().ok()?;
-            let extension = Path::new(&name).extension()?.to_str()?;
-            matches!(extension, "jpg" | "png" | "jpeg" | "webp").then_some(name)
-        })
-        .collect::<Vec<_>>();
-    files.sort_unstable();
-    Ok(files)
+            let scale = (240.0 / f64::from(width))
+                .min(150.0 / f64::from(height))
+                .min(1.0);
+            loader.set_size(
+                (f64::from(width) * scale).max(1.0) as i32,
+                (f64::from(height) * scale).max(1.0) as i32,
+            );
+        }
+    });
+    let result = (|| {
+        for chunk in bytes.chunks(64 * 1024) {
+            if cancelled() {
+                return Err("Wallpaper loading cancelled".into());
+            }
+            loader.write(chunk).map_err(|error| error.to_string())?;
+            if oversized.get() {
+                return Err("Wallpaper dimensions exceed the preview limit".into());
+            }
+        }
+        loader.close().map_err(|error| error.to_string())?;
+        let pixbuf = loader.pixbuf().ok_or("Preview unavailable")?;
+        Ok((
+            pixbuf.read_pixel_bytes().as_ref().to_vec(),
+            pixbuf.width(),
+            pixbuf.height(),
+            pixbuf.rowstride(),
+            pixbuf.has_alpha(),
+        ))
+    })();
+    if result.is_err() {
+        let _ = loader.close();
+    }
+    result
+}
+
+fn wallpaper_worker(
+    folder: PathBuf,
+    requests: async_channel::Receiver<usize>,
+    sender: async_channel::Sender<WallpaperResult>,
+) {
+    let (files, limited) = match wallpaper_files(&folder, || requests.is_closed()) {
+        Ok(files) => files,
+        Err(error) => {
+            let _ = sender.send_blocking(WallpaperResult::Error(error));
+            return;
+        }
+    };
+    if sender
+        .send_blocking(WallpaperResult::Files(files.clone(), limited))
+        .is_err()
+    {
+        return;
+    }
+    let mut cache = std::collections::HashMap::new();
+    while let Ok(mut center) = requests.recv_blocking() {
+        while let Ok(latest) = requests.try_recv() {
+            center = latest;
+        }
+        let range = preview_range(center, files.len());
+        cache.retain(|index, _| range.contains(index));
+        for index in range {
+            if requests.is_closed() {
+                return;
+            }
+            if !requests.is_empty() {
+                break;
+            }
+            let pixels = cache
+                .entry(index)
+                .or_insert_with(|| {
+                    wallpaper_preview(&folder.join(&files[index]), || requests.is_closed())
+                })
+                .clone();
+            if sender
+                .send_blocking(WallpaperResult::Preview(index, pixels))
+                .is_err()
+            {
+                return;
+            }
+        }
+    }
 }
 
 fn wallpaper_view(state: &Rc<AppState>) -> gtk::Box {
@@ -162,9 +306,60 @@ fn wallpaper_view_with(state: &Rc<AppState>, folder_path: PathBuf) -> gtk::Box {
         Vec::<glib::WeakRef<gtk::Button>>::new(),
     ));
     let selected = Rc::new(std::cell::Cell::new(0usize));
+    let pictures = Rc::new(std::cell::RefCell::new(
+        Vec::<glib::WeakRef<gtk::Picture>>::new(),
+    ));
+    let preview_center = Rc::new(std::cell::Cell::new(usize::MAX));
+    let (requests, request_receiver) = async_channel::bounded(1);
+    let (sender, receiver) = async_channel::bounded(2);
+    outer.connect_unmap({
+        let requests = requests.clone();
+        let receiver = receiver.clone();
+        move |_| {
+            requests.close();
+            receiver.close();
+        }
+    });
+    outer.add_weak_ref_notify_local({
+        let requests = requests.clone();
+        let receiver = receiver.clone();
+        move || {
+            requests.close();
+            receiver.close();
+        }
+    });
+    let request: Rc<dyn Fn(usize)> = Rc::new({
+        let pictures = pictures.clone();
+        let preview_center = preview_center.clone();
+        let requests = requests.clone();
+        let request_receiver = request_receiver.clone();
+        move |center| {
+            let pictures = pictures.borrow();
+            let range = preview_range(center, pictures.len());
+            if preview_center.get() != usize::MAX
+                && range == preview_range(preview_center.get(), pictures.len())
+            {
+                return;
+            }
+            preview_center.set(center);
+            for (index, picture) in pictures.iter().enumerate() {
+                if !range.contains(&index)
+                    && let Some(picture) = picture.upgrade()
+                {
+                    picture.set_paintable(None::<&gdk::Texture>);
+                }
+            }
+            if requests.is_full() {
+                let _ = request_receiver.try_recv();
+            }
+            let _ = requests.try_send(center);
+        }
+    });
+
     let select: Rc<dyn Fn(usize)> = Rc::new({
         let cards = cards.clone();
         let selected = selected.clone();
+        let request = request.clone();
         let scrolled = scrolled.downgrade();
         move |index| {
             let cards: Vec<_> = cards
@@ -177,6 +372,7 @@ fn wallpaper_view_with(state: &Rc<AppState>, folder_path: PathBuf) -> gtk::Box {
             }
             let index = index.min(cards.len() - 1);
             selected.set(index);
+            request(index);
             for (i, card) in cards.iter().enumerate() {
                 if i == index {
                     card.add_css_class("suggested-action");
@@ -272,97 +468,94 @@ fn wallpaper_view_with(state: &Rc<AppState>, folder_path: PathBuf) -> gtk::Box {
         }
     });
     outer.add_controller(key);
-    let (sender, receiver) = async_channel::bounded(2);
-    std::thread::spawn(move || {
-        let files = wallpaper_files(&folder_path);
-        let Ok(files) = files else {
-            let _ = sender.send_blocking(Err(files.unwrap_err()));
-            return;
-        };
-        for name in files {
-            let pixels = gtk::gdk_pixbuf::Pixbuf::from_file_at_scale(
-                folder_path.join(&name),
-                240,
-                150,
-                true,
-            )
-            .map_err(|error| error.to_string())
-            .map(|p| {
-                (
-                    p.read_pixel_bytes().as_ref().to_vec(),
-                    p.width(),
-                    p.height(),
-                    p.rowstride(),
-                    p.has_alpha(),
-                )
-            });
-            if sender.send_blocking(Ok((name, pixels))).is_err() {
-                return;
+    scrolled.hadjustment().connect_value_changed({
+        let request = request.clone();
+        let pictures = pictures.clone();
+        move |adjustment| {
+            if !pictures.borrow().is_empty() {
+                request((adjustment.value() / 252.0) as usize);
             }
         }
     });
+    std::thread::spawn(move || wallpaper_worker(folder_path, request_receiver, sender));
     glib::MainContext::default().spawn_local({
         let strip = strip.downgrade();
         let message = message.downgrade();
         async move {
             while let Ok(result) = receiver.recv().await {
                 let (Some(strip), Some(message)) = (strip.upgrade(), message.upgrade()) else {
+                    requests.close();
                     return;
                 };
                 match result {
-                    Ok((name, pixels)) => {
-                        let index = names.borrow().len();
-                        let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
-                        let picture = gtk::Picture::new();
-                        picture.set_size_request(240, 150);
-                        if let Ok((bytes, width, height, stride, alpha)) = pixels {
-                            let pixbuf = gtk::gdk_pixbuf::Pixbuf::from_bytes(
-                                &glib::Bytes::from_owned(bytes),
-                                gtk::gdk_pixbuf::Colorspace::Rgb,
-                                alpha,
-                                8,
-                                width,
-                                height,
-                                stride,
-                            );
-                            picture.set_paintable(Some(&gdk::Texture::for_pixbuf(&pixbuf)));
+                    WallpaperResult::Files(files, limited) => {
+                        for (index, name) in files.into_iter().enumerate() {
+                            let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
+                            let picture = gtk::Picture::new();
+                            picture.set_size_request(240, 150);
+                            pictures.borrow_mut().push(picture.downgrade());
+                            content.append(&picture);
+                            let label = gtk::Label::new(Some(&name));
+                            label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+                            label.set_max_width_chars(24);
+                            content.append(&label);
+                            let card = gtk::Button::new();
+                            card.set_child(Some(&content));
+                            card.set_tooltip_text(Some(&name));
+                            card.connect_clicked({
+                                let select = select.clone();
+                                move |_| select(index)
+                            });
+                            strip.append(&card);
+                            names.borrow_mut().push(name);
+                            cards.borrow_mut().push(card.downgrade());
+                        }
+                        if names.borrow().is_empty() {
+                            message.set_text("No wallpapers found");
                         } else {
-                            picture.set_tooltip_text(Some(&format!(
-                                "Preview unavailable: {}",
-                                pixels.unwrap_err()
-                            )));
-                        }
-                        content.append(&picture);
-                        let label = gtk::Label::new(Some(&name));
-                        label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
-                        label.set_max_width_chars(24);
-                        content.append(&label);
-                        let card = gtk::Button::new();
-                        card.set_child(Some(&content));
-                        card.set_tooltip_text(Some(&name));
-                        card.connect_clicked({
-                            let select = select.clone();
-                            move |_| select(index)
-                        });
-                        strip.append(&card);
-                        names.borrow_mut().push(name);
-                        cards.borrow_mut().push(card.downgrade());
-                        if index == 0 {
                             select(0);
+                            message.set_text(if limited {
+                                "Wallpaper list limited · ← / → Browse · Enter Apply"
+                            } else {
+                                "← / → Browse · Enter Apply"
+                            });
                         }
-                        message.set_text("← / → Browse · Enter Apply");
                     }
-                    Err(error) => {
+                    WallpaperResult::Preview(index, pixels) => {
+                        if !preview_range(preview_center.get(), pictures.borrow().len())
+                            .contains(&index)
+                        {
+                            continue;
+                        }
+                        let Some(picture) = pictures
+                            .borrow()
+                            .get(index)
+                            .and_then(|picture| picture.upgrade())
+                        else {
+                            continue;
+                        };
+                        match pixels {
+                            Ok((bytes, width, height, stride, alpha)) => {
+                                let pixbuf = gtk::gdk_pixbuf::Pixbuf::from_bytes(
+                                    &glib::Bytes::from_owned(bytes),
+                                    gtk::gdk_pixbuf::Colorspace::Rgb,
+                                    alpha,
+                                    8,
+                                    width,
+                                    height,
+                                    stride,
+                                );
+                                picture.set_paintable(Some(&gdk::Texture::for_pixbuf(&pixbuf)));
+                            }
+                            Err(error) => picture
+                                .set_tooltip_text(Some(&format!("Preview unavailable: {error}"))),
+                        }
+                    }
+                    WallpaperResult::Error(error) => {
                         message.set_text(&error);
                         message.add_css_class("menu-error");
                     }
                 }
-            }
-            if names.borrow().is_empty()
-                && let Some(message) = message.upgrade()
-                && !message.has_css_class("menu-error")
-            {
-                message.set_text("No wallpapers found");
             }
         }
     });
@@ -1271,8 +1464,10 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
     let pixbuf =
         gtk::gdk_pixbuf::Pixbuf::new(gtk::gdk_pixbuf::Colorspace::Rgb, false, 8, 32, 20).unwrap();
     pixbuf.fill(0x667788ff);
-    for name in ["a.png", "b.png", "c.png"] {
-        pixbuf.savev(previews.join(name), "png", &[]).unwrap();
+    for index in 0..40 {
+        pixbuf
+            .savev(previews.join(format!("{index:03}.png")), "png", &[])
+            .unwrap();
     }
     let view = wallpaper_view_with(state, previews.clone());
     let preview_window = gtk::ApplicationWindow::builder()
@@ -1311,6 +1506,44 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
         "{:?}",
         picture.tooltip_text()
     );
+    let last = strip
+        .last_child()
+        .unwrap()
+        .downcast::<gtk::Button>()
+        .unwrap();
+    let last_picture = last
+        .child()
+        .unwrap()
+        .first_child()
+        .unwrap()
+        .downcast::<gtk::Picture>()
+        .unwrap();
+    assert!(last_picture.paintable().is_none());
+    last.emit_clicked();
+    crate::ui_tests::pump(200);
+    assert!(last_picture.paintable().is_some());
+    assert!(picture.paintable().is_none());
+    let mut loaded = 0;
+    let mut child = strip.first_child();
+    while let Some(card) = child {
+        let image = card
+            .downcast_ref::<gtk::Button>()
+            .unwrap()
+            .child()
+            .unwrap()
+            .first_child()
+            .unwrap()
+            .downcast::<gtk::Picture>()
+            .unwrap();
+        loaded += usize::from(image.paintable().is_some());
+        child = card.next_sibling();
+    }
+    assert!(loaded <= PREVIEW_LIMIT);
+    first.emit_clicked();
+    crate::ui_tests::pump(200);
+    assert!(picture.paintable().is_some());
+    drop(last_picture);
+    drop(last);
     let controller = view
         .observe_controllers()
         .item(0)
@@ -1529,8 +1762,10 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
         .unwrap()
         .downcast::<gtk::CheckButton>()
         .unwrap();
+    entry.set_text("Keep this draft");
     check.set_active(true);
     crate::ui_tests::pump(100);
+    assert_eq!(entry.text(), "Keep this draft");
     assert!(crate::todo::load(&crate::todo::path()).unwrap()[0].done);
     find(window.upcast_ref(), "todo-delete")
         .unwrap()
@@ -1539,6 +1774,7 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
         .emit_clicked();
     crate::ui_tests::pump(100);
     assert!(crate::todo::load(&crate::todo::path()).unwrap().is_empty());
+    assert_eq!(entry.text(), "Keep this draft");
     let back = find(window.upcast_ref(), "menu-back").unwrap();
     back.downcast::<gtk::Button>().unwrap().emit_clicked();
     assert_eq!(window.title().as_deref(), Some("Trigger"));
@@ -1646,5 +1882,60 @@ pub fn regression_checks(app: &gtk::Application, state: &Rc<AppState>) {
             let b = audio.compute_bounds(bar).unwrap();
             assert!((a.y() + a.height() / 2.0 - b.y() - b.height() / 2.0).abs() < 1.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod wallpaper_tests {
+    use super::*;
+
+    #[test]
+    fn wallpaper_catalog_is_bounded_and_accepts_uppercase_and_symlinks() {
+        let folder =
+            std::env::temp_dir().join(format!("chuhshell-wallpaper-limit-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        for index in 0..300 {
+            std::fs::write(folder.join(format!("{index:03}.PNG")), []).unwrap();
+        }
+        std::os::unix::fs::symlink(folder.join("000.PNG"), folder.join("000-link.jpg")).unwrap();
+        let (files, limited) = wallpaper_files(&folder, || false).unwrap();
+        assert!(limited);
+        assert_eq!(files.len(), WALLPAPER_LIMIT);
+        assert!(files.iter().any(|name| name == "000-link.jpg"));
+        assert!(files.iter().any(|name| name == "000.PNG"));
+        assert!(
+            wallpaper_files(&folder, || true)
+                .unwrap_err()
+                .contains("cancelled")
+        );
+        for center in 0..WALLPAPER_LIMIT {
+            assert!(preview_range(center, WALLPAPER_LIMIT).len() <= PREVIEW_LIMIT);
+            assert!(preview_range(center, WALLPAPER_LIMIT).contains(&center));
+        }
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn wallpaper_worker_exits_when_view_closes_with_a_full_output_queue() {
+        let folder =
+            std::env::temp_dir().join(format!("chuhshell-wallpaper-cancel-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("broken.png"), b"broken").unwrap();
+        let (requests, input) = async_channel::bounded(1);
+        let (output, results) = async_channel::bounded(1);
+        let (finished, done) = std::sync::mpsc::channel();
+        let directory = folder.clone();
+        let worker = std::thread::spawn(move || {
+            wallpaper_worker(directory, input, output);
+            finished.send(()).unwrap();
+        });
+        requests.send_blocking(0).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        requests.close();
+        results.close();
+        done.recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        worker.join().unwrap();
+        std::fs::remove_dir_all(folder).unwrap();
     }
 }

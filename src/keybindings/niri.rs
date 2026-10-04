@@ -118,8 +118,43 @@ pub fn config_path() -> PathBuf {
     }
 }
 
+struct Traversal {
+    documents: HashMap<PathBuf, std::rc::Rc<KdlDocument>>,
+    visits: usize,
+    nodes: usize,
+    expanded_bytes: usize,
+    deadline: std::time::Instant,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Traversal {
+    fn check(&self) -> Result<(), String> {
+        if crate::process::stopped() || self.cancelled.load(Ordering::Relaxed) {
+            return Err("Niri configuration traversal cancelled".into());
+        }
+        if self.visits > 4096
+            || self.nodes > 100_000
+            || self.expanded_bytes > 32 * 1024 * 1024
+            || std::time::Instant::now() >= self.deadline
+        {
+            return Err("Niri configuration exceeds the editor work limit".into());
+        }
+        Ok(())
+    }
+}
+
 impl Catalog {
     pub fn load(root: &Path) -> Result<Self, String> {
+        Self::load_cancellable(
+            root,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+    }
+
+    pub(super) fn load_cancellable(
+        root: &Path,
+        cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<Self, String> {
         let root = std::fs::canonicalize(root).map_err(|e| io_error(root, e))?;
         let mut catalog = Self {
             root: root.clone(),
@@ -127,7 +162,15 @@ impl Catalog {
             bindings: Vec::new(),
             mod_key: "super".into(),
         };
-        catalog.visit(&root, &mut Vec::new())?;
+        let mut traversal = Traversal {
+            documents: HashMap::new(),
+            visits: 0,
+            nodes: 0,
+            expanded_bytes: 0,
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(2),
+            cancelled,
+        };
+        catalog.visit(&root, &mut Vec::new(), &mut traversal)?;
         let mut effective = HashMap::new();
         for index in 0..catalog.bindings.len() {
             let key = normalize(&catalog.bindings[index].key, &catalog.mod_key);
@@ -138,25 +181,40 @@ impl Catalog {
         Ok(catalog)
     }
 
-    fn visit(&mut self, path: &Path, stack: &mut Vec<PathBuf>) -> Result<(), String> {
+    fn visit(
+        &mut self,
+        path: &Path,
+        stack: &mut Vec<PathBuf>,
+        traversal: &mut Traversal,
+    ) -> Result<(), String> {
+        traversal.visits += 1;
+        traversal.check()?;
         let path = std::fs::canonicalize(path).map_err(|e| io_error(path, e))?;
         if stack.len() >= 64 || stack.contains(&path) {
             return Err(format!("Include cycle or depth limit: {}", path.display()));
         }
-        let text =
-            crate::storage::read_text(&path, 4 * 1024 * 1024).map_err(|e| io_error(&path, e))?;
-        if text.len() > 4 * 1024 * 1024 || self.bindings.len() > 10000 {
-            return Err("Niri configuration exceeds the editor size limit".into());
-        }
-        if self.files.len() >= 256
-            || self.files.values().map(String::len).sum::<usize>() + text.len() > 16 * 1024 * 1024
-        {
-            return Err("Niri configuration exceeds the editor size limit".into());
-        }
-        let doc = document(&text).map_err(|e| io_error(&path, e))?;
-        self.files.insert(path.clone(), text);
+        let doc = if let Some(doc) = traversal.documents.get(&path) {
+            doc.clone()
+        } else {
+            let text = crate::storage::read_text(&path, 4 * 1024 * 1024)
+                .map_err(|e| io_error(&path, e))?;
+            if self.files.len() >= 256
+                || self.files.values().map(String::len).sum::<usize>() + text.len()
+                    > 16 * 1024 * 1024
+            {
+                return Err("Niri configuration exceeds the editor size limit".into());
+            }
+            let doc = std::rc::Rc::new(document(&text).map_err(|e| io_error(&path, e))?);
+            self.files.insert(path.clone(), text);
+            traversal.documents.insert(path.clone(), doc.clone());
+            doc
+        };
+        traversal.expanded_bytes += self.files[&path].len();
+        traversal.check()?;
         stack.push(path.clone());
         for node in doc.nodes() {
+            traversal.nodes += 1;
+            traversal.check()?;
             match node.name().value() {
                 "include" => {
                     let name = string(node, 0).ok_or("Include requires a file path")?;
@@ -166,7 +224,7 @@ impl Catalog {
                     if optional && !next.try_exists().map_err(|e| io_error(&next, e))? {
                         continue;
                     }
-                    self.visit(&next, stack)?;
+                    self.visit(&next, stack, traversal)?;
                 }
                 "input" => {
                     if let Some(value) = node
@@ -179,6 +237,13 @@ impl Catalog {
                 }
                 "binds" => {
                     for bind in node.children().into_iter().flat_map(|d| d.nodes()) {
+                        traversal.nodes += 1;
+                        traversal.check()?;
+                        if self.bindings.len() >= 10000 {
+                            return Err(
+                                "Niri configuration exceeds the editor binding limit".into()
+                            );
+                        }
                         let span = bind.name().span();
                         let action = bind
                             .children()
@@ -664,6 +729,43 @@ mod tests {
             .unwrap();
         assert!(updated.contains("Mod+MouseBack"));
         assert!(updated.contains("Mod+T"));
+    }
+
+    #[test]
+    fn repeated_includes_preserve_order_and_bound_total_work() {
+        let dir = TemporaryDirectory::new().unwrap();
+        std::fs::write(dir.0.join("keys.kdl"), "binds { Mod+T { quit; }; }\n").unwrap();
+        let root = fixture(&dir.0, "include \"keys.kdl\"\ninclude \"keys.kdl\"\n");
+        let catalog = Catalog::load(&root).unwrap();
+        assert_eq!(catalog.files.len(), 2);
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        assert!(
+            Catalog::load_cancellable(&root, cancelled)
+                .unwrap_err()
+                .contains("cancelled")
+        );
+        assert_eq!(catalog.bindings.len(), 2);
+        assert!(catalog.bindings[0].overridden);
+        assert!(!catalog.bindings[1].overridden);
+        for index in 0..21 {
+            let text = if index == 20 {
+                String::new()
+            } else {
+                format!(
+                    "include \"{}.kdl\"\ninclude \"{}.kdl\"\n",
+                    index + 1,
+                    index + 1
+                )
+            };
+            std::fs::write(dir.0.join(format!("{index}.kdl")), text).unwrap();
+        }
+        let start = std::time::Instant::now();
+        assert!(
+            Catalog::load(&dir.0.join("0.kdl"))
+                .unwrap_err()
+                .contains("work limit")
+        );
+        assert!(start.elapsed() < std::time::Duration::from_secs(3));
     }
 
     #[test]

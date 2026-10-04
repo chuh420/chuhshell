@@ -47,6 +47,10 @@ struct NotificationView {
 
 struct Notification {
     view: NotificationView,
+    rendered: NotificationView,
+    sender: String,
+    dirty: bool,
+    popup_pending: bool,
     active: bool,
     popup: Option<gtk::Window>,
     timer: Option<glib::SourceId>,
@@ -57,6 +61,8 @@ pub struct NotificationCenter {
     connection: RefCell<Option<gio::DBusConnection>>,
     notifications: RefCell<Vec<Notification>>,
     next_id: Cell<u32>,
+    render_timer: RefCell<Option<glib::SourceId>>,
+    render_cursor: Cell<usize>,
     popup_times: RefCell<std::collections::VecDeque<std::time::Instant>>,
     owned: Cell<bool>,
     buttons: RefCell<Vec<glib::WeakRef<gtk::Button>>>,
@@ -72,6 +78,8 @@ impl NotificationCenter {
             connection: RefCell::new(None),
             notifications: RefCell::new(Vec::new()),
             next_id: Cell::new(1),
+            render_timer: RefCell::new(None),
+            render_cursor: Cell::new(0),
             popup_times: RefCell::new(std::collections::VecDeque::new()),
             owned: Cell::new(false),
             buttons: RefCell::new(Vec::new()),
@@ -196,7 +204,8 @@ impl NotificationCenter {
                     .filter(|pair| pair[0].len() <= 256)
                     .map(|pair| (pair[0].clone(), limited(&pair[1], 128)))
                     .collect();
-                let id = self.notify(
+                let id = self.notify_from(
+                    invocation.sender().as_deref().unwrap_or("unknown"),
                     replaces_id,
                     NotificationView {
                         id: 0,
@@ -286,7 +295,17 @@ impl NotificationCenter {
         )
     }
 
-    fn notify(self: &Rc<Self>, replaces_id: u32, mut view: NotificationView, timeout: i32) -> u32 {
+    fn notify(self: &Rc<Self>, replaces_id: u32, view: NotificationView, timeout: i32) -> u32 {
+        self.notify_from("chuhshell", replaces_id, view, timeout)
+    }
+
+    fn notify_from(
+        self: &Rc<Self>,
+        sender: &str,
+        replaces_id: u32,
+        mut view: NotificationView,
+        timeout: i32,
+    ) -> u32 {
         let replacing = self
             .notifications
             .borrow()
@@ -317,6 +336,8 @@ impl NotificationCenter {
             }
             view.id = entry.view.id;
             entry.view = view;
+            entry.sender = sender.to_owned();
+            entry.dirty = true;
             entry.view.id
         } else {
             let mut id = self.next_id.get().max(1);
@@ -326,6 +347,10 @@ impl NotificationCenter {
             self.next_id.set(id.wrapping_add(1).max(1));
             view.id = id;
             entries.push(Notification {
+                rendered: view.clone(),
+                sender: sender.to_owned(),
+                dirty: false,
+                popup_pending: false,
                 view,
                 active: true,
                 popup: None,
@@ -338,7 +363,7 @@ impl NotificationCenter {
             .notifications
             .borrow()
             .iter()
-            .any(|entry| entry.view.id == id && entry.popup.is_some());
+            .any(|entry| entry.view.id == id && (entry.popup.is_some() || entry.popup_pending));
         let mut times = self.popup_times.borrow_mut();
         let now = std::time::Instant::now();
         while times
@@ -352,8 +377,18 @@ impl NotificationCenter {
             times.push_back(now);
         }
         drop(times);
-        if allowed {
+        if allowed && !replacing {
             self.show_popup(id);
+        } else if allowed
+            && replacing
+            && let Some(entry) = self
+                .notifications
+                .borrow_mut()
+                .iter_mut()
+                .find(|entry| entry.view.id == id)
+            && entry.popup.is_none()
+        {
+            entry.popup_pending = true;
         }
         if timeout != 0 {
             let duration = if timeout < 0 {
@@ -376,8 +411,59 @@ impl NotificationCenter {
                 entry.timer = Some(timer);
             }
         }
-        self.refresh();
+        self.schedule_render();
         id
+    }
+
+    fn schedule_render(self: &Rc<Self>) {
+        if self.render_timer.borrow().is_some() {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        *self.render_timer.borrow_mut() = Some(glib::timeout_add_local_once(
+            Duration::from_millis(100),
+            move || {
+                if let Some(center) = weak.upgrade() {
+                    center.render_timer.borrow_mut().take();
+                    center.render_pending();
+                }
+            },
+        ));
+    }
+
+    fn render_pending(self: &Rc<Self>) {
+        let mut senders = std::collections::HashSet::new();
+        let mut popups = Vec::new();
+        let mut pending = false;
+        let mut entries = self.notifications.borrow_mut();
+        let length = entries.len();
+        let start = self.render_cursor.get().min(length.saturating_sub(1));
+        for offset in 0..length {
+            let entry = &mut entries[(start + offset) % length];
+            if !entry.dirty {
+                continue;
+            }
+            if senders.len() >= 8 || !senders.insert(entry.sender.clone()) {
+                pending = true;
+                continue;
+            }
+            entry.dirty = false;
+            entry.rendered = entry.view.clone();
+            if entry.active && (entry.popup.is_some() || entry.popup_pending) {
+                popups.push(entry.view.id);
+            }
+            entry.popup_pending = false;
+        }
+        self.render_cursor
+            .set(if length == 0 { 0 } else { (start + 1) % length });
+        drop(entries);
+        for id in popups {
+            self.show_popup(id);
+        }
+        self.refresh();
+        if pending {
+            self.schedule_render();
+        }
     }
 
     fn show_popup(self: &Rc<Self>, id: u32) {
@@ -608,6 +694,7 @@ impl NotificationCenter {
             return false;
         };
         entry.active = false;
+        entry.popup_pending = false;
         if let Some(timer) = entry.timer.take()
             && reason != 1
         {
@@ -746,10 +833,9 @@ impl NotificationCenter {
         let entries = self.notifications.borrow();
         let mut rows = self.rows.borrow_mut();
         rows.retain(|id, (view, active, row)| {
-            if entries
-                .iter()
-                .any(|entry| entry.view.id == *id && entry.view == *view && entry.active == *active)
-            {
+            if entries.iter().any(|entry| {
+                entry.view.id == *id && entry.rendered == *view && entry.active == *active
+            }) {
                 true
             } else {
                 list.remove(row);
@@ -765,9 +851,9 @@ impl NotificationCenter {
         let mut previous: Option<gtk::Box> = None;
         for entry in entries.iter().rev() {
             let (_, _, row) = rows.entry(entry.view.id).or_insert_with(|| {
-                let row = self.notification_content(&entry.view, entry.active, false);
+                let row = self.notification_content(&entry.rendered, entry.active, false);
                 list.append(&row);
-                (entry.view.clone(), entry.active, row)
+                (entry.rendered.clone(), entry.active, row)
             });
             list.reorder_child_after(row, previous.as_ref());
             previous = Some(row.clone());
@@ -781,6 +867,9 @@ impl NotificationCenter {
     }
 
     fn clear(self: &Rc<Self>) {
+        if let Some(timer) = self.render_timer.borrow_mut().take() {
+            timer.remove();
+        }
         let entries = std::mem::take(&mut *self.notifications.borrow_mut());
         for mut entry in entries {
             if let Some(timer) = entry.timer.take() {
@@ -993,6 +1082,65 @@ pub fn regression_checks(app: &gtk::Application) {
     let first = center.notify(0, view(), 0);
     assert_eq!(center.notify(first, view(), 0), first);
     assert_eq!(center.notifications.borrow().len(), 1);
+    let popup = center.notifications.borrow()[0].popup.clone().unwrap();
+    let original = popup.child().unwrap();
+    for index in 0..1000 {
+        let mut updated = view();
+        updated.summary = format!("Update {index}");
+        assert_eq!(center.notify_from(":test.sender", first, updated, 0), first);
+    }
+    assert_eq!(popup.child().unwrap(), original);
+    assert_eq!(center.notifications.borrow()[0].view.summary, "Update 999");
+    crate::ui_tests::pump(150);
+    assert_ne!(popup.child().unwrap(), original);
+    assert_eq!(
+        center.notifications.borrow()[0].rendered.summary,
+        "Update 999"
+    );
+    let stable = popup.child().unwrap();
+    crate::ui_tests::pump(150);
+    assert_eq!(popup.child().unwrap(), stable);
+
+    let second = center.notify_from(":test.sender", 0, view(), 0);
+    let third = center.notify_from(":other.sender", 0, view(), 0);
+    for (id, sender) in [
+        (first, ":test.sender"),
+        (second, ":test.sender"),
+        (third, ":other.sender"),
+    ] {
+        let mut updated = view();
+        updated.summary = "Budgeted update".into();
+        center.notify_from(sender, id, updated, 0);
+    }
+    crate::ui_tests::pump(130);
+    assert!(
+        center
+            .notifications
+            .borrow()
+            .iter()
+            .find(|entry| entry.view.id == second)
+            .unwrap()
+            .dirty
+    );
+    assert!(
+        !center
+            .notifications
+            .borrow()
+            .iter()
+            .find(|entry| entry.view.id == third)
+            .unwrap()
+            .dirty
+    );
+    crate::ui_tests::pump(150);
+    assert!(
+        !center
+            .notifications
+            .borrow()
+            .iter()
+            .find(|entry| entry.view.id == second)
+            .unwrap()
+            .dirty
+    );
     let content = center.notification_content(&view(), true, true);
     assert!(content.measure(gtk::Orientation::Vertical, 360).1 < 350);
     for _ in 0..crate::config::get().notification_history_limit + 5 {

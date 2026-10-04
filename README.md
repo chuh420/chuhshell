@@ -32,7 +32,7 @@ the battery menu selects performance on external power, balance on battery, and 
 
 clipboard history keeps up to 100 text and png entries in memory, never on disk. search and press enter to copy; delete removes an entry. you can pause recording or clear the history.
 
-for wallpapers, put images in `~/Pictures/Wallpapers` and provide `~/.local/bin/wallpaper.sh`. the picker calls that script with the selected filename and shows failures.
+for wallpapers, put images in `~/Pictures/Wallpapers` and provide `~/.local/bin/wallpaper.sh`. the picker calls that script with the selected filename and shows failures. it lists up to 256 images and loads previews as you browse; larger folders show a limit notice.
 
 ## installation
 
@@ -71,7 +71,7 @@ settings live in `~/.config/chuhshell/config.json` (or under `XDG_CONFIG_HOME`).
 
 you can choose modules, their order, launcher layout, monitors, devices and the notification history limit (200 by default). weather starts in aktobe; choose another city in the menu. `weather_units` accepts `"system"`, `"celsius"` or `"fahrenheit"`.
 
-launcher pins and sorting are saved separately in `launcher.json` in the same directory. tasks are saved under your xdg data home. notification history lasts until cleared or the shell restarts.
+launcher pins and sorting are saved separately in `launcher.json` in the same directory. tasks are saved under your xdg data home. notification history lasts until cleared or the shell restarts. task edits detect external changes; reopen the task list before retrying a conflict.
 
 settings writes are atomic. invalid or oversized user data is preserved and reported instead of overwritten. if a write succeeds but its directory cannot be synced, the new settings stay active and a durability warning appears in the service log.
 

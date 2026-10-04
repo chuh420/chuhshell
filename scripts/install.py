@@ -9,6 +9,7 @@ import sys
 import time
 import argparse
 import fcntl
+from commands import run as run_command
 from storage import xdg_path, write, snapshot, restore as restore_file, sync_directory
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -20,7 +21,10 @@ MANIFEST = STATE / 'manifest.json'
 
 
 def run(*args, check=True):
-    return subprocess.run(args, check=check, text=True, capture_output=True)
+    stopping = args[0] == 'systemctl' and ('stop' in args or '--now' in args)
+    planning = len(args) > 1 and args[1] == 'installation-plan'
+    return run_command(args, check=check, timeout=310 if stopping else 30,
+                       output_limit=64 * 1024 * 1024 if planning else 256 * 1024)
 
 
 def digest(data):

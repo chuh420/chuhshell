@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
+from commands import run as run_command
 from storage import xdg_path, write, snapshot, restore, sync_directory
 
 
@@ -18,7 +19,7 @@ BLOCK = b'if [[ -o interactive && "$TTY" == /dev/tty1 && -z "$WAYLAND_DISPLAY" &
 
 def profile_content(previous):
     content = previous if previous.startswith(BLOCK) else BLOCK + b'\n' + previous
-    result = subprocess.run(['zsh', '-n'], input=content, capture_output=True, timeout=5)
+    result = run_command(['zsh', '-n'], input=content, text=False, check=False, timeout=5)
     if result.returncode:
         raise RuntimeError('Invalid zsh profile: ' + result.stderr.decode(errors='replace').strip())
     return content
@@ -28,7 +29,7 @@ def profile_path(home):
     environment = dict(os.environ, HOME=str(home))
     if not environment.get("ZDOTDIR"):
         environment.pop("ZDOTDIR", None)
-    result = subprocess.run(['zsh', '-d', '-c', 'print -r -- "${ZDOTDIR:-$HOME}"'], env=environment, cwd=home, capture_output=True, text=True, timeout=5, check=True)
+    result = run_command(['zsh', '-d', '-c', 'print -r -- "${ZDOTDIR:-$HOME}"'], env=environment, cwd=home, timeout=5)
     value = Path(result.stdout.strip())
     if not value.is_absolute():
         raise RuntimeError('ZDOTDIR must be an absolute directory')
@@ -36,7 +37,7 @@ def profile_path(home):
 
 
 def run(*args, check=True):
-    return subprocess.run(args, check=check, capture_output=True, text=True)
+    return run_command(args, check=check)
 
 
 def privileged_restore(path, entry):

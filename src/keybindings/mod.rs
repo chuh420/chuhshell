@@ -43,6 +43,7 @@ pub(crate) fn queue_shutdown_saves(root: &std::path::Path) {
 
 struct Panel {
     root: std::path::PathBuf,
+    reading: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
     catalog: RefCell<Option<niri::Catalog>>,
     target: RefCell<Option<Target>>,
     list: glib::WeakRef<gtk::ListBox>,
@@ -57,6 +58,14 @@ struct Panel {
     recording: Cell<bool>,
     rows: RefCell<Vec<(String, gtk::Widget)>>,
     empty: RefCell<Option<gtk::Widget>>,
+}
+
+impl Drop for Panel {
+    fn drop(&mut self) {
+        if let Some(reading) = self.reading.get_mut().take() {
+            reading.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
 }
 
 fn button(label: &str) -> gtk::Button {
@@ -138,11 +147,20 @@ impl Panel {
         self.status("Reading Niri and chuhshell keybindings…", false);
         let (tx, rx) = async_channel::bounded(1);
         let root = self.root.clone();
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        if let Some(previous) = self.reading.replace(Some(cancelled.clone())) {
+            previous.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        let worker_cancelled = cancelled.clone();
         std::thread::spawn(move || {
-            let result = niri::Catalog::load(&root).map(|mut catalog| {
-                catalog.enrich_descriptions();
-                catalog
-            });
+            let result = niri::Catalog::load_cancellable(&root, worker_cancelled.clone()).map(
+                |mut catalog| {
+                    if !worker_cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                        catalog.enrich_descriptions();
+                    }
+                    catalog
+                },
+            );
             let _ = tx.send_blocking(result);
         });
         let weak = Rc::downgrade(self);
@@ -154,6 +172,10 @@ impl Panel {
                 return;
             };
             panel.busy(false);
+            if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
+            panel.reading.borrow_mut().take();
             match result {
                 Ok(catalog) => {
                     let count = catalog.bindings.len();
@@ -462,6 +484,7 @@ fn build(root: std::path::PathBuf) -> (gtk::Box, Rc<Panel>) {
     outer.append(&scroll);
     let panel = Rc::new(Panel {
         root,
+        reading: RefCell::new(None),
         catalog: RefCell::new(None),
         target: RefCell::new(None),
         list: list.downgrade(),
@@ -476,6 +499,26 @@ fn build(root: std::path::PathBuf) -> (gtk::Box, Rc<Panel>) {
         recording: Cell::new(false),
         rows: RefCell::new(Vec::new()),
         empty: RefCell::new(None),
+    });
+    outer.connect_unmap({
+        let panel = Rc::downgrade(&panel);
+        move |_| {
+            if let Some(panel) = panel.upgrade()
+                && let Some(reading) = panel.reading.borrow().as_ref()
+            {
+                reading.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    });
+    outer.add_weak_ref_notify_local({
+        let panel = Rc::downgrade(&panel);
+        move || {
+            if let Some(panel) = panel.upgrade()
+                && let Some(reading) = panel.reading.borrow().as_ref()
+            {
+                reading.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
     });
     search.connect_search_changed({
         let panel = panel.clone();

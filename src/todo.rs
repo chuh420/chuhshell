@@ -2,7 +2,7 @@ use gtk::prelude::*;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Task {
     pub(crate) text: String,
     pub(crate) done: bool,
@@ -11,8 +11,8 @@ pub(crate) struct Task {
 enum Command {
     Load,
     Add(String),
-    Toggle(usize),
-    Delete(usize),
+    Toggle(usize, std::sync::Arc<Vec<Task>>),
+    Delete(usize, std::sync::Arc<Vec<Task>>),
 }
 
 pub(crate) fn path() -> PathBuf {
@@ -40,6 +40,7 @@ pub(crate) fn load(path: &Path) -> Result<Vec<Task>, String> {
 
 fn update(path: &Path, command: Command) -> Result<Vec<Task>, String> {
     let mut tasks = load(path)?;
+    let original = tasks.clone();
     match command {
         Command::Load => return Ok(tasks),
         Command::Add(text) => {
@@ -58,11 +59,17 @@ fn update(path: &Path, command: Command) -> Result<Vec<Task>, String> {
                 done: false,
             });
         }
-        Command::Toggle(index) => {
+        Command::Toggle(index, expected) => {
+            if tasks != *expected {
+                return Err("Tasks changed on disk. Reopen the task list before editing".into());
+            }
             let task = tasks.get_mut(index).ok_or("Task no longer exists")?;
             task.done = !task.done;
         }
-        Command::Delete(index) => {
+        Command::Delete(index, expected) => {
+            if tasks != *expected {
+                return Err("Tasks changed on disk. Reopen the task list before editing".into());
+            }
             if index >= tasks.len() {
                 return Err("Task no longer exists".into());
             }
@@ -70,6 +77,9 @@ fn update(path: &Path, command: Command) -> Result<Vec<Task>, String> {
         }
     }
     let bytes = serde_json::to_vec(&tasks).map_err(|error| error.to_string())?;
+    if load(path)? != original {
+        return Err("Tasks changed while saving. Reopen the task list before editing".into());
+    }
     crate::storage::atomic_write(path, &bytes).map_err(|error| format!("Save tasks: {error}"))?;
     Ok(tasks)
 }
@@ -95,6 +105,7 @@ impl TodoView {
             return;
         };
         root.set_sensitive(false);
+        let adding = matches!(command, Command::Add(_));
         let saved = submit(path(), command);
         let view = self.clone();
         glib::MainContext::default().spawn_local(async move {
@@ -106,7 +117,7 @@ impl TodoView {
             match result {
                 Ok(tasks) => {
                     message.set_visible(false);
-                    if let Some(entry) = view.entry.upgrade() {
+                    if adding && let Some(entry) = view.entry.upgrade() {
                         entry.set_text("");
                         entry.grab_focus();
                     }
@@ -135,7 +146,8 @@ impl TodoView {
             empty.add_css_class("todo-empty");
             list.append(&empty);
         }
-        for (index, task) in tasks.into_iter().enumerate() {
+        let tasks = std::sync::Arc::new(tasks);
+        for (index, task) in tasks.iter().enumerate() {
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
             row.add_css_class("todo-row");
             let check = gtk::CheckButton::new();
@@ -147,8 +159,9 @@ impl TodoView {
                 "Mark as done"
             }));
             let view = self.clone();
+            let expected = tasks.clone();
             check.connect_toggled(move |_| {
-                view.dispatch(Command::Toggle(index));
+                view.dispatch(Command::Toggle(index, expected.clone()));
             });
             row.append(&check);
             let text = gtk::Label::new(Some(&task.text));
@@ -164,8 +177,9 @@ impl TodoView {
             delete.add_css_class("todo-delete");
             delete.set_tooltip_text(Some("Delete task"));
             let view = self.clone();
+            let expected = tasks.clone();
             delete.connect_clicked(move |_| {
-                view.dispatch(Command::Delete(index));
+                view.dispatch(Command::Delete(index, expected.clone()));
             });
             row.append(&delete);
             list.append(&row);
@@ -300,6 +314,24 @@ mod tests {
     }
 
     #[test]
+    fn stale_task_actions_preserve_reordered_and_edited_files() {
+        let file =
+            std::env::temp_dir().join(format!("chuhshell-todo-conflict-{}", std::process::id()));
+        update(&file, Command::Add("one".into())).unwrap();
+        let expected = update(&file, Command::Add("two".into())).unwrap();
+        let mut reordered = expected.clone();
+        reordered.reverse();
+        let bytes = serde_json::to_vec(&reordered).unwrap();
+        std::fs::write(&file, &bytes).unwrap();
+        assert!(update(&file, Command::Toggle(0, expected.clone().into())).is_err());
+        assert!(update(&file, Command::Delete(0, expected.into())).is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), bytes);
+        let current = load(&file).unwrap();
+        assert!(update(&file, Command::Toggle(0, current.into())).unwrap()[0].done);
+        std::fs::remove_file(file).unwrap();
+    }
+
+    #[test]
     fn task_files_are_bounded_before_parsing() {
         let path =
             std::env::temp_dir().join(format!("chuhshell-todo-limits-{}", std::process::id()));
@@ -330,9 +362,13 @@ mod tests {
         assert!(load(&file).unwrap().is_empty());
         let tasks = update(&file, Command::Add("  one  ".into())).unwrap();
         assert_eq!(tasks[0].text, "one");
-        assert!(update(&file, Command::Toggle(0)).unwrap()[0].done);
+        assert!(update(&file, Command::Toggle(0, load(&file).unwrap().into())).unwrap()[0].done);
         assert!(load(&file).unwrap()[0].done);
-        assert!(update(&file, Command::Delete(0)).unwrap().is_empty());
+        assert!(
+            update(&file, Command::Delete(0, load(&file).unwrap().into()))
+                .unwrap()
+                .is_empty()
+        );
         std::fs::write(&file, b"invalid").unwrap();
         assert!(update(&file, Command::Add("two".into())).is_err());
         assert_eq!(std::fs::read(&file).unwrap(), b"invalid");
