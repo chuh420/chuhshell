@@ -100,6 +100,7 @@ optional headless modes:
 - `CHUHSHELL_PROFILE=1 CHUHSHELL_TEST_RELEASE=1` for performance measurements.
 - `CHUHSHELL_SOAK_SECONDS=1800` for a 30-minute load check.
 - `CHUHSHELL_TEST_SCREENSHOTS=/path` for screenshots with grim; add `CHUHSHELL_TEST_BASELINES=/path` for comparison. match fonts, renderer and geometry.
+- `scripts/check-visual.sh` compares launcher fixtures against `CHUHSHELL_VISUAL_BASE` (locally `HEAD`, in ci the pull request base or previous push commit). it needs ttf-dejavu and uses the same isolated fonts, geometry and renderer for both builds; screenshots and the baseline commit are saved in `target/visual-artifacts/` (ci uses `artifacts/`). comparisons measure the visible content area.
 
 `scripts/report-environment.sh` records toolchain and package versions. build a release with `cargo build --release --locked`.
 

@@ -18,16 +18,20 @@ jobs:
     runs-on: ubuntu-latest
     container: archlinux:base-devel
     steps:
-      - run: pacman -Syu --noconfirm rust git gtk4 gtk4-layer-shell pkgconf python zsh labwc dbus niri grim wlr-randr
+      - run: pacman -Syu --noconfirm rust git gtk4 gtk4-layer-shell pkgconf python zsh labwc dbus niri grim wlr-randr ttf-dejavu adwaita-icon-theme
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - run: mkdir -p artifacts && scripts/report-environment.sh > artifacts/environment.txt
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked --all-targets
       - run: for script in scripts/*.sh packaging/PKGBUILD; do bash -n "$script" || exit; done
       - run: python scripts/test_install.py
-      - run: CHUHSHELL_TEST_SCREENSHOTS="$PWD/artifacts/baselines" scripts/check-headless.sh
-      - run: CHUHSHELL_TEST_BASELINES="$PWD/artifacts/baselines" CHUHSHELL_TEST_SCREENSHOTS="$PWD/artifacts/screenshots" scripts/check-headless.sh
+      - run: scripts/check-visual.sh
+        env:
+          CHUHSHELL_VISUAL_ARTIFACTS: ${{ github.workspace }}/artifacts
+          CHUHSHELL_VISUAL_BASE: ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD^' }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:

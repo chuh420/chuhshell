@@ -290,65 +290,94 @@ pub fn is_command(command: &str) -> bool {
     )
 }
 
-pub fn submit(
-    state: &Rc<AppState>,
-    command: &str,
-) -> async_channel::Receiver<Result<Notice, String>> {
-    if state.commands.borrow().is_none() {
-        let (tx, rx) = async_channel::bounded::<CommandRequest>(32);
-        std::thread::spawn(move || {
-            let mut pending = None;
-            while let Some(batch) = command_batch(&rx, &mut pending) {
-                if crate::process::stopped() {
-                    break;
-                }
-                let result = execute(&batch[0].command, batch.len() as u32);
-                for request in batch {
-                    let _ = request.reply.try_send(result.clone());
-                }
-            }
-        });
-        *state.commands.borrow_mut() = Some(tx);
-    }
-    let (tx, rx) = async_channel::bounded(1);
-    let request = CommandRequest {
-        command: command.into(),
-        reply: tx.clone(),
-    };
-    if state
-        .commands
-        .borrow()
-        .as_ref()
-        .unwrap()
-        .try_send(request)
-        .is_err()
-    {
-        let _ = tx.try_send(Err("Too many pending system commands".into()));
-    }
-    rx
+pub(crate) enum Work {
+    Notification(CommandRequest),
+    Control(
+        crate::controls::Action,
+        async_channel::Sender<(
+            crate::controls::Kind,
+            Result<crate::controls::Applied, String>,
+        )>,
+    ),
 }
 
-fn command_batch(
-    rx: &async_channel::Receiver<CommandRequest>,
-    pending: &mut Option<CommandRequest>,
-) -> Option<Vec<CommandRequest>> {
+fn work_batch(rx: &async_channel::Receiver<Work>, pending: &mut Option<Work>) -> Option<Vec<Work>> {
     let first = pending.take().or_else(|| rx.recv_blocking().ok())?;
-    let merge = adjustment(&first.command).is_some();
+    if matches!(&first, Work::Control(..)) {
+        std::thread::sleep(Duration::from_millis(60));
+    }
     let mut batch = vec![first];
-    if merge {
-        while batch.len() < 32 {
-            let Ok(next) = rx.try_recv() else {
-                break;
-            };
-            if next.command == batch[0].command {
-                batch.push(next);
-            } else {
-                *pending = Some(next);
-                break;
+    while batch.len() < 32 {
+        let Ok(next) = rx.try_recv() else {
+            break;
+        };
+        let merge = match (&batch[0], &next) {
+            (Work::Control(left, _), Work::Control(right, _)) => left.kind() == right.kind(),
+            (Work::Notification(left), Work::Notification(right)) => {
+                adjustment(&left.command).is_some() && left.command == right.command
             }
+            _ => false,
+        };
+        if merge {
+            batch.push(next);
+        } else {
+            *pending = Some(next);
+            break;
         }
     }
     Some(batch)
+}
+
+pub(crate) fn worker() -> async_channel::Sender<Work> {
+    static WORKER: std::sync::OnceLock<async_channel::Sender<Work>> = std::sync::OnceLock::new();
+    WORKER
+        .get_or_init(|| {
+            let (tx, rx) = async_channel::bounded::<Work>(32);
+            std::thread::spawn(move || {
+                let mut pending = None;
+                while let Some(batch) = work_batch(&rx, &mut pending) {
+                    if crate::process::stopped() {
+                        break;
+                    }
+                    match batch.last().unwrap() {
+                        Work::Control(action, _) => {
+                            let kind = action.kind();
+                            let result = crate::controls::execute(action.clone());
+                            for request in batch {
+                                if let Work::Control(_, reply) = request {
+                                    let _ = reply.send_blocking((kind, result.clone()));
+                                }
+                            }
+                        }
+                        Work::Notification(request) => {
+                            let result = execute(&request.command, batch.len() as u32);
+                            for request in batch {
+                                if let Work::Notification(request) = request {
+                                    let _ = request.reply.try_send(result.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+            tx
+        })
+        .clone()
+}
+
+pub fn submit(
+    _state: &Rc<AppState>,
+    command: &str,
+) -> async_channel::Receiver<Result<Notice, String>> {
+    let (tx, rx) = async_channel::bounded(1);
+    let request = Work::Notification(CommandRequest {
+        command: command.into(),
+        reply: tx.clone(),
+    });
+    if worker().try_send(request).is_err() {
+        let _ = tx.try_send(Err("Too many pending system commands".into()));
+    }
+    rx
 }
 
 pub fn handle_command(state: &Rc<AppState>, command: &str) -> bool {
@@ -477,17 +506,20 @@ mod tests {
             "brightness-key-up",
         ] {
             let (reply, _) = async_channel::bounded(1);
-            tx.try_send(CommandRequest {
+            tx.try_send(Work::Notification(CommandRequest {
                 command: command.into(),
                 reply,
-            })
+            }))
             .unwrap();
         }
         drop(tx);
         let mut pending = None;
         let mut batches = Vec::new();
-        while let Some(batch) = command_batch(&rx, &mut pending) {
-            batches.push((batch[0].command.clone(), batch.len()));
+        while let Some(batch) = work_batch(&rx, &mut pending) {
+            let Work::Notification(first) = &batch[0] else {
+                panic!("Expected notification");
+            };
+            batches.push((first.command.clone(), batch.len()));
         }
         assert_eq!(
             batches,
@@ -507,6 +539,46 @@ mod tests {
             adjustment_value("volume-down", 32).as_deref(),
             Some("160%-")
         );
+    }
+
+    #[test]
+    fn sliders_merge_only_before_the_next_command_boundary() {
+        use crate::controls::Action;
+        let (tx, rx) = async_channel::bounded(32);
+        let (reply, _) = async_channel::bounded(32);
+        for action in [Action::Volume(40), Action::Volume(55)] {
+            tx.try_send(Work::Control(action, reply.clone())).unwrap();
+        }
+        let (notice, _) = async_channel::bounded(1);
+        tx.try_send(Work::Notification(CommandRequest {
+            command: "volume-mute".into(),
+            reply: notice,
+        }))
+        .unwrap();
+        tx.try_send(Work::Control(Action::Volume(25), reply.clone()))
+            .unwrap();
+        tx.try_send(Work::Control(Action::Brightness(70), reply))
+            .unwrap();
+        drop(tx);
+        let mut pending = None;
+        let first = work_batch(&rx, &mut pending).unwrap();
+        assert_eq!(first.len(), 2);
+        let Work::Control(action, _) = first.last().unwrap() else {
+            panic!("Expected slider");
+        };
+        assert_eq!(*action, Action::Volume(55));
+        let mute = work_batch(&rx, &mut pending).unwrap();
+        assert!(
+            matches!(&mute[0], Work::Notification(request) if request.command == "volume-mute")
+        );
+        let volume = work_batch(&rx, &mut pending).unwrap();
+        assert!(matches!(&volume[0], Work::Control(Action::Volume(25), _)));
+        let brightness = work_batch(&rx, &mut pending).unwrap();
+        assert!(matches!(
+            &brightness[0],
+            Work::Control(Action::Brightness(70), _)
+        ));
+        assert!(work_batch(&rx, &mut pending).is_none());
     }
 
     #[test]

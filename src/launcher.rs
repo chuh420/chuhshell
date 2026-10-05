@@ -447,7 +447,7 @@ fn create(
                 })
                 .collect();
             matches.sort_by(|left, right| {
-                let pin_order = if mode == LauncherMode::Normal {
+                let pin_order = if mode == LauncherMode::Normal && !searching.get() {
                     preferences
                         .pinned
                         .contains(&right.id)
@@ -547,7 +547,7 @@ fn create(
             let a_id = a_id.as_str().strip_prefix("app-").unwrap_or("");
             let b_id = b_id.as_str().strip_prefix("app-").unwrap_or("");
             let preferences = preferences.borrow();
-            let pin_order = if mode == LauncherMode::Normal {
+            let pin_order = if mode == LauncherMode::Normal && !searching.get() {
                 preferences
                     .pinned
                     .contains(b_id)
@@ -1089,6 +1089,22 @@ pub fn regression_checks(app: &gtk::Application) {
     assert!(other_pin.has_css_class("pinned"));
     assert_eq!(visible_rows(&list)[0], other);
     assert!(other.has_css_class("selected-row"));
+    other_pin.emit_clicked();
+    crate::ui_tests::pump(100);
+    pin_button(&frequent).unwrap().emit_clicked();
+    crate::ui_tests::pump(100);
+    assert_eq!(visible_rows(&list)[0], frequent);
+    search.set_text("a");
+    search.emit_by_name::<()>("search-changed", &[]);
+    assert_eq!(visible_rows(&list)[0], other);
+    search.set_text("");
+    search.emit_by_name::<()>("search-changed", &[]);
+    assert_eq!(visible_rows(&list)[0], frequent);
+    pin_button(&frequent).unwrap().emit_clicked();
+    crate::ui_tests::pump(100);
+    other_pin.emit_clicked();
+    crate::ui_tests::pump(100);
+    assert_eq!(visible_rows(&list)[0], other);
     assert!(!frequent.has_css_class("selected-row"));
     let controllers = window.observe_controllers();
     let key = (0..controllers.n_items())

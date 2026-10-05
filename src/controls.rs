@@ -5,7 +5,6 @@ use crate::{
 use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
-use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -33,14 +32,14 @@ impl Kind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Action {
+pub(crate) enum Action {
     Layout(usize, Vec<String>),
     Brightness(u8),
     Volume(u8),
 }
 
 impl Action {
-    fn kind(&self) -> Kind {
+    pub(crate) fn kind(&self) -> Kind {
         match self {
             Self::Layout(..) => Kind::Layout,
             Self::Brightness(_) => Kind::Brightness,
@@ -49,13 +48,14 @@ impl Action {
     }
 }
 
-enum Applied {
+#[derive(Clone)]
+pub(crate) enum Applied {
     Layout(niri::KeyboardLayouts),
     Brightness((u8, &'static str)),
     Volume(String),
 }
 
-fn execute(action: Action) -> Result<Applied, String> {
+pub(crate) fn execute(action: Action) -> Result<Applied, String> {
     match action {
         Action::Layout(index, names) => {
             let layouts = niri::keyboard_layouts().ok_or("Keyboard layouts unavailable")?;
@@ -116,35 +116,23 @@ pub struct Controls {
     snapshot: RefCell<SystemState>,
     view: RefCell<Option<View>>,
     updating: Cell<bool>,
-    pending: RefCell<[Option<Action>; 3]>,
-    busy: Cell<Option<Kind>>,
-    scheduled: Cell<bool>,
-    requests: async_channel::Sender<Action>,
+    pending: RefCell<[usize; 3]>,
+    requests: async_channel::Sender<notifications::Work>,
+    results: async_channel::Sender<(Kind, Result<Applied, String>)>,
 }
 
 impl Controls {
     pub fn new(services: &Rc<Services>) -> Rc<Self> {
-        let (requests, receiver) = async_channel::bounded::<Action>(1);
-        let (sender, results) = async_channel::bounded(1);
-        std::thread::spawn(move || {
-            while let Ok(action) = receiver.recv_blocking() {
-                if crate::process::stopped() {
-                    break;
-                }
-                if sender.send_blocking(execute(action)).is_err() {
-                    break;
-                }
-            }
-        });
+        let requests = notifications::worker();
+        let (sender, results) = async_channel::bounded(32);
         let controls = Rc::new(Self {
             services: Rc::downgrade(services),
             snapshot: RefCell::new(SystemState::default()),
             view: RefCell::new(None),
             updating: Cell::new(false),
-            pending: RefCell::new([None, None, None]),
-            busy: Cell::new(None),
-            scheduled: Cell::new(false),
+            pending: RefCell::new([0; 3]),
             requests,
+            results: sender,
         });
         let weak = Rc::downgrade(&controls);
         services.subscribe(move |data, changes| {
@@ -163,18 +151,18 @@ impl Controls {
         });
         let weak = Rc::downgrade(&controls);
         glib::MainContext::default().spawn_local(async move {
-            while let Ok(result) = results.recv().await {
+            while let Ok((completed, result)) = results.recv().await {
                 let Some(controls) = weak.upgrade() else {
                     break;
                 };
-                let completed = controls.busy.get();
+                controls.pending.borrow_mut()[completed.index()] -= 1;
                 match result {
                     Ok(applied) => {
                         if let Some(view) = controls
                             .view
                             .borrow()
                             .as_ref()
-                            .filter(|v| Some(v.kind) == completed)
+                            .filter(|v| v.kind == completed)
                         {
                             view.status.remove_css_class("menu-error");
                         }
@@ -191,16 +179,14 @@ impl Controls {
                             .view
                             .borrow()
                             .as_ref()
-                            .filter(|v| Some(v.kind) == completed)
+                            .filter(|v| v.kind == completed)
                         {
                             view.status.set_text(&error);
                             view.status.add_css_class("menu-error");
                         }
                     }
                 }
-                controls.busy.set(None);
                 controls.render();
-                controls.dispatch();
             }
         });
         controls
@@ -208,34 +194,15 @@ impl Controls {
 
     fn request(self: &Rc<Self>, action: Action) {
         let kind = action.kind();
-        self.pending.borrow_mut()[kind.index()] = Some(action);
         if let Some(view) = self.view.borrow().as_ref().filter(|view| view.kind == kind) {
             view.status.remove_css_class("menu-error");
         }
-        if !self.scheduled.replace(true) {
-            let weak = Rc::downgrade(self);
-            glib::timeout_add_local_once(Duration::from_millis(60), move || {
-                if let Some(controls) = weak.upgrade() {
-                    controls.scheduled.set(false);
-                    controls.dispatch();
-                }
-            });
-        }
-    }
-
-    fn dispatch(&self) {
-        if self.busy.get().is_some() {
-            return;
-        }
-        let next = self.pending.borrow_mut().iter_mut().find_map(Option::take);
-        if let Some(action) = next {
-            let kind = action.kind();
-            if self.requests.try_send(action).is_ok() {
-                self.busy.set(Some(kind));
-            } else if let Some(view) = self.view.borrow().as_ref() {
-                view.status.set_text("System controls unavailable");
-                view.status.add_css_class("menu-error");
-            }
+        let request = notifications::Work::Control(action, self.results.clone());
+        if self.requests.try_send(request).is_ok() {
+            self.pending.borrow_mut()[kind.index()] += 1;
+        } else if let Some(view) = self.view.borrow().as_ref().filter(|view| view.kind == kind) {
+            view.status.set_text("Too many pending system commands");
+            view.status.add_css_class("menu-error");
         }
     }
 
@@ -295,8 +262,7 @@ impl Controls {
                 snapshot.brightness.map(|(percent, _)| percent)
             };
             scale.set_sensitive(value.is_some());
-            let changing = self.busy.get() == Some(view.kind)
-                || self.pending.borrow()[view.kind.index()].is_some();
+            let changing = self.pending.borrow()[view.kind.index()] > 0;
             if !changing && let Some(value) = value {
                 scale.set_value(f64::from(value));
             }
@@ -414,7 +380,8 @@ impl Controls {
 
 #[cfg(test)]
 pub fn regression_checks(anchor: &gtk::Button) {
-    let (requests, receiver) = async_channel::bounded(1);
+    let (requests, receiver) = async_channel::bounded(32);
+    let (results, _) = async_channel::bounded(32);
     let controls = Rc::new(Controls {
         services: Weak::new(),
         snapshot: RefCell::new(SystemState {
@@ -431,10 +398,9 @@ pub fn regression_checks(anchor: &gtk::Button) {
         }),
         view: RefCell::new(None),
         updating: Cell::new(false),
-        pending: RefCell::new([None, None, None]),
-        busy: Cell::new(None),
-        scheduled: Cell::new(false),
+        pending: RefCell::new([0; 3]),
         requests,
+        results,
     });
     controls.toggle(Kind::Volume, anchor);
     let view = controls.view.borrow().as_ref().unwrap().clone();
@@ -447,31 +413,39 @@ pub fn regression_checks(anchor: &gtk::Button) {
     controls.snapshot.borrow_mut().audio = Some("Volume: 0.20".into());
     controls.render();
     assert_eq!(scale.value(), 55.0);
-    controls.dispatch();
-    assert_eq!(receiver.try_recv().unwrap(), Action::Volume(55));
+    for expected in [45, 55] {
+        let notifications::Work::Control(action, _) = receiver.try_recv().unwrap() else {
+            panic!("Expected slider request");
+        };
+        assert_eq!(action, Action::Volume(expected));
+    }
     assert!(receiver.is_empty());
-    controls.busy.set(None);
+    *controls.pending.borrow_mut() = [0; 3];
     controls.toggle(Kind::Brightness, anchor);
     assert!(view.popover.parent().is_none());
     let view = controls.view.borrow().as_ref().unwrap().clone();
     let scale = view.scale.unwrap();
     assert_eq!(scale.value(), 75.0);
     scale.set_value(35.0);
-    controls.dispatch();
-    assert_eq!(receiver.try_recv().unwrap(), Action::Brightness(35));
-    controls.busy.set(None);
+    let notifications::Work::Control(action, _) = receiver.try_recv().unwrap() else {
+        panic!("Expected brightness request");
+    };
+    assert_eq!(action, Action::Brightness(35));
+    *controls.pending.borrow_mut() = [0; 3];
     controls.toggle(Kind::Layout, anchor);
     let view = controls.view.borrow().as_ref().unwrap().clone();
     assert_eq!(view.buttons.len(), 2);
     assert!(view.buttons[0].has_css_class("primary"));
     let stable = view.buttons[1].clone();
     stable.emit_clicked();
-    controls.dispatch();
+    let notifications::Work::Control(action, _) = receiver.try_recv().unwrap() else {
+        panic!("Expected layout request");
+    };
     assert_eq!(
-        receiver.try_recv().unwrap(),
+        action,
         Action::Layout(1, vec!["English (US)".into(), "Russian".into()])
     );
-    controls.busy.set(None);
+    *controls.pending.borrow_mut() = [0; 3];
     controls.snapshot.borrow_mut().niri.layouts.current_idx = 1;
     controls.render();
     assert_eq!(controls.view.borrow().as_ref().unwrap().buttons[1], stable);
@@ -479,7 +453,6 @@ pub fn regression_checks(anchor: &gtk::Button) {
     controls.snapshot.borrow_mut().niri.layouts.names = vec!["German".into()];
     controls.render();
     stable.emit_clicked();
-    controls.dispatch();
     assert!(receiver.is_empty());
     controls.toggle(Kind::Volume, anchor);
     controls.snapshot.borrow_mut().audio = None;

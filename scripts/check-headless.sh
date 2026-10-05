@@ -42,6 +42,7 @@ for attempt in $(seq 1 100); do
     sleep 0.1
 done
 export WAYLAND_DISPLAY=wayland-0
+wlr-randr --output HEADLESS-1 --custom-mode 1280x720@60Hz --scale 1 --pos 0,0 --output HEADLESS-2 --custom-mode 1280x720@60Hz --scale 1 --pos 1280,0
 cd "$repo_dir"
 test_args=()
 if [[ "${CHUHSHELL_TEST_RELEASE:-0}" == 1 ]]; then test_args+=(--release); fi

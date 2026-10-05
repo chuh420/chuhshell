@@ -305,6 +305,11 @@ fn ui_regressions() {
 }
 
 pub fn capture(name: &str) {
+    if std::env::var_os("CHUHSHELL_TEST_VISUAL_STABLE").is_some()
+        && !matches!(name, "launcher" | "launcher-pin" | "launcher-sort")
+    {
+        return;
+    }
     let Some(directory) = std::env::var_os("CHUHSHELL_TEST_SCREENSHOTS") else {
         return;
     };
@@ -334,6 +339,27 @@ pub fn capture(name: &str) {
         let mut right = left.clone();
         actual.download(&mut left, stride);
         expected.download(&mut right, stride);
+        let mut region = (actual.width() as usize, actual.height() as usize, 0, 0);
+        for (index, (left, right)) in left
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(right.as_chunks::<4>().0.iter())
+            .enumerate()
+        {
+            if left[..3].iter().chain(&right[..3]).any(|value| *value > 8) {
+                let x = index % actual.width() as usize;
+                let y = index / actual.width() as usize;
+                region.0 = region.0.min(x);
+                region.1 = region.1.min(y);
+                region.2 = region.2.max(x + 1);
+                region.3 = region.3.max(y + 1);
+            }
+        }
+        assert!(
+            region.2 > region.0 && region.3 > region.1,
+            "{name}: empty capture"
+        );
         let changed = left
             .as_chunks::<4>()
             .0
@@ -345,7 +371,7 @@ pub fn capture(name: &str) {
                     .any(|(left, right)| left.abs_diff(*right) > 24)
             })
             .count();
-        let fraction = changed as f64 / (actual.width() * actual.height()) as f64;
+        let fraction = changed as f64 / ((region.2 - region.0) * (region.3 - region.1)) as f64;
         assert!(
             fraction <= 0.01,
             "{name}: {:.2}% changed pixels exceeds 1% tolerance",
