@@ -2,6 +2,7 @@ mod local;
 pub(crate) mod niri;
 
 use gtk::prelude::*;
+pub(crate) use local::validate_overrides;
 pub use local::{hint, is_default, remap};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;

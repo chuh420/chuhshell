@@ -27,6 +27,41 @@ def run(*args, check=True):
                        output_limit=64 * 1024 * 1024 if planning else 256 * 1024)
 
 
+SESSION_ENVIRONMENT = ('WAYLAND_DISPLAY', 'NIRI_SOCKET', 'DISPLAY', 'XDG_CURRENT_DESKTOP',
+                       'XDG_SESSION_DESKTOP', 'XDG_SESSION_TYPE', 'XDG_RUNTIME_DIR')
+
+SERVICE_ENVIRONMENT = (
+    'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME',
+    'XDG_DATA_DIRS', 'XDG_CONFIG_DIRS', 'PATH', 'LANG', 'LC_ALL', 'LC_CTYPE',
+    'LC_MESSAGES', 'LC_TIME', 'LC_NUMERIC', 'LC_MONETARY', 'LC_COLLATE',
+    'LC_MEASUREMENT', 'LC_PAPER', 'LC_NAME', 'LC_ADDRESS', 'LC_TELEPHONE', 'LC_IDENTIFICATION',
+)
+
+
+def unit_quote(value):
+    value.encode('utf-8')
+    escaped = ''.join('\\x%02x' % ord(char) if ord(char) < 32 or ord(char) == 127
+                      else '\\' + char if char in ('\\', '"')
+                      else '%%' if char == '%' else char for char in value)
+    return '"' + escaped + '"'
+
+
+def service_environment():
+    homes = {'XDG_CONFIG_HOME': '.config', 'XDG_DATA_HOME': '.local/share',
+             'XDG_STATE_HOME': '.local/state', 'XDG_CACHE_HOME': '.cache'}
+    values = []
+    for name in SERVICE_ENVIRONMENT:
+        value = os.environ.get(name, os.defpath if name == 'PATH' else '')
+        if name in homes and (not value or not Path(value).is_absolute()):
+            value = str(HOME_DIR / homes[name])
+        if name in ('XDG_DATA_DIRS', 'XDG_CONFIG_DIRS'):
+            value = ':'.join(part for part in value.split(':') if part and Path(part).is_absolute())
+            if not value:
+                value = '/usr/local/share:/usr/share' if name == 'XDG_DATA_DIRS' else '/etc/xdg'
+        values.append(unit_quote(name + '=' + value))
+    return 'Environment=' + ' '.join(values) + '\n'
+
+
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -178,6 +213,7 @@ def install(config=None):
     previous_service = manifest.get(str(service_path))
     notification_path = DATA / 'dbus-1/services/org.freedesktop.Notifications.service'
     service = (ROOT / 'packaging/chuhshell.service').read_text().replace('ExecStart=/usr/bin/chuhshell', 'ExecStart=' + json.dumps(str(destination)))
+    service = service.replace('ExecStart=', service_environment() + 'ExecStart=', 1)
     notification = (ROOT / 'packaging/org.freedesktop.Notifications.service').read_text().replace('Exec=/usr/bin/chuhshell', 'Exec=' + json.dumps(str(destination)))
     changes = [(destination, binary.read_bytes(), 0o755), (service_path, service.encode(), 0o644), (notification_path, notification.encode(), 0o644)]
     plan = plan_configuration(binary, destination, config, bool(manifest))
@@ -204,7 +240,7 @@ def install(config=None):
         if previous_service is None:
             manifest[str(service_path)]['service_before'] = {'enabled': enabled_before, 'active': active_before}
         run('systemctl', '--user', 'daemon-reload')
-        environment = [name for name in ['WAYLAND_DISPLAY', 'NIRI_SOCKET', 'DISPLAY', 'XDG_CURRENT_DESKTOP'] if name in os.environ]
+        environment = [name for name in SESSION_ENVIRONMENT if os.environ.get(name)]
         if environment:
             run('systemctl', '--user', 'import-environment', *environment)
         journal['stopped'] = True

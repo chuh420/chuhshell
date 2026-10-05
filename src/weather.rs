@@ -234,7 +234,7 @@ fn render_report(container: &gtk::Box, report: Report) {
 
 pub fn view() -> gtk::Box {
     let outer = gtk::Box::new(gtk::Orientation::Vertical, 10);
-    let settings = crate::config::read().unwrap_or_default();
+    let settings = crate::config::get();
     let location = Rc::new(std::cell::RefCell::new(
         settings.weather_location.clone().unwrap_or_default(),
     ));

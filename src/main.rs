@@ -123,43 +123,45 @@ fn main() -> glib::ExitCode {
         eprintln!("chuhshell: unknown command or extra arguments; use --help");
         return glib::ExitCode::FAILURE;
     }
-    if let Err(error) = config::read() {
-        eprintln!("chuhshell: invalid configuration: {error}");
-        return glib::ExitCode::FAILURE;
-    }
     let app = gtk::Application::builder()
         .application_id("dev.chuh.chuhshell")
         .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE)
         .build();
+    if let Err(error) = app.register(None::<&gio::Cancellable>) {
+        eprintln!("chuhshell: could not register application: {error}");
+        return glib::ExitCode::FAILURE;
+    }
+    if app.is_remote() {
+        return app.run();
+    }
+    if let Err(error) = config::initialize() {
+        eprintln!("chuhshell: invalid configuration: {error}");
+        return glib::ExitCode::FAILURE;
+    }
     let state = Rc::new(AppState::default());
-    app.connect_startup({
+    {
         let state = Rc::clone(&state);
-        move |app| {
-            css::install();
-            let guard = app.hold();
-            let state = Rc::clone(&state);
-            app.connect_shutdown(move |_| {
-                let _ = &guard;
-                idle::shutdown(&state);
-                crate::storage::shutdown();
-                process::shutdown();
+        css::install();
+        let guard = app.hold();
+        let state = Rc::clone(&state);
+        app.connect_shutdown(move |_| {
+            let _ = &guard;
+            idle::shutdown(&state);
+            crate::storage::shutdown();
+            process::shutdown();
+        });
+        for signal in [libc::SIGTERM, libc::SIGINT] {
+            let weak = app.downgrade();
+            glib_unix::unix_signal_add_local(signal, move || {
+                if let Some(app) = weak.upgrade() {
+                    app.quit();
+                }
+                glib::ControlFlow::Break
             });
-            for signal in [libc::SIGTERM, libc::SIGINT] {
-                let weak = app.downgrade();
-                glib_unix::unix_signal_add_local(signal, move || {
-                    if let Some(app) = weak.upgrade() {
-                        app.quit();
-                    }
-                    glib::ControlFlow::Break
-                });
-            }
         }
-    });
+    }
     let center = notification_center::NotificationCenter::new(&app);
-    app.connect_startup({
-        let center = Rc::clone(&center);
-        move |_| center.start()
-    });
+    center.start();
     app.connect_command_line(move |app, command_line| {
         let arguments = command_line.arguments();
         let command = arguments.get(1).map(|s| s.to_string_lossy().into_owned());

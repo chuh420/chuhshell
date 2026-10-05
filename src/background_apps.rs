@@ -11,8 +11,10 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct ProcessIdentity {
@@ -35,19 +37,89 @@ struct BackgroundApp {
     targets: Vec<ProcessIdentity>,
 }
 
+const PROCESS_LIMIT: usize = 2048;
+const DIRECTORY_LIMIT: usize = 16384;
+const SCAN_TIME: Duration = Duration::from_secs(2);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Snapshot {
+    entries: Vec<BackgroundApp>,
+    incomplete: bool,
+}
+
+struct ScanBudget {
+    deadline: Instant,
+    remaining: usize,
+    bytes_remaining: usize,
+    incomplete: bool,
+}
+
+impl ScanBudget {
+    fn new() -> Self {
+        Self {
+            deadline: Instant::now() + SCAN_TIME,
+            remaining: DIRECTORY_LIMIT,
+            bytes_remaining: 16 * 1024 * 1024,
+            incomplete: false,
+        }
+    }
+
+    fn available(&mut self) -> bool {
+        if self.remaining == 0 || Instant::now() >= self.deadline || process::stopped() {
+            self.incomplete = true;
+            false
+        } else {
+            true
+        }
+    }
+
+    fn read(&mut self, path: &Path, limit: usize) -> Option<Vec<u8>> {
+        if !self.available() || self.bytes_remaining == 0 {
+            self.incomplete = true;
+            return None;
+        }
+        let limit = limit.min(self.bytes_remaining);
+        match crate::storage::read_limited(path, limit) {
+            Ok(bytes) => {
+                self.bytes_remaining -= bytes.len();
+                Some(bytes)
+            }
+            Err(error) => {
+                if error.kind() == std::io::ErrorKind::Other {
+                    self.incomplete = true;
+                }
+                None
+            }
+        }
+    }
+
+    fn visit(&mut self) -> bool {
+        if !self.available() {
+            return false;
+        }
+        self.remaining -= 1;
+        true
+    }
+}
+
 pub struct BackgroundManager {
     buttons: RefCell<Vec<glib::WeakRef<gtk::Button>>>,
     entries: RefCell<Vec<BackgroundApp>>,
     drawer: RefCell<Option<gtk::Popover>>,
     list: RefCell<Option<gtk::Box>>,
     rows: RefCell<HashMap<String, (BackgroundApp, gtk::Box)>>,
+    active: Arc<AtomicBool>,
+    status: RefCell<Option<String>>,
     wake: std::sync::mpsc::SyncSender<()>,
 }
 
 impl BackgroundManager {
     pub fn new(_app: &gtk::Application) -> Rc<Self> {
         let (wake, refresh) = std::sync::mpsc::sync_channel(1);
+        let active = Arc::new(AtomicBool::new(false));
         let manager = Rc::new(Self {
+            active: active.clone(),
+            status: RefCell::new(None),
             buttons: RefCell::new(Vec::new()),
             entries: RefCell::new(Vec::new()),
             drawer: RefCell::new(None),
@@ -60,13 +132,26 @@ impl BackgroundManager {
             let mut previous = None;
             let mut delay = 4;
             while !process::stopped() {
+                if !active.load(Ordering::Relaxed) {
+                    if matches!(
+                        refresh.recv_timeout(Duration::from_secs(30)),
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+                    ) {
+                        return;
+                    }
+                    continue;
+                }
                 let result = niri::window_processes()
                     .map(|windows| scan(&apps::load_apps(), &windows))
                     .ok_or("Niri is unavailable");
                 if previous.as_ref() == Some(&result) {
                     delay = (delay * 2).min(30);
                 } else {
-                    delay = 4;
+                    delay = if result.as_ref().is_ok_and(|snapshot| !snapshot.incomplete) {
+                        4
+                    } else {
+                        30
+                    };
                 }
                 previous = Some(result.clone());
                 if tx.send_blocking(result).is_err() {
@@ -87,13 +172,17 @@ impl BackgroundManager {
                     break;
                 };
                 match result {
-                    Ok(entries) => {
-                        if *manager.entries.borrow() != entries {
-                            *manager.entries.borrow_mut() = entries;
+                    Ok(snapshot) => {
+                        *manager.status.borrow_mut() = snapshot
+                            .incomplete
+                            .then(|| "Incomplete process scan; try refreshing later".into());
+                        if *manager.entries.borrow() != snapshot.entries {
+                            *manager.entries.borrow_mut() = snapshot.entries;
                         }
                         manager.refresh();
                     }
                     Err(error) => {
+                        *manager.status.borrow_mut() = Some(error.into());
                         manager.entries.borrow_mut().clear();
                         manager.refresh();
                         for button in manager.buttons.borrow().iter().filter_map(|w| w.upgrade()) {
@@ -111,7 +200,20 @@ impl BackgroundManager {
         let _ = self.wake.try_send(());
     }
 
-    pub fn attach_button(&self, button: &gtk::Button) {
+    pub fn attach_button(self: &Rc<Self>, button: &gtk::Button) {
+        let weak = Rc::downgrade(self);
+        button.connect_map(move |_| {
+            if let Some(manager) = weak.upgrade() {
+                manager.refresh();
+                manager.request_refresh();
+            }
+        });
+        let weak = Rc::downgrade(self);
+        button.connect_unmap(move |_| {
+            if let Some(manager) = weak.upgrade() {
+                manager.refresh();
+            }
+        });
         self.buttons.borrow_mut().push(button.downgrade());
         self.refresh();
     }
@@ -152,6 +254,7 @@ impl BackgroundManager {
                 manager.drawer.borrow_mut().take();
                 manager.list.borrow_mut().take();
                 manager.rows.borrow_mut().clear();
+                manager.refresh();
             }
         });
         self.refresh();
@@ -159,7 +262,18 @@ impl BackgroundManager {
         let _ = self.wake.try_send(());
     }
     fn refresh(&self) {
+        self.active.store(
+            self.drawer.borrow().is_some()
+                || self
+                    .buttons
+                    .borrow()
+                    .iter()
+                    .filter_map(|w| w.upgrade())
+                    .any(|b| b.is_mapped()),
+            Ordering::Relaxed,
+        );
         let entries = self.entries.borrow();
+        let status = self.status.borrow();
         self.buttons.borrow_mut().retain(|weak| {
             if let Some(button) = weak.upgrade() {
                 button.set_label(&if entries.is_empty() {
@@ -167,7 +281,7 @@ impl BackgroundManager {
                 } else {
                     format!("󰀻 {}", entries.len())
                 });
-                button.set_tooltip_text(Some("Background apps"));
+                button.set_tooltip_text(Some(status.as_deref().unwrap_or("Background apps")));
                 true
             } else {
                 false
@@ -177,22 +291,26 @@ impl BackgroundManager {
             return;
         };
         let mut rows = self.rows.borrow_mut();
-        rows.retain(|id, (previous, row)| {
-            if entries
-                .iter()
-                .any(|entry| &entry.desktop_id == id && entry == previous)
-            {
-                true
-            } else {
-                list.remove(row);
-                false
+        for (_, row) in rows.values() {
+            if let Some(quit) = row.last_child() {
+                quit.set_sensitive(status.is_none());
             }
-        });
-        let empty = list
-            .first_child()
-            .filter(|widget| widget.widget_name() == "background-empty");
-        if let Some(empty) = empty {
-            list.remove(&empty);
+        }
+        let mut child = list.first_child();
+        while let Some(widget) = child {
+            child = widget.next_sibling();
+            if matches!(
+                widget.widget_name().as_str(),
+                "background-status" | "background-empty"
+            ) {
+                list.remove(&widget);
+            }
+        }
+        if let Some(message) = status.as_deref() {
+            let label = gtk::Label::new(Some(message));
+            label.set_widget_name("background-status");
+            label.set_wrap(true);
+            list.append(&label);
         }
         let mut previous: Option<gtk::Box> = None;
         for entry in entries.iter() {
@@ -227,6 +345,7 @@ impl BackgroundManager {
                 });
                 row.append(&open);
                 let quit = gtk::Button::with_label("Quit");
+                quit.set_sensitive(status.is_none());
                 quit.add_css_class("background-app-action");
                 quit.set_tooltip_text(Some(
                     "Send a termination request to this background application",
@@ -272,7 +391,8 @@ impl BackgroundManager {
 }
 
 fn process_stat(pid: u32) -> Option<(u32, u64)> {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let stat =
+        crate::storage::read_text(Path::new(&format!("/proc/{pid}/stat")), 16 * 1024).ok()?;
     parse_stat(&stat)
 }
 fn parse_stat(stat: &str) -> Option<(u32, u64)> {
@@ -285,7 +405,7 @@ fn parse_stat(stat: &str) -> Option<(u32, u64)> {
     }
     Some((fields.get(1)?.parse().ok()?, fields.get(19)?.parse().ok()?))
 }
-fn processes() -> HashMap<u32, ProcessInfo> {
+fn processes(budget: &mut ScanBudget) -> HashMap<u32, ProcessInfo> {
     static CACHE: OnceLock<Mutex<HashMap<ProcessIdentity, ProcessInfo>>> = OnceLock::new();
     let mut cache = CACHE
         .get_or_init(Default::default)
@@ -293,16 +413,35 @@ fn processes() -> HashMap<u32, ProcessInfo> {
         .unwrap_or_else(|e| e.into_inner());
     let mut result = HashMap::new();
     let Ok(uid) = fs::metadata("/proc/self").map(|m| m.uid()) else {
+        budget.incomplete = true;
         return result;
     };
-    for entry in fs::read_dir("/proc").into_iter().flatten().flatten() {
+    let directory = match fs::read_dir("/proc") {
+        Ok(directory) => directory,
+        Err(_) => {
+            budget.incomplete = true;
+            return result;
+        }
+    };
+    for entry in directory {
+        if !budget.visit() || result.len() >= PROCESS_LIMIT {
+            budget.incomplete = true;
+            break;
+        }
+        let Ok(entry) = entry else {
+            budget.incomplete = true;
+            continue;
+        };
         let Some(pid) = entry.file_name().to_str().and_then(|s| s.parse().ok()) else {
             continue;
         };
         if !entry.metadata().is_ok_and(|m| m.uid() == uid) {
             continue;
         }
-        let Some((parent, start_time)) = process_stat(pid) else {
+        let stat = budget
+            .read(Path::new(&format!("/proc/{pid}/stat")), 16 * 1024)
+            .and_then(|bytes| String::from_utf8(bytes).ok());
+        let Some((parent, start_time)) = stat.as_deref().and_then(parse_stat) else {
             continue;
         };
         let Ok(executable) = fs::read_link(format!("/proc/{pid}/exe")) else {
@@ -316,8 +455,12 @@ fn processes() -> HashMap<u32, ProcessInfo> {
             result.insert(pid, cached.clone());
             continue;
         }
-        let flatpak_id = fs::read_to_string(format!("/proc/{pid}/root/.flatpak-info"))
-            .ok()
+        let flatpak_id = budget
+            .read(
+                Path::new(&format!("/proc/{pid}/root/.flatpak-info")),
+                64 * 1024,
+            )
+            .and_then(|bytes| String::from_utf8(bytes).ok())
             .and_then(|text| {
                 let key = glib::KeyFile::new();
                 key.load_from_data(&text, glib::KeyFileFlags::NONE).ok()?;
@@ -325,8 +468,8 @@ fn processes() -> HashMap<u32, ProcessInfo> {
                     .ok()
                     .map(|v| v.to_string())
             });
-        let desktop_id = fs::read(format!("/proc/{pid}/environ"))
-            .ok()
+        let desktop_id = budget
+            .read(Path::new(&format!("/proc/{pid}/environ")), 128 * 1024)
             .and_then(|bytes| {
                 let fields: Vec<_> = bytes.split(|b| *b == 0).collect();
                 let launched_pid = fields.iter().find_map(|field| {
@@ -442,9 +585,10 @@ fn matches_window(app: &AppEntry, window: &WindowProcess) -> bool {
             || (!app.startup_wm_class.is_empty() && id.eq_ignore_ascii_case(&app.startup_wm_class))
     })
 }
-fn scan(apps: &[AppEntry], windows: &[WindowProcess]) -> Vec<BackgroundApp> {
+fn scan(apps: &[AppEntry], windows: &[WindowProcess]) -> Snapshot {
     static KNOWN: OnceLock<Mutex<HashMap<ProcessIdentity, String>>> = OnceLock::new();
-    let processes = processes();
+    let mut budget = ScanBudget::new();
+    let processes = processes(&mut budget);
     let mut known = KNOWN
         .get_or_init(Default::default)
         .lock()
@@ -455,6 +599,9 @@ fn scan(apps: &[AppEntry], windows: &[WindowProcess]) -> Vec<BackgroundApp> {
             .is_some_and(|p| p.identity == *identity)
     });
     for window in windows {
+        if !budget.available() {
+            break;
+        }
         if let Some(process) = window.pid.and_then(|pid| processes.get(&pid)) {
             let candidates: Vec<_> = apps
                 .iter()
@@ -465,23 +612,44 @@ fn scan(apps: &[AppEntry], windows: &[WindowProcess]) -> Vec<BackgroundApp> {
             }
         }
     }
-    classify(apps, windows, &processes, &known)
+    let entries = classify_bounded(apps, windows, &processes, &known, &mut budget);
+    Snapshot {
+        entries,
+        incomplete: budget.incomplete,
+    }
 }
 
+#[cfg(test)]
 fn classify(
     apps: &[AppEntry],
     windows: &[WindowProcess],
     processes: &HashMap<u32, ProcessInfo>,
     known: &HashMap<ProcessIdentity, String>,
 ) -> Vec<BackgroundApp> {
+    classify_bounded(apps, windows, processes, known, &mut ScanBudget::new())
+}
+
+fn classify_bounded(
+    apps: &[AppEntry],
+    windows: &[WindowProcess],
+    processes: &HashMap<u32, ProcessInfo>,
+    known: &HashMap<ProcessIdentity, String>,
+    budget: &mut ScanBudget,
+) -> Vec<BackgroundApp> {
     let mut paths: HashMap<PathBuf, Vec<&AppEntry>> = HashMap::new();
     for app in apps.iter().filter(|app| !app.terminal) {
+        if !budget.available() {
+            break;
+        }
         if let Some(path) = command_path(&app.exec) {
             paths.entry(path).or_default().push(app);
         }
     }
     let mut matches: HashMap<u32, &AppEntry> = HashMap::new();
     for process in processes.values() {
+        if !budget.available() {
+            break;
+        }
         let id = process
             .flatpak_id
             .as_ref()
@@ -503,6 +671,9 @@ fn classify(
     }
     let mut result = Vec::new();
     for app in apps {
+        if !budget.available() {
+            break;
+        }
         let candidates: Vec<_> = matches
             .iter()
             .filter(|(_, a)| a.id == app.id)
@@ -512,9 +683,12 @@ fn classify(
             || windows.iter().any(|w| {
                 matches_window(app, w)
                     || w.pid.is_some_and(|pid| {
-                        candidates
-                            .iter()
-                            .any(|root| has_ancestor(pid, *root, processes))
+                        candidates.iter().any(|root| {
+                            if !budget.visit() {
+                                return true;
+                            }
+                            has_ancestor(pid, *root, processes)
+                        })
                     })
             })
         {
@@ -523,9 +697,15 @@ fn classify(
         let mut targets: Vec<_> = candidates
             .iter()
             .filter(|pid| {
-                !candidates
-                    .iter()
-                    .any(|ancestor| *pid != ancestor && has_ancestor(**pid, *ancestor, processes))
+                if !budget.visit() {
+                    return false;
+                }
+                !candidates.iter().any(|ancestor| {
+                    if !budget.visit() {
+                        return true;
+                    }
+                    *pid != ancestor && has_ancestor(**pid, *ancestor, processes)
+                })
             })
             .filter_map(|pid| processes.get(pid).map(|p| p.identity.clone()))
             .collect();
@@ -545,7 +725,12 @@ fn classify(
 fn quit_app(app: &BackgroundApp) -> Result<(), String> {
     let windows =
         niri::window_processes().ok_or("Niri is unavailable; application was not terminated")?;
-    let current = scan(&apps::load_apps(), &windows)
+    let snapshot = scan(&apps::load_apps(), &windows);
+    if snapshot.incomplete {
+        return Err("Incomplete process scan; application was not terminated".into());
+    }
+    let current = snapshot
+        .entries
         .into_iter()
         .find(|a| a.desktop_id == app.desktop_id)
         .ok_or("Application changed or has an open window")?;
@@ -606,6 +791,41 @@ mod tests {
             flatpak_id: None,
         }
     }
+    #[test]
+    fn process_scan_budgets_reject_oversized_reads_and_expired_work() {
+        let path =
+            std::env::temp_dir().join(format!("chuhshell-process-budget-{}", std::process::id()));
+        fs::write(&path, vec![b'a'; 129 * 1024]).unwrap();
+        let mut budget = ScanBudget::new();
+        assert!(budget.read(&path, 128 * 1024).is_none());
+        assert!(budget.incomplete);
+        fs::write(&path, b"small").unwrap();
+        let mut budget = ScanBudget::new();
+        budget.bytes_remaining = 5;
+        assert_eq!(budget.read(&path, 16), Some(b"small".to_vec()));
+        assert!(budget.read(&path, 16).is_none());
+        assert!(budget.incomplete);
+        let mut budget = ScanBudget::new();
+        budget.deadline = Instant::now();
+        assert!(
+            classify_bounded(
+                &[app("one.desktop")],
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut budget
+            )
+            .is_empty()
+        );
+        assert!(budget.incomplete);
+        let mut budget = ScanBudget::new();
+        budget.remaining = 1;
+        assert!(budget.visit());
+        assert!(!budget.visit());
+        assert!(budget.incomplete);
+        fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn ambiguous_executable_is_not_assigned_to_an_app() {
         let processes = HashMap::from([(10, process(10, 1))]);

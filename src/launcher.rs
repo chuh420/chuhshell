@@ -1,4 +1,7 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+
+const RESULT_PAGE_SIZE: usize = 32;
+type Refresh = Rc<RefCell<Option<Box<dyn Fn()>>>>;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -175,6 +178,37 @@ fn create(
     }
     window.set_child(Some(&outer));
 
+    let refresh: Refresh = Rc::new(RefCell::new(None));
+    let page = Rc::new(Cell::new(0usize));
+    let reveal = Rc::new(RefCell::new(None::<String>));
+    let page_count = Rc::new(Cell::new(1usize));
+    let paging = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let previous_page = gtk::Button::with_label("Previous");
+    let next_page = gtk::Button::with_label("Next");
+    let page_label = gtk::Label::new(None);
+    page_label.set_hexpand(true);
+    paging.append(&previous_page);
+    paging.append(&page_label);
+    paging.append(&next_page);
+    outer.append(&paging);
+    for (button, forward) in [(&previous_page, false), (&next_page, true)] {
+        let page = page.clone();
+        let refresh = refresh.clone();
+        let search = search.downgrade();
+        button.connect_clicked(move |_| {
+            page.set(if forward {
+                page.get() + 1
+            } else {
+                page.get().saturating_sub(1)
+            });
+            if let Some(refresh) = refresh.borrow().as_ref() {
+                refresh();
+            }
+            if let Some(search) = search.upgrade() {
+                search.grab_focus();
+            }
+        });
+    }
     let preferences = Rc::new(RefCell::new(settings.1));
     let saving = Rc::new(std::cell::Cell::new(false));
     let save_error = gtk::Label::new(None);
@@ -195,6 +229,7 @@ fn create(
         outer.append(&sort);
     }
     sort.connect_clicked({
+        let refresh = refresh.clone();
         let preferences = preferences.clone();
         let saving = saving.clone();
         let error = save_error.downgrade();
@@ -207,6 +242,7 @@ fn create(
             let focused = button.is_focus();
             button.set_sensitive(false);
             let button = button.downgrade();
+            let refresh = refresh.clone();
             let preferences = preferences.clone();
             let saving = saving.clone();
             let list = list.clone();
@@ -227,6 +263,9 @@ fn create(
                                 "sort: most used"
                             });
                             *preferences.borrow_mut() = next;
+                            if let Some(refresh) = refresh.borrow().as_ref() {
+                                refresh();
+                            }
                             if let Some(list) = list.upgrade() {
                                 list.invalidate_sort();
                             }
@@ -277,44 +316,20 @@ fn create(
             })
             .collect::<HashMap<_, _>>(),
     );
-    let mut entries: Vec<_> = state
-        .launcher_apps
-        .borrow()
-        .iter()
-        .filter(|entry| mode == LauncherMode::Manage || !entry.hidden)
-        .cloned()
-        .collect();
     scores
         .borrow_mut()
-        .extend(entries.iter().map(|entry| (entry.id.clone(), 0_i64)));
-    entries.sort_by(|left, right| {
-        let preferences = preferences.borrow();
-        preferences
-            .pinned
-            .contains(&right.id)
-            .cmp(&preferences.pinned.contains(&left.id))
-            .then_with(|| {
-                compare_apps(
-                    &left.id,
-                    &right.id,
-                    &scores.borrow(),
-                    &names,
-                    &counts.borrow(),
-                    if preferences.alphabetical {
-                        LauncherMode::Manage
-                    } else {
-                        mode
-                    },
-                    false,
-                )
-            })
-    });
+        .extend(search_names.keys().map(|id| (id.clone(), 0_i64)));
     let append_row = {
-        let list = list.clone();
+        let list = list.downgrade();
+        let refresh = Rc::downgrade(&refresh);
+        let reveal = reveal.clone();
         let preferences = preferences.clone();
         let saving = saving.clone();
         let save_error = save_error.clone();
         move |entry: &AppEntry| {
+            let Some(list) = list.upgrade() else {
+                return;
+            };
             let row = append_app_row(&list, entry, mode);
             if mode == LauncherMode::Normal {
                 let content = row.child().and_downcast::<gtk::Box>().unwrap();
@@ -335,6 +350,8 @@ fn create(
                     }
                 });
                 pin.connect_clicked({
+                    let reveal = reveal.clone();
+                    let refresh = refresh.clone();
                     let id = entry.id.clone();
                     let preferences = preferences.clone();
                     let saving = saving.clone();
@@ -350,6 +367,8 @@ fn create(
                         ));
                         let focused = button.is_focus();
                         button.set_sensitive(false);
+                        let reveal = reveal.clone();
+                        let refresh = refresh.clone();
                         let button = button.downgrade();
                         let id = id.clone();
                         let preferences = preferences.clone();
@@ -366,6 +385,12 @@ fn create(
                                     Ok(next) => {
                                         update_pin(&button, next.pinned.contains(&id));
                                         *preferences.borrow_mut() = next;
+                                        *reveal.borrow_mut() = Some(id.clone());
+                                        if let Some(refresh) = refresh.upgrade()
+                                            && let Some(refresh) = refresh.borrow().as_ref()
+                                        {
+                                            refresh();
+                                        }
                                         if let Some(list) = list.upgrade() {
                                             list.invalidate_sort();
                                             list.select_row(row.upgrade().as_ref());
@@ -391,45 +416,114 @@ fn create(
             }
         }
     };
-    for entry in entries.iter().take(16) {
-        append_row(entry);
-    }
-    let mut pending = entries.into_iter().skip(16);
-    let populating = Rc::new(std::cell::Cell::new(pending.len() != 0));
-    let population_state = populating.clone();
-    let population_empty = empty.downgrade();
-    if populating.get() {
-        empty.set_text("loading applications…");
-    }
-    let population_window = window.downgrade();
-    let population_list = list.downgrade();
-    glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
-        if population_window
-            .upgrade()
-            .is_none_or(|window| !window.is_visible())
-        {
-            return glib::ControlFlow::Break;
-        }
-        let mut added = 0;
-        for entry in pending.by_ref().take(16) {
-            append_row(&entry);
-            added += 1;
-        }
-        if let Some(list) = population_list.upgrade()
-            && list.selected_row().is_none()
-        {
-            list.select_row(visible_rows(&list).first());
-        }
-        if added == 0 {
-            population_state.set(false);
-            if let Some(empty) = population_empty.upgrade() {
-                empty.set_text("no applications found");
+    *refresh.borrow_mut() = Some(Box::new({
+        let list = list.downgrade();
+        let state = Rc::downgrade(state);
+        let preferences = preferences.clone();
+        let scores = scores.clone();
+        let counts = counts.clone();
+        let names = names.clone();
+        let searching = searching.clone();
+        let reveal = reveal.clone();
+        let page = page.clone();
+        let page_count = page_count.clone();
+        let paging = paging.downgrade();
+        let page_label = page_label.downgrade();
+        let previous_page = previous_page.downgrade();
+        let next_page = next_page.downgrade();
+        move || {
+            let (Some(list), Some(state)) = (list.upgrade(), state.upgrade()) else {
+                return;
+            };
+            let entries = state.launcher_apps.borrow();
+            let preferences = preferences.borrow();
+            let scores = scores.borrow();
+            let counts = counts.borrow();
+            let mut matches: Vec<_> = entries
+                .iter()
+                .filter(|entry| {
+                    (mode == LauncherMode::Manage || !entry.hidden)
+                        && scores.contains_key(&entry.id)
+                })
+                .collect();
+            matches.sort_by(|left, right| {
+                let pin_order = if mode == LauncherMode::Normal {
+                    preferences
+                        .pinned
+                        .contains(&right.id)
+                        .cmp(&preferences.pinned.contains(&left.id))
+                } else {
+                    Ordering::Equal
+                };
+                pin_order.then_with(|| {
+                    compare_apps(
+                        &left.id,
+                        &right.id,
+                        &scores,
+                        &names,
+                        &counts,
+                        if preferences.alphabetical {
+                            LauncherMode::Manage
+                        } else {
+                            mode
+                        },
+                        searching.get(),
+                    )
+                })
+            });
+            if let Some(id) = reveal.borrow_mut().take()
+                && let Some(index) = matches.iter().position(|entry| entry.id == id)
+            {
+                page.set(index / RESULT_PAGE_SIZE);
             }
-            glib::ControlFlow::Break
-        } else {
-            glib::ControlFlow::Continue
+            let pages = matches.len().div_ceil(RESULT_PAGE_SIZE).max(1);
+            page_count.set(pages);
+            page.set(page.get().min(pages - 1));
+            let shown: Vec<_> = matches
+                .into_iter()
+                .skip(page.get() * RESULT_PAGE_SIZE)
+                .take(RESULT_PAGE_SIZE)
+                .collect();
+            drop(preferences);
+            drop(scores);
+            drop(counts);
+            let mut child = list.first_child();
+            while let Some(widget) = child {
+                child = widget.next_sibling();
+                if let Some(row) = widget.downcast_ref::<gtk::ListBoxRow>()
+                    && !shown.iter().any(|entry| {
+                        row.widget_name().as_str().strip_prefix("app-") == Some(entry.id.as_str())
+                    })
+                {
+                    list.remove(row);
+                }
+            }
+            for entry in shown {
+                if !visible_rows(&list).iter().any(|row| {
+                    row.widget_name().as_str().strip_prefix("app-") == Some(entry.id.as_str())
+                }) {
+                    append_row(entry);
+                }
+            }
+            list.invalidate_filter();
+            list.invalidate_sort();
+            if list.selected_row().is_none() {
+                list.select_row(visible_rows(&list).first());
+            }
+            if let Some(paging) = paging.upgrade() {
+                paging.set_visible(pages > 1);
+            }
+            if let Some(label) = page_label.upgrade() {
+                label.set_text(&format!("{} / {}", page.get() + 1, pages));
+            }
+            if let Some(button) = previous_page.upgrade() {
+                button.set_sensitive(page.get() > 0);
+            }
+            if let Some(button) = next_page.upgrade() {
+                button.set_sensitive(page.get() + 1 < pages);
+            }
         }
-    });
+    }));
     list.set_filter_func({
         let scores = Rc::clone(&scores);
         move |row| {
@@ -480,18 +574,35 @@ fn create(
                 .into()
         }
     });
+    if let Some(refresh) = refresh.borrow().as_ref() {
+        refresh();
+    }
     list.select_row(visible_rows(&list).first());
     update_selected_row_styles(&list);
     scroll_selected_row_into_view(&list, &scrolled);
     let scrolled_for_selection = scrolled.downgrade();
+    let previous_selection = RefCell::new(list.selected_row().map(|row| row.downgrade()));
     list.connect_selected_rows_changed(move |list| {
-        update_selected_row_styles(list);
+        if let Some(row) = previous_selection
+            .borrow()
+            .as_ref()
+            .and_then(|w| w.upgrade())
+        {
+            row.remove_css_class("selected-row");
+        }
+        let selected = list.selected_row();
+        if let Some(row) = &selected {
+            row.add_css_class("selected-row");
+        }
+        *previous_selection.borrow_mut() = selected.map(|row| row.downgrade());
         if let Some(scrolled) = scrolled_for_selection.upgrade() {
             scroll_selected_row_into_view(list, &scrolled);
         }
     });
 
     search.connect_search_changed({
+        let refresh = refresh.clone();
+        let page = page.clone();
         let list = list.downgrade();
         let scores = Rc::clone(&scores);
         let searching = Rc::clone(&searching);
@@ -511,6 +622,10 @@ fn create(
                 }
             }
             drop(next);
+            page.set(0);
+            if let Some(refresh) = refresh.borrow().as_ref() {
+                refresh();
+            }
             list.invalidate_filter();
             list.invalidate_sort();
             list.select_row(visible_rows(&list).first());
@@ -629,103 +744,128 @@ fn create(
     let window_keys = window.downgrade();
     let search_keys = search.downgrade();
     let sort_keys = sort.downgrade();
-    key.connect_key_pressed(move |_, key, _, modifiers| {
-        let default_key = crate::keybindings::is_default("launcher", key, modifiers);
-        let key = crate::keybindings::remap("launcher", key, modifiers);
-        let Some(list_keys) = list_keys.upgrade() else {
-            return glib::Propagation::Proceed;
-        };
-        let focused_button = window_keys
-            .upgrade()
-            .and_then(|window| gtk::prelude::GtkWindowExt::focus(&window))
-            .and_downcast::<gtk::Button>();
-        let pin_focused = focused_button
-            .as_ref()
-            .is_some_and(|button| button.has_css_class("app-pin"));
-        let sort_focused = focused_button
-            .as_ref()
-            .is_some_and(|button| button.has_css_class("launcher-sort"));
-        match key {
-            gdk::Key::Escape => {
-                if let Some(window) = window_keys.upgrade() {
-                    window.close();
-                }
-                glib::Propagation::Stop
-            }
-            gdk::Key::Right if mode == LauncherMode::Normal => {
-                if let Some(pin) = list_keys.selected_row().and_then(|row| pin_button(&row)) {
-                    pin.grab_focus();
-                }
-                glib::Propagation::Stop
-            }
-            gdk::Key::Left if pin_focused || sort_focused => {
-                if let Some(search) = search_keys.upgrade() {
-                    search.grab_focus();
-                }
-                glib::Propagation::Stop
-            }
-            gdk::Key::Left | gdk::Key::Right => glib::Propagation::Proceed,
-            gdk::Key::Down | gdk::Key::Up | gdk::Key::Page_Down | gdk::Key::Page_Up => {
-                let rows = visible_rows(&list_keys);
-                if sort_focused {
-                    if matches!(key, gdk::Key::Up | gdk::Key::Page_Up) {
-                        list_keys.select_row(rows.last());
-                        if let Some(search) = search_keys.upgrade() {
-                            search.grab_focus();
-                        }
+    key.connect_key_pressed({
+        let refresh = refresh.clone();
+        let page = page.clone();
+        let page_count = page_count.clone();
+        move |_, key, _, modifiers| {
+            let default_key = crate::keybindings::is_default("launcher", key, modifiers);
+            let key = crate::keybindings::remap("launcher", key, modifiers);
+            let Some(list_keys) = list_keys.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            let focused_button = window_keys
+                .upgrade()
+                .and_then(|window| gtk::prelude::GtkWindowExt::focus(&window))
+                .and_downcast::<gtk::Button>();
+            let pin_focused = focused_button
+                .as_ref()
+                .is_some_and(|button| button.has_css_class("app-pin"));
+            let sort_focused = focused_button
+                .as_ref()
+                .is_some_and(|button| button.has_css_class("launcher-sort"));
+            match key {
+                gdk::Key::Escape => {
+                    if let Some(window) = window_keys.upgrade() {
+                        window.close();
                     }
-                    return glib::Propagation::Stop;
+                    glib::Propagation::Stop
                 }
-                if key == gdk::Key::Down
-                    && mode == LauncherMode::Normal
-                    && !populating.get()
-                    && (rows.is_empty() || rows.last() == list_keys.selected_row().as_ref())
-                {
-                    if let Some(sort) = sort_keys.upgrade() {
-                        sort.grab_focus();
-                    }
-                    return glib::Propagation::Stop;
-                }
-                let offset = match key {
-                    gdk::Key::Up => -1,
-                    gdk::Key::Page_Up => -5,
-                    gdk::Key::Page_Down => 5,
-                    _ => 1,
-                };
-                if let Some(index) = selection_index(
-                    rows.len(),
-                    rows.iter()
-                        .position(|row| Some(row) == list_keys.selected_row().as_ref()),
-                    offset,
-                ) {
-                    list_keys.select_row(rows.get(index));
-                    if pin_focused && let Some(pin) = rows.get(index).and_then(pin_button) {
+                gdk::Key::Right if mode == LauncherMode::Normal => {
+                    if let Some(pin) = list_keys.selected_row().and_then(|row| pin_button(&row)) {
                         pin.grab_focus();
                     }
-                } else {
-                    list_keys.unselect_all();
+                    glib::Propagation::Stop
                 }
-                glib::Propagation::Stop
-            }
-            gdk::Key::Return | gdk::Key::KP_Enter => {
-                if let Some(button) = focused_button.filter(|_| pin_focused || sort_focused) {
-                    button.emit_clicked();
-                    return glib::Propagation::Stop;
-                }
-                if let Some(row) = list_keys
-                    .selected_row()
-                    .filter(|row| row.is_visible() && row.is_child_visible() && row.is_sensitive())
-                {
-                    if let Some(pin) = pin_button(&row).filter(|pin| pin.is_focus()) {
-                        pin.emit_clicked();
-                    } else {
-                        list_keys.emit_by_name::<()>("row-activated", &[&row]);
+                gdk::Key::Left if pin_focused || sort_focused => {
+                    if let Some(search) = search_keys.upgrade() {
+                        search.grab_focus();
                     }
+                    glib::Propagation::Stop
                 }
-                glib::Propagation::Stop
+                gdk::Key::Left | gdk::Key::Right => glib::Propagation::Proceed,
+                gdk::Key::Down | gdk::Key::Up | gdk::Key::Page_Down | gdk::Key::Page_Up => {
+                    let rows = visible_rows(&list_keys);
+                    if sort_focused {
+                        if matches!(key, gdk::Key::Up | gdk::Key::Page_Up) {
+                            list_keys.select_row(rows.last());
+                            if let Some(search) = search_keys.upgrade() {
+                                search.grab_focus();
+                            }
+                        }
+                        return glib::Propagation::Stop;
+                    }
+                    let at_end = rows.last() == list_keys.selected_row().as_ref();
+                    let at_start = rows.first() == list_keys.selected_row().as_ref();
+                    if (matches!(key, gdk::Key::Down | gdk::Key::Page_Down)
+                        && at_end
+                        && page.get() + 1 < page_count.get())
+                        || (matches!(key, gdk::Key::Up | gdk::Key::Page_Up)
+                            && at_start
+                            && page.get() > 0)
+                    {
+                        let forward = matches!(key, gdk::Key::Down | gdk::Key::Page_Down);
+                        page.set(if forward {
+                            page.get() + 1
+                        } else {
+                            page.get() - 1
+                        });
+                        if let Some(refresh) = refresh.borrow().as_ref() {
+                            refresh();
+                        }
+                        let rows = visible_rows(&list_keys);
+                        list_keys.select_row(if forward { rows.first() } else { rows.last() });
+                        return glib::Propagation::Stop;
+                    }
+                    if key == gdk::Key::Down
+                        && mode == LauncherMode::Normal
+                        && (rows.is_empty() || rows.last() == list_keys.selected_row().as_ref())
+                    {
+                        if let Some(sort) = sort_keys.upgrade() {
+                            sort.grab_focus();
+                        }
+                        return glib::Propagation::Stop;
+                    }
+                    let offset = match key {
+                        gdk::Key::Up => -1,
+                        gdk::Key::Page_Up => -5,
+                        gdk::Key::Page_Down => 5,
+                        _ => 1,
+                    };
+                    if let Some(index) = selection_index(
+                        rows.len(),
+                        rows.iter()
+                            .position(|row| Some(row) == list_keys.selected_row().as_ref()),
+                        offset,
+                    ) {
+                        list_keys.select_row(rows.get(index));
+                        if pin_focused && let Some(pin) = rows.get(index).and_then(pin_button) {
+                            pin.grab_focus();
+                        }
+                    } else {
+                        list_keys.unselect_all();
+                    }
+                    glib::Propagation::Stop
+                }
+                gdk::Key::Return | gdk::Key::KP_Enter => {
+                    if let Some(button) = focused_button.filter(|_| pin_focused || sort_focused) {
+                        button.emit_clicked();
+                        return glib::Propagation::Stop;
+                    }
+                    if let Some(row) = list_keys.selected_row().filter(|row| {
+                        row.is_visible() && row.is_child_visible() && row.is_sensitive()
+                    }) {
+                        if let Some(pin) = pin_button(&row).filter(|pin| pin.is_focus()) {
+                            pin.emit_clicked();
+                        } else {
+                            list_keys.emit_by_name::<()>("row-activated", &[&row]);
+                        }
+                    }
+                    glib::Propagation::Stop
+                }
+                _ if default_key => glib::Propagation::Stop,
+                _ => glib::Propagation::Proceed,
             }
-            _ if default_key => glib::Propagation::Stop,
-            _ => glib::Propagation::Proceed,
         }
     });
     window.add_controller(key);
@@ -948,6 +1088,8 @@ pub fn regression_checks(app: &gtk::Application) {
     assert_ne!(other_pin.label().unwrap(), unpinned_icon);
     assert!(other_pin.has_css_class("pinned"));
     assert_eq!(visible_rows(&list)[0], other);
+    assert!(other.has_css_class("selected-row"));
+    assert!(!frequent.has_css_class("selected-row"));
     let controllers = window.observe_controllers();
     let key = (0..controllers.n_items())
         .filter_map(|index| {
@@ -1094,6 +1236,97 @@ pub fn regression_checks(app: &gtk::Application) {
         std::fs::remove_file(directory.join(format!("{name}.desktop"))).unwrap();
     }
     apps::invalidate();
+    for mode in [LauncherMode::Normal, LauncherMode::Manage] {
+        let entries = (0..1000).map(|index| apps::parse_entry(
+            &format!("bounded-{index:04}.desktop"),
+            &format!("[Desktop Entry]\nType=Application\nName=Bounded {index:04}\nExec=/bin/true\n"), false).unwrap()).collect();
+        let window = create(
+            app,
+            &state,
+            mode,
+            entries,
+            (HashMap::new(), apps::LauncherPreferences::default()),
+            false,
+        );
+        let outer = window.child().unwrap();
+        let search = outer
+            .first_child()
+            .and_downcast::<gtk::SearchEntry>()
+            .unwrap();
+        let scroll = search
+            .next_sibling()
+            .and_downcast::<gtk::ScrolledWindow>()
+            .unwrap();
+        let list = scroll
+            .child()
+            .unwrap()
+            .first_child()
+            .and_downcast::<gtk::ListBox>()
+            .unwrap();
+        let paging = scroll.next_sibling().unwrap();
+        let next = paging.last_child().and_downcast::<gtk::Button>().unwrap();
+        assert_eq!(visible_rows(&list).len(), RESULT_PAGE_SIZE);
+        for _ in 0..31 {
+            next.emit_clicked();
+            assert!(visible_rows(&list).len() <= RESULT_PAGE_SIZE);
+        }
+        assert_eq!(visible_rows(&list).len(), 8);
+        assert_eq!(
+            visible_rows(&list).last().unwrap().widget_name(),
+            "app-bounded-0999.desktop"
+        );
+        assert!(!next.is_sensitive());
+        if mode == LauncherMode::Normal {
+            let last = visible_rows(&list).last().unwrap().clone();
+            list.select_row(Some(&last));
+            let pin = pin_button(&last).unwrap();
+            pin.emit_clicked();
+            crate::ui_tests::pump(100);
+            assert_eq!(visible_rows(&list).first().unwrap(), &last);
+            assert_eq!(list.selected_row().as_ref(), Some(&last));
+            assert!(next.is_sensitive());
+            pin.emit_clicked();
+            crate::ui_tests::pump(100);
+            assert_eq!(visible_rows(&list).last().unwrap(), &last);
+            assert!(!next.is_sensitive());
+        }
+        search.set_text("Bounded 0999");
+        search.emit_by_name::<()>("search-changed", &[]);
+        assert_eq!(visible_rows(&list).len(), 1);
+        assert_eq!(
+            list.selected_row().unwrap().widget_name(),
+            "app-bounded-0999.desktop"
+        );
+        search.set_text("");
+        search.emit_by_name::<()>("search-changed", &[]);
+        let key = (0..window.observe_controllers().n_items())
+            .filter_map(|i| {
+                window
+                    .observe_controllers()
+                    .item(i)
+                    .and_downcast::<gtk::EventControllerKey>()
+            })
+            .find(|key| key.name().as_deref() == Some("launcher-navigation"))
+            .unwrap();
+        list.select_row(visible_rows(&list).last());
+        key.emit_by_name::<bool>(
+            "key-pressed",
+            &[&gdk::Key::Down, &0u32, &gdk::ModifierType::empty()],
+        );
+        assert_eq!(
+            list.selected_row().unwrap().widget_name(),
+            "app-bounded-0032.desktop"
+        );
+        key.emit_by_name::<bool>(
+            "key-pressed",
+            &[&gdk::Key::Up, &0u32, &gdk::ModifierType::empty()],
+        );
+        assert_eq!(
+            list.selected_row().unwrap().widget_name(),
+            "app-bounded-0031.desktop"
+        );
+        window.close();
+    }
 }
 
 #[cfg(test)]
@@ -1186,12 +1419,18 @@ pub fn profile(app: &gtk::Application) {
                 .unwrap()
                 .downcast::<gtk::ListBox>()
                 .unwrap();
-            while list.row_at_index(count - 1).is_none()
+            while list
+                .row_at_index((count as usize).min(RESULT_PAGE_SIZE) as i32 - 1)
+                .is_none()
                 && start.elapsed() < Duration::from_secs(10)
             {
                 crate::ui_tests::pump(5);
             }
-            assert!(list.row_at_index(count - 1).is_some());
+            assert!(
+                list.row_at_index((count as usize).min(RESULT_PAGE_SIZE) as i32 - 1)
+                    .is_some()
+            );
+            assert!(visible_rows(&list).len() <= RESULT_PAGE_SIZE);
             if iteration >= 5 {
                 catalog_ready.push(start.elapsed().as_micros());
             }

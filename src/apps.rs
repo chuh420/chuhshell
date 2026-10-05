@@ -1,5 +1,4 @@
 use gio::prelude::*;
-use gtk::gdk::prelude::DisplayExt;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -412,25 +411,116 @@ pub fn load_apps() -> Vec<AppEntry> {
     apps
 }
 
-pub fn app_info(id: &str) -> Option<gio::AppInfo> {
-    let entries = gio::AppInfo::all();
-    entries
-        .into_iter()
-        .find(|app| app.id().as_deref() == Some(id))
-        .or_else(|| {
-            let full_id = format!("{id}.desktop");
-            gio::AppInfo::all()
-                .into_iter()
-                .find(|app| app.id().as_deref() == Some(&full_id))
-        })
+fn desktop_id(id: &str) -> Result<String, String> {
+    if id.is_empty() || id.contains('/') || id.contains('\0') || matches!(id, "." | "..") {
+        return Err("Invalid application ID".into());
+    }
+    Ok(if id.ends_with(".desktop") {
+        id.to_owned()
+    } else {
+        format!("{id}.desktop")
+    })
 }
 
+fn lookup_app(id: &str) -> Result<gio::AppInfo, String> {
+    unsafe extern "C" {
+        fn g_desktop_app_info_new(desktop_id: *const libc::c_char) -> *mut gio::ffi::GAppInfo;
+    }
+    let id = desktop_id(id)?;
+    let name = std::ffi::CString::new(id.as_str()).map_err(|e| e.to_string())?;
+    let pointer = unsafe { g_desktop_app_info_new(name.as_ptr()) };
+    if pointer.is_null() {
+        return Err(format!("Application not found: {id}"));
+    }
+    Ok(unsafe { glib::translate::from_glib_full(pointer) })
+}
+
+type LaunchRequest = (String, async_channel::Sender<Result<(), String>>);
+
 pub async fn launch(id: &str) -> Result<(), String> {
-    let info = app_info(id).ok_or_else(|| format!("Application not found: {id}"))?;
-    let context = gtk::gdk::Display::default().map(|display| display.app_launch_context());
-    info.launch_uris_future(&[], context.as_ref())
+    static WORKER: OnceLock<std::sync::mpsc::SyncSender<LaunchRequest>> = OnceLock::new();
+    let id = desktop_id(id)?;
+    let worker = WORKER.get_or_init(|| {
+        let (sender, receiver) = std::sync::mpsc::sync_channel::<LaunchRequest>(8);
+        std::thread::spawn(move || {
+            let context = glib::MainContext::new();
+            while !crate::process::stopped() {
+                let (id, reply) = match receiver.recv_timeout(std::time::Duration::from_secs(1)) {
+                    Ok(request) => request,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(_) => break,
+                };
+                let result = lookup_app(&id).and_then(|info| {
+                    context
+                        .with_thread_default(|| {
+                            context.block_on(async {
+                                let launch_context = gio::AppLaunchContext::new();
+                                glib::future_with_timeout(
+                                    std::time::Duration::from_secs(10),
+                                    info.launch_uris_future(&[], Some(&launch_context)),
+                                )
+                                .await
+                                .map_err(|_| "Application launch timed out".to_owned())?
+                                .map_err(|e| e.to_string())
+                            })
+                        })
+                        .map_err(|e| e.to_string())?
+                });
+                let _ = reply.send_blocking(result);
+            }
+        });
+        sender
+    });
+    let (tx, rx) = async_channel::bounded(1);
+    worker
+        .try_send((id, tx))
+        .map_err(|_| "Application launch queue is full or stopped")?;
+    rx.recv()
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|_| "Application launch worker stopped".to_owned())?
+}
+
+#[cfg(test)]
+pub fn launch_regression() {
+    let directory = crate::paths::data().join("applications");
+    std::fs::create_dir_all(&directory).unwrap();
+    let desktop = directory.join("chuhshell-launch-test.desktop");
+    let marker = crate::paths::data().join("launch-marker");
+    std::fs::write(
+        &desktop,
+        format!(
+            "[Desktop Entry]\nType=Application\nName=Launch test\nExec=/usr/bin/touch {}\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    let duration = std::thread::spawn(|| {
+        let started = std::time::Instant::now();
+        let info = lookup_app("chuhshell-launch-test").unwrap();
+        assert_eq!(info.id().as_deref(), Some("chuhshell-launch-test.desktop"));
+        started.elapsed()
+    })
+    .join()
+    .unwrap();
+    println!(
+        "CHUHSHELL_LAUNCH_LOOKUP {}",
+        serde_json::json!({"cold_lookup_us": duration.as_micros()})
+    );
+    glib::MainContext::default()
+        .block_on(launch("chuhshell-launch-test"))
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !marker.exists() {
+        assert!(std::time::Instant::now() < deadline);
+        crate::ui_tests::pump(5);
+    }
+    assert!(
+        glib::MainContext::default()
+            .block_on(launch("chuhshell-missing-test"))
+            .is_err()
+    );
+    std::fs::remove_file(marker).unwrap();
+    std::fs::remove_file(desktop).unwrap();
 }
 
 #[cfg(test)]
@@ -458,6 +548,21 @@ Comment=Browse the web
 Icon=firefox
 Exec=/usr/bin/firefox %u
 ";
+
+    #[test]
+    fn launch_ids_are_normalized_and_reject_paths() {
+        assert_eq!(
+            desktop_id("org.example.App").unwrap(),
+            "org.example.App.desktop"
+        );
+        assert_eq!(
+            desktop_id("org.example.App.desktop").unwrap(),
+            "org.example.App.desktop"
+        );
+        for id in ["", "../file", "/file.desktop", ".", "..", "bad\0name"] {
+            assert!(desktop_id(id).is_err());
+        }
+    }
 
     #[test]
     fn desktop_reads_reject_oversized_files_and_deep_trees() {

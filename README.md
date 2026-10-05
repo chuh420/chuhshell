@@ -20,7 +20,7 @@ i made this for my own desktop. i think it should work on other people's desktop
 
 mod + space opens chuh menu, mod + d opens the app launcher, mod + c opens clipboard history, and ctrl + b opens the wallpaper picker.
 
-in menus, use up/down to move, enter or right to select, left to go back and escape to close. the launcher’s pin and sort buttons also work with the keyboard.
+in menus, use up/down to move, enter or right to select, left to go back and escape to close. the launcher’s pin and sort buttons also work with the keyboard. results use pages of up to 32 rows; up/down crosses page boundaries, and search covers the full catalog.
 
 chuh menu lets you toggle and arrange panel modules, move or resize the launcher, and edit shortcuts. save applies changes; cancel or escape discards them. niri bindings include their source files and are validated before saving.
 
@@ -44,7 +44,7 @@ run this from the project directory in your niri session:
 scripts/install.sh
 ```
 
-the installer builds and installs the shell, sets up its user service and notification integration, and restarts it. the first install sets mod + space and mod + c, replacing existing actions on those shortcuts; reinstalls preserve your bindings. set mod + d to run `chuhshell launcher`. the old mod + shift + d binding is removed.
+the installer builds and installs the shell, sets up its user service and notification integration, and restarts it. the service records supported xdg, path and locale variables from that session; rerun the installer after changing those variables. display, niri and runtime variables are imported into the user manager and remain dynamic across logins. the first install sets mod + space and mod + c, replacing existing actions on those shortcuts; reinstalls preserve your bindings. set mod + d to run `chuhshell launcher`. the old mod + shift + d binding is removed.
 
 the active niri config is detected automatically. to choose one explicitly:
 
@@ -73,7 +73,7 @@ you can choose modules, their order, launcher layout, monitors, devices and the 
 
 launcher pins and sorting are saved separately in `launcher.json` in the same directory. tasks are saved under your xdg data home. notification history lasts until cleared or the shell restarts. task edits detect external changes; reopen the task list before retrying a conflict.
 
-settings writes are atomic. invalid or oversized user data is preserved and reported instead of overwritten. if a write succeeds but its directory cannot be synced, the new settings stay active and a durability warning appears in the service log.
+the running shell shares one validated settings snapshot. weather and shortcuts read that snapshot; failed settings updates keep it active. commands sent to an existing shell do not reread config.json. settings writes are atomic. invalid or oversized user data is preserved and reported instead of overwritten. if a write succeeds but its directory cannot be synced, the new settings stay active and a durability warning appears in the service log.
 
 ## troubleshooting and development
 
@@ -110,3 +110,5 @@ idle settings live under trigger → idle, with an enabled flag and minute timer
 trigger → reminder schedules one-time notifications with text and a local date/time. upcoming reminders appear below the form and can be deleted. reminders are saved in `$XDG_DATA_HOME/chuhshell/reminders.json` and kept pending until the notification center accepts them. pending and overdue reminders arrive after restart; a crash before acknowledgement may show a reminder again.
 
 todo and keybinding writes share the settings queue and finish before normal shutdown. the user service allows up to five minutes to drain accepted writes.
+
+background app scans pause while the module and drawer are hidden. scans have time, process, read and cache limits; an incomplete scan is shown in the ui and cannot be used to quit an app. application lookup and launch run on a separate bounded worker.

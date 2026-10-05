@@ -45,4 +45,10 @@ export WAYLAND_DISPLAY=wayland-0
 cd "$repo_dir"
 test_args=()
 if [[ "${CHUHSHELL_TEST_RELEASE:-0}" == 1 ]]; then test_args+=(--release); fi
+cargo build --locked "${test_args[@]}"
+if [[ "${CHUHSHELL_TEST_RELEASE:-0}" == 1 ]]; then
+    export CHUHSHELL_TEST_BINARY="$repo_dir/target/release/chuhshell"
+else
+    export CHUHSHELL_TEST_BINARY="$repo_dir/target/debug/chuhshell"
+fi
 dbus-run-session -- cargo test --locked "${test_args[@]}" -- ui_regressions --ignored --test-threads=1 --nocapture

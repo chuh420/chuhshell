@@ -159,6 +159,39 @@ class InstallationTransaction(unittest.TestCase):
             installer.install(self.config)
         return count
 
+    def test_service_uses_supported_environment_and_keeps_session_paths_dynamic(self):
+        environment = {
+            'XDG_CONFIG_HOME': str(self.root / 'custom config'),
+            'XDG_DATA_HOME': str(self.root / 'custom data'),
+            'XDG_STATE_HOME': str(self.root / 'custom state'),
+            'XDG_CACHE_HOME': 'relative',
+            'XDG_DATA_DIRS': '/one:relative:/two',
+            'PATH': '/custom/bin:/usr/bin',
+            'WAYLAND_DISPLAY': 'wayland-7',
+            'NIRI_SOCKET': '/run/user/test/niri.sock',
+            'LANG': 'en_US.UTF-8',
+            'UNRELATED_SECRET': 'excluded',
+        }
+        commands = []
+        def run(*args, **kwargs):
+            commands.append(args)
+            return self.original_run(*args, **kwargs)
+        with patch.dict(os.environ, environment, clear=True), patch.object(installer, 'run', side_effect=run), patch.object(installer, 'plan_configuration', return_value=self.plan), patch.object(installer, 'stop_old_shell'), patch.object(installer.time, 'sleep'):
+            installer.install(self.config)
+            self.assertEqual(dict(os.environ), environment)
+        service = (installer.CONFIG / 'systemd/user/chuhshell.service').read_text()
+        for name in ('XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'PATH', 'LANG'):
+            self.assertIn(installer.unit_quote(name + '=' + environment[name]), service)
+        self.assertIn(installer.unit_quote('XDG_CACHE_HOME=' + str(installer.HOME_DIR / '.cache')), service)
+        self.assertIn('"XDG_DATA_DIRS=/one:/two"', service)
+        self.assertIn('"XDG_CONFIG_DIRS=/etc/xdg"', service)
+        self.assertNotIn('NIRI_SOCKET=', service)
+        self.assertNotIn('WAYLAND_DISPLAY=', service)
+        self.assertNotIn('UNRELATED_SECRET', service)
+        imports = [command for command in commands if 'import-environment' in command]
+        self.assertEqual(imports, [('systemctl', '--user', 'import-environment', 'WAYLAND_DISPLAY', 'NIRI_SOCKET')])
+        self.assertEqual(installer.unit_quote('a%"\\\n'), '"a%%\\"\\\\\\x0a"')
+
     def test_process_exit_after_rename_recovers_installation(self):
         pid = os.fork()
         if pid == 0:

@@ -1,6 +1,5 @@
 use gtk::gdk;
 use std::collections::BTreeMap;
-use std::sync::{OnceLock, RwLock};
 
 pub struct Shortcut {
     pub id: &'static str,
@@ -156,15 +155,9 @@ pub const SHORTCUTS: &[Shortcut] = &[
     },
 ];
 
-fn settings() -> &'static RwLock<BTreeMap<String, String>> {
-    static SETTINGS: OnceLock<RwLock<BTreeMap<String, String>>> = OnceLock::new();
-    SETTINGS.get_or_init(|| RwLock::new(crate::config::get().keybindings.clone()))
-}
-
 pub fn value(shortcut: &Shortcut) -> String {
-    settings()
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
+    crate::config::get()
+        .keybindings
         .get(shortcut.id)
         .cloned()
         .unwrap_or_else(|| shortcut.defaults.into())
@@ -229,6 +222,16 @@ fn validate(id: &str, value: &str, overrides: &BTreeMap<String, String>) -> Resu
     Ok(())
 }
 
+pub fn validate_overrides(overrides: &BTreeMap<String, String>) -> Result<(), String> {
+    for (id, value) in overrides {
+        if value.len() > 512 {
+            return Err("Shortcut exceeds the size limit".into());
+        }
+        validate(id, value, overrides)?;
+    }
+    Ok(())
+}
+
 pub fn save(id: &str, value: &str) -> Result<(), String> {
     let mut overrides = crate::config::read()?.keybindings;
     validate(id, value, &overrides)?;
@@ -237,7 +240,6 @@ pub fn save(id: &str, value: &str) -> Result<(), String> {
         "keybindings",
         serde_json::to_value(&overrides).map_err(|e| e.to_string())?,
     )?;
-    *settings().write().unwrap_or_else(|e| e.into_inner()) = overrides;
     Ok(())
 }
 
@@ -247,7 +249,8 @@ pub fn remap(scope: &str, key: gdk::Key, modifiers: gdk::ModifierType) -> gdk::K
         | gdk::ModifierType::ALT_MASK
         | gdk::ModifierType::SUPER_MASK;
     let pressed = (key.to_lower(), modifiers & mask);
-    let settings = settings().read().unwrap_or_else(|e| e.into_inner());
+    let config = crate::config::get();
+    let settings = &config.keybindings;
     for shortcut in SHORTCUTS.iter().filter(|s| s.scope == scope) {
         let binding = settings
             .get(shortcut.id)

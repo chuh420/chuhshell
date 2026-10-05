@@ -27,10 +27,122 @@ fn find_button(widget: &gtk::Widget, class: &str) -> Option<gtk::Button> {
     None
 }
 
+fn confirmed_settings_regression() {
+    let path = crate::config::path();
+    let original = std::fs::read(&path).unwrap();
+    let original_limit = crate::config::get().notification_history_limit;
+    glib::MainContext::default()
+        .block_on(crate::config::save_value_async(
+            "notification_history_limit",
+            25.into(),
+        ))
+        .unwrap();
+    assert_eq!(crate::config::get().notification_history_limit, 25);
+    std::fs::write(&path, b"invalid").unwrap();
+    assert!(
+        glib::MainContext::default()
+            .block_on(crate::config::save_value_async(
+                "notification_history_limit",
+                50.into()
+            ))
+            .is_err()
+    );
+    assert_eq!(crate::config::get().notification_history_limit, 25);
+    assert_eq!(std::fs::read(&path).unwrap(), b"invalid");
+    std::fs::write(&path, original).unwrap();
+    glib::MainContext::default()
+        .block_on(crate::config::save_value_async(
+            "notification_history_limit",
+            original_limit.into(),
+        ))
+        .unwrap();
+}
+
+fn command_forwarding_regression() {
+    let binary = std::env::var_os("CHUHSHELL_TEST_BINARY").unwrap();
+    let directory = crate::paths::config().join("command-forwarding");
+    let config = directory.join("chuhshell/config.json");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, b"{}").unwrap();
+    let log = std::fs::File::create(directory.join("shell.log")).unwrap();
+    let mut primary = crate::process::ManagedChild::spawn(
+        std::process::Command::new(&binary)
+            .env("XDG_CONFIG_HOME", &directory)
+            .stdout(log.try_clone().unwrap())
+            .stderr(log),
+    )
+    .unwrap();
+    let connection = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let owned = connection
+            .call_sync(
+                Some("org.freedesktop.DBus"),
+                "/org/freedesktop/DBus",
+                "org.freedesktop.DBus",
+                "NameHasOwner",
+                Some(&("dev.chuh.chuhshell",).to_variant()),
+                None,
+                gio::DBusCallFlags::NONE,
+                1000,
+                gio::Cancellable::NONE,
+            )
+            .unwrap()
+            .get::<(bool,)>()
+            .unwrap()
+            .0;
+        if owned {
+            break;
+        }
+        assert!(Instant::now() < deadline, "primary shell did not register");
+        assert!(
+            primary.0.try_wait().unwrap().is_none(),
+            "primary shell exited"
+        );
+        pump(10);
+    }
+    crate::process::run_command(
+        std::process::Command::new(&binary)
+            .arg("volume-up")
+            .env("XDG_CONFIG_HOME", &directory),
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    std::fs::write(&config, b"invalid").unwrap();
+    crate::process::run_command(
+        std::process::Command::new(&binary)
+            .arg("volume-up")
+            .env("XDG_CONFIG_HOME", &directory),
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    assert_eq!(std::fs::read(&config).unwrap(), b"invalid");
+    unsafe {
+        libc::kill(primary.0.id() as i32, libc::SIGTERM);
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while primary.0.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "primary shell did not shut down");
+        pump(10);
+    }
+    assert!(
+        crate::process::run_command(
+            std::process::Command::new(&binary).env("XDG_CONFIG_HOME", &directory),
+            Duration::from_secs(10)
+        )
+        .is_err()
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 #[test]
 #[ignore = "requires scripts/check-headless.sh"]
 fn ui_regressions() {
+    crate::config::initialize().unwrap();
     gtk::init().unwrap();
+    command_forwarding_regression();
+    confirmed_settings_regression();
+    crate::apps::launch_regression();
     let provider = gtk::CssProvider::new();
     let css_errors = Rc::new(std::cell::RefCell::new(Vec::new()));
     provider.connect_parsing_error({
