@@ -128,8 +128,9 @@ pub fn show(app: &gtk::Application, state: &Rc<AppState>) {
     crate::menu::close(state);
     crate::ui::close_popover();
     state
-        .launcher_generation
-        .set(state.launcher_generation.get().wrapping_add(1));
+        .launcher_model
+        .generation
+        .set(state.launcher_model.generation.get().wrapping_add(1));
     let launcher = state.launcher.borrow_mut().take();
     if let Some(window) = launcher {
         window.close();

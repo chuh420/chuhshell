@@ -58,12 +58,6 @@ pub enum DeviceEvent {
     Power,
 }
 
-pub fn child_process(program: &str, args: &[&str]) -> Option<String> {
-    process::run(program, args)
-        .map_err(|error| eprintln!("chuhshell: {error}"))
-        .ok()
-}
-
 fn read_trim(path: &Path) -> Option<String> {
     fs::read_to_string(path)
         .ok()
@@ -268,11 +262,15 @@ pub fn brightness_level(device: &str) -> Option<(u8, &'static str)> {
     Some((percent, icon))
 }
 
-pub fn spawn_audio_poller(sender: Sender<Option<String>>) {
+fn audio_state(program: &str, args: &[&str]) -> Result<crate::service_state::AudioState, String> {
+    process::run(program, args).and_then(|value| crate::service_state::AudioState::parse(&value))
+}
+
+pub fn spawn_audio_poller(sender: Sender<Result<crate::service_state::AudioState, String>>) {
     thread::spawn(move || {
         while !process::stopped() && !sender.is_closed() {
             if sender
-                .send_blocking(child_process(
+                .send_blocking(audio_state(
                     "wpctl",
                     &["get-volume", "@DEFAULT_AUDIO_SINK@"],
                 ))
@@ -297,7 +295,7 @@ pub fn spawn_audio_poller(sender: Sender<Option<String>>) {
                     }
                     if (line.contains("sink") || line.contains("server"))
                         && sender
-                            .send_blocking(child_process(
+                            .send_blocking(audio_state(
                                 "wpctl",
                                 &["get-volume", "@DEFAULT_AUDIO_SINK@"],
                             ))
@@ -307,7 +305,10 @@ pub fn spawn_audio_poller(sender: Sender<Option<String>>) {
                     }
                 }
             }
-            if sender.send_blocking(None).is_err() {
+            if sender
+                .send_blocking(Err("Audio observer disconnected".into()))
+                .is_err()
+            {
                 return;
             }
             if !process::pause(Duration::from_secs(2)) {

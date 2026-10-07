@@ -5,7 +5,7 @@ pub const CSS: &str = r#"
 @define-color shell_text #e0def4;
 @define-color shell_accent #c4a7e7;
 @define-color shell_handle #9ccfd8;
-* { font-family: "InputSans Nerd Font"; font-size: 12px; }
+* { font-family: "InputSans Nerd Font", "Input Sans", "DejaVu Sans", "Symbols Nerd Font Mono", sans-serif; font-size: 12px; }
 window#bar { background: @shell_base; border-bottom: 1px solid #403d52; }
 .module { border: 0; box-shadow: none; min-height: 20px; min-width: 0; background: #1f1d2e; border-radius: 8px; padding: 4px 10px; margin: 4px 1px; color: @shell_text; }
 .module:focus-visible { outline: 1px solid #c4a7e7; outline-offset: -2px; }

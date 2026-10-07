@@ -1,3 +1,6 @@
+#[cfg(test)]
+use crate::service_state::AudioState;
+use crate::service_state::ServiceState;
 use crate::{app::AppState, modules, niri, notifications, process};
 use gtk::prelude::*;
 use notifications::{ConnectionNotice, Notice, NoticeKind, PowerNotice};
@@ -5,51 +8,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
-#[derive(Clone, Default, PartialEq, Eq)]
-pub struct SystemState {
-    pub niri: niri::Snapshot,
-    pub audio: Option<String>,
-    pub network: Option<modules::NetworkInfo>,
-    pub temperature: Option<i64>,
-    pub brightness: Option<(u8, &'static str)>,
-    pub battery: modules::BatteryStatus,
-}
-
-#[derive(Clone, Copy, Default)]
-pub struct Changes {
-    pub workspaces: bool,
-    pub layouts: bool,
-    pub audio: bool,
-    pub network: bool,
-    pub temperature: bool,
-    pub brightness: bool,
-    pub battery: bool,
-}
-
-impl Changes {
-    fn between(previous: &SystemState, next: &SystemState) -> Self {
-        Self {
-            workspaces: previous.niri.workspaces != next.niri.workspaces,
-            layouts: previous.niri.layouts != next.niri.layouts,
-            audio: previous.audio != next.audio,
-            network: previous.network != next.network,
-            temperature: previous.temperature != next.temperature,
-            brightness: previous.brightness != next.brightness,
-            battery: previous.battery != next.battery,
-        }
-    }
-    fn all() -> Self {
-        Self {
-            workspaces: true,
-            layouts: true,
-            audio: true,
-            network: true,
-            temperature: true,
-            brightness: true,
-            battery: true,
-        }
-    }
-}
+mod model;
+pub use model::{Changes, SystemState};
 
 type Listener = Box<dyn Fn(&SystemState, Changes) -> bool>;
 
@@ -100,7 +60,7 @@ impl Services {
                         Notice::transient(NoticeKind::Keyboard, notifications::layout_label(name)),
                     );
                 }
-                if let Some(initial) = state.launcher_focus_window.get()
+                if let Some(initial) = state.launcher_model.focus_window.get()
                     && initial != state.focused_window_id()
                 {
                     let window = state.launcher.borrow().clone();
@@ -120,13 +80,19 @@ impl Services {
         });
         let (tx, rx) = async_channel::bounded(1);
         modules::spawn_audio_poller(tx);
-        Self::consume(&services, rx, |data, value| data.audio = value);
+        Self::consume(&services, rx, |data, value| match value {
+            Ok(value) => data.audio = ServiceState::Ready(value),
+            Err(error) => data.audio.fail(error),
+        });
         let weak = Rc::downgrade(&services);
         services.monitor.subscribe_temperature(move |temperature| {
             let Some(services) = weak.upgrade() else {
                 return false;
             };
-            services.update(|data| data.temperature = temperature);
+            services.update(|data| {
+                data.temperature =
+                    temperature.map_or(ServiceState::Unavailable, ServiceState::Ready)
+            });
             true
         });
         let weak = Rc::downgrade(&services);
@@ -210,7 +176,8 @@ impl Services {
                 }
                 services.update(|data| {
                     data.battery = battery;
-                    data.brightness = brightness;
+                    data.brightness =
+                        brightness.map_or(ServiceState::Unavailable, ServiceState::Ready);
                 });
             }
         });
@@ -283,8 +250,11 @@ impl Services {
 impl Services {
     pub fn stress(&self, iteration: u64) {
         self.update(|data| {
-            data.temperature = Some(40000 + iteration as i64 % 1000);
-            data.audio = Some(format!("Volume: {:.2}", (iteration % 100) as f32 / 100.0));
+            data.temperature = ServiceState::Ready(40000 + iteration as i64 % 1000);
+            data.audio = ServiceState::Ready(AudioState {
+                percent: (iteration % 100) as u8,
+                muted: false,
+            });
         });
     }
 }
@@ -296,7 +266,7 @@ mod tests {
     fn temperature_changes_do_not_refresh_other_modules() {
         let previous = SystemState::default();
         let next = SystemState {
-            temperature: Some(45000),
+            temperature: ServiceState::Ready(45000),
             ..previous.clone()
         };
         let changes = Changes::between(&previous, &next);

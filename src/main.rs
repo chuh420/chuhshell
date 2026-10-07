@@ -27,6 +27,7 @@ mod paths;
 mod power;
 mod process;
 mod reminder;
+mod service_state;
 mod services;
 mod storage;
 mod todo;

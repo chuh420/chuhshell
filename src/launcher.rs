@@ -1,3 +1,4 @@
+use crate::service_state::ServiceState;
 use std::cell::{Cell, RefCell};
 
 const RESULT_PAGE_SIZE: usize = 32;
@@ -28,8 +29,9 @@ pub fn configure(app: &gtk::Application, state: &Rc<AppState>) {
 fn show_inner(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode, editing: bool) {
     crate::menu::close(state);
     crate::ui::close_popover();
-    let generation = state.launcher_generation.get().wrapping_add(1);
-    state.launcher_generation.set(generation);
+    let generation = state.launcher_model.generation.get().wrapping_add(1);
+    state.launcher_model.generation.set(generation);
+    *state.launcher_model.status.borrow_mut() = ServiceState::Loading;
     let loaded = crate::storage::run(|| {
         Ok((
             apps::load_apps(),
@@ -40,10 +42,15 @@ fn show_inner(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode, 
     let state = Rc::downgrade(state);
     let app = app.downgrade();
     glib::MainContext::default().spawn_local(async move {
-        if let Ok((apps, counts, preferences)) = loaded.await
-            && let (Some(app), Some(state)) = (app.upgrade(), state.upgrade())
-            && state.launcher_generation.get() == generation
-        {
+        let result = loaded.await;
+        let (Some(app), Some(state)) = (app.upgrade(), state.upgrade()) else {
+            return;
+        };
+        if state.launcher_model.generation.get() != generation {
+            return;
+        }
+        if let Ok((apps, counts, preferences)) = result {
+            *state.launcher_model.status.borrow_mut() = ServiceState::Ready(());
             let window = create(&app, &state, mode, apps, (counts, preferences), editing);
             if editing {
                 let app = app.downgrade();
@@ -58,7 +65,7 @@ fn show_inner(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode, 
                     glib::idle_add_local_once(move || {
                         if let (Some(app), Some(state), Some(window)) =
                             (app.upgrade(), state.upgrade(), window.upgrade())
-                            && state.launcher_generation.get() == generation
+                            && state.launcher_model.generation.get() == generation
                             && window.is_visible()
                         {
                             crate::layout::show_ready(&app, &state);
@@ -67,6 +74,16 @@ fn show_inner(app: &gtk::Application, state: &Rc<AppState>, mode: LauncherMode, 
                     glib::ControlFlow::Break
                 });
             }
+        } else if let Err(error) = result {
+            state.launcher_model.status.borrow_mut().fail(error.clone());
+            crate::notifications::show(
+                &state,
+                crate::notifications::Notice::transient(
+                    crate::notifications::NoticeKind::Peripheral,
+                    "Launcher unavailable",
+                )
+                .with_detail(error),
+            );
         }
     });
 }
@@ -117,11 +134,12 @@ fn create(
     if let Some(old) = old {
         old.close();
     }
-    state.launcher_mode.set(Some(mode));
+    state.launcher_model.mode.set(Some(mode));
     state
-        .launcher_focus_window
+        .launcher_model
+        .focus_window
         .set((!editing).then(|| state.focused_window_id()));
-    *state.launcher_apps.borrow_mut() = entries;
+    *state.launcher_model.apps.borrow_mut() = entries;
 
     let window = gtk::ApplicationWindow::builder()
         .application(app)
@@ -288,7 +306,8 @@ fn create(
     let counts = Rc::new(RefCell::new(settings.0));
     let searching = Rc::new(std::cell::Cell::new(false));
     let names: HashMap<String, (String, String)> = state
-        .launcher_apps
+        .launcher_model
+        .apps
         .borrow()
         .iter()
         .filter(|entry| mode == LauncherMode::Manage || !entry.hidden)
@@ -305,7 +324,8 @@ fn create(
     let search_names = Rc::new(names);
     let names = Rc::new(
         state
-            .launcher_apps
+            .launcher_model
+            .apps
             .borrow()
             .iter()
             .map(|app| {
@@ -435,7 +455,7 @@ fn create(
             let (Some(list), Some(state)) = (list.upgrade(), state.upgrade()) else {
                 return;
             };
-            let entries = state.launcher_apps.borrow();
+            let entries = state.launcher_model.apps.borrow();
             let preferences = preferences.borrow();
             let scores = scores.borrow();
             let counts = counts.borrow();
@@ -650,7 +670,7 @@ fn create(
             if saving.replace(true) {
                 return;
             }
-            let entries = state_for_activate.launcher_apps.borrow().clone();
+            let entries = state_for_activate.launcher_model.apps.borrow().clone();
             let target_id = id.clone();
             let saved = crate::storage::run(move || {
                 apps::change_hidden(&entries, &target_id).map_err(|e| e.to_string())
@@ -671,7 +691,8 @@ fn create(
                     Ok(hidden) => {
                         if let Some(state) = state.upgrade()
                             && let Some(entry) = state
-                                .launcher_apps
+                                .launcher_model
+                                .apps
                                 .borrow_mut()
                                 .iter_mut()
                                 .find(|entry| entry.id == id)
@@ -886,9 +907,9 @@ fn create(
             closing.set(true);
             if let Some(state) = state.upgrade() {
                 let _ = state.launcher.borrow_mut().take();
-                state.launcher_focus_window.set(None);
-                state.launcher_mode.set(None);
-                state.launcher_apps.borrow_mut().clear();
+                state.launcher_model.focus_window.set(None);
+                state.launcher_model.mode.set(None);
+                state.launcher_model.apps.borrow_mut().clear();
             }
             glib::Propagation::Proceed
         }

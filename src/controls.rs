@@ -1,3 +1,4 @@
+use crate::service_state::{AudioState, ServiceState};
 use crate::{
     modules, niri, notifications,
     services::{Services, SystemState},
@@ -52,7 +53,7 @@ impl Action {
 pub(crate) enum Applied {
     Layout(niri::KeyboardLayouts),
     Brightness((u8, &'static str)),
-    Volume(String),
+    Volume(AudioState),
 }
 
 pub(crate) fn execute(action: Action) -> Result<Applied, String> {
@@ -95,6 +96,7 @@ pub(crate) fn execute(action: Action) -> Result<Applied, String> {
             )?;
             crate::process::run("wpctl", &["set-mute", "@DEFAULT_AUDIO_SINK@", "0"])?;
             crate::process::run("wpctl", &["get-volume", "@DEFAULT_AUDIO_SINK@"])
+                .and_then(|value| AudioState::parse(&value))
                 .map(Applied::Volume)
         }
     }
@@ -142,7 +144,7 @@ impl Controls {
             if changes.audio || changes.brightness || changes.layouts {
                 let mut snapshot = controls.snapshot.borrow_mut();
                 snapshot.audio.clone_from(&data.audio);
-                snapshot.brightness = data.brightness;
+                snapshot.brightness.clone_from(&data.brightness);
                 snapshot.niri.layouts.clone_from(&data.niri.layouts);
                 drop(snapshot);
                 controls.render();
@@ -168,8 +170,10 @@ impl Controls {
                         }
                         if let Some(services) = controls.services.upgrade() {
                             services.update(|data| match applied {
-                                Applied::Volume(value) => data.audio = Some(value),
-                                Applied::Brightness(value) => data.brightness = Some(value),
+                                Applied::Volume(value) => data.audio = ServiceState::Ready(value),
+                                Applied::Brightness(value) => {
+                                    data.brightness = ServiceState::Ready(value)
+                                }
                                 Applied::Layout(value) => data.niri.layouts = value,
                             });
                         }
@@ -254,12 +258,12 @@ impl Controls {
         } else if let Some(scale) = &view.scale {
             let audio = snapshot
                 .audio
-                .as_deref()
-                .and_then(notifications::parse_wpctl_volume);
+                .ready()
+                .map(|audio| (audio.percent, audio.muted));
             let value = if view.kind == Kind::Volume {
                 audio.map(|(percent, _)| percent)
             } else {
-                snapshot.brightness.map(|(percent, _)| percent)
+                snapshot.brightness.ready().map(|(percent, _)| *percent)
             };
             scale.set_sensitive(value.is_some());
             let changing = self.pending.borrow()[view.kind.index()] > 0;
@@ -268,7 +272,11 @@ impl Controls {
             }
             if !changing && !view.status.has_css_class("menu-error") {
                 view.status.set_text(if value.is_none() {
-                    "Unavailable"
+                    if view.kind == Kind::Volume {
+                        snapshot.audio.status()
+                    } else {
+                        snapshot.brightness.status()
+                    }
                 } else if view.kind == Kind::Volume && audio.is_some_and(|(_, muted)| muted) {
                     "Muted · move the slider to unmute"
                 } else {
@@ -324,11 +332,11 @@ impl Controls {
             let value = if kind == Kind::Volume {
                 snapshot
                     .audio
-                    .as_deref()
-                    .and_then(notifications::parse_wpctl_volume)
+                    .ready()
+                    .map(|audio| (audio.percent, audio.muted))
                     .map(|(percent, _)| percent)
             } else {
-                snapshot.brightness.map(|(percent, _)| percent)
+                snapshot.brightness.ready().map(|(percent, _)| *percent)
             };
             if let Some(value) = value {
                 scale.set_value(f64::from(value));
@@ -385,8 +393,11 @@ pub fn regression_checks(anchor: &gtk::Button) {
     let controls = Rc::new(Controls {
         services: Weak::new(),
         snapshot: RefCell::new(SystemState {
-            audio: Some("Volume: 0.40".into()),
-            brightness: Some((75, "󰃟")),
+            audio: ServiceState::Ready(AudioState {
+                percent: 40,
+                muted: false,
+            }),
+            brightness: ServiceState::Ready((75, "󰃟")),
             niri: niri::Snapshot {
                 layouts: niri::KeyboardLayouts {
                     names: vec!["English (US)".into(), "Russian".into()],
@@ -410,7 +421,10 @@ pub fn regression_checks(anchor: &gtk::Button) {
     assert!(receiver.is_empty());
     scale.set_value(45.0);
     scale.set_value(55.0);
-    controls.snapshot.borrow_mut().audio = Some("Volume: 0.20".into());
+    controls.snapshot.borrow_mut().audio = ServiceState::Ready(AudioState {
+        percent: 20,
+        muted: false,
+    });
     controls.render();
     assert_eq!(scale.value(), 55.0);
     for expected in [45, 55] {
@@ -455,7 +469,29 @@ pub fn regression_checks(anchor: &gtk::Button) {
     stable.emit_clicked();
     assert!(receiver.is_empty());
     controls.toggle(Kind::Volume, anchor);
-    controls.snapshot.borrow_mut().audio = None;
+    controls
+        .snapshot
+        .borrow_mut()
+        .audio
+        .fail("Audio disconnected".into());
+    controls.render();
+    let view = controls.view.borrow().as_ref().unwrap().clone();
+    assert!(!view.scale.as_ref().unwrap().is_sensitive());
+    assert_eq!(view.status.text(), "Audio disconnected");
+    assert_eq!(
+        controls.snapshot.borrow().audio.value().unwrap().percent,
+        20
+    );
+    controls.snapshot.borrow_mut().audio = ServiceState::Ready(AudioState {
+        percent: 60,
+        muted: true,
+    });
+    controls.render();
+    assert!(view.scale.as_ref().unwrap().is_sensitive());
+    assert_eq!(view.scale.as_ref().unwrap().value(), 60.0);
+    assert_eq!(view.status.text(), "Muted · move the slider to unmute");
+    assert!(receiver.is_empty());
+    controls.snapshot.borrow_mut().audio = ServiceState::Unavailable;
     controls.render();
     assert!(
         !controls

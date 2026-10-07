@@ -1,4 +1,5 @@
 use crate::app::{AppState, LauncherMode};
+use crate::service_state::ServiceState;
 use gtk::gdk;
 use gtk::prelude::*;
 use gtk4_layer_shell::{KeyboardMode, Layer, LayerShell};
@@ -113,6 +114,19 @@ const WALLPAPER_LIMIT: usize = 256;
 const PREVIEW_LIMIT: usize = 12;
 
 type PreviewPixels = (Vec<u8>, i32, i32, i32, bool);
+
+#[derive(Default)]
+struct WallpaperModel {
+    names: Rc<std::cell::RefCell<Vec<String>>>,
+    selected: Rc<std::cell::Cell<usize>>,
+    status: std::cell::RefCell<ServiceState<()>>,
+}
+
+#[derive(Default)]
+struct WallpaperView {
+    cards: Rc<std::cell::RefCell<Vec<glib::WeakRef<gtk::Button>>>>,
+    pictures: Rc<std::cell::RefCell<Vec<glib::WeakRef<gtk::Picture>>>>,
+}
 
 enum WallpaperResult {
     Files(Vec<String>, bool),
@@ -301,14 +315,12 @@ fn wallpaper_view_with(state: &Rc<AppState>, folder_path: PathBuf) -> gtk::Box {
     let gate = gtk::ListBox::new();
     gate.set_visible(false);
     outer.append(&gate);
-    let names = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
-    let cards = Rc::new(std::cell::RefCell::new(
-        Vec::<glib::WeakRef<gtk::Button>>::new(),
-    ));
-    let selected = Rc::new(std::cell::Cell::new(0usize));
-    let pictures = Rc::new(std::cell::RefCell::new(
-        Vec::<glib::WeakRef<gtk::Picture>>::new(),
-    ));
+    let model = Rc::new(WallpaperModel::default());
+    let names = model.names.clone();
+    let view = WallpaperView::default();
+    let cards = view.cards.clone();
+    let selected = model.selected.clone();
+    let pictures = view.pictures.clone();
     let preview_center = Rc::new(std::cell::Cell::new(usize::MAX));
     let (requests, request_receiver) = async_channel::bounded(1);
     let (sender, receiver) = async_channel::bounded(2);
@@ -489,6 +501,7 @@ fn wallpaper_view_with(state: &Rc<AppState>, folder_path: PathBuf) -> gtk::Box {
                 };
                 match result {
                     WallpaperResult::Files(files, limited) => {
+                        *model.status.borrow_mut() = ServiceState::Ready(());
                         for (index, name) in files.into_iter().enumerate() {
                             let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
                             let picture = gtk::Picture::new();
@@ -552,7 +565,8 @@ fn wallpaper_view_with(state: &Rc<AppState>, folder_path: PathBuf) -> gtk::Box {
                         }
                     }
                     WallpaperResult::Error(error) => {
-                        message.set_text(&error);
+                        model.status.borrow_mut().fail(error);
+                        message.set_text(model.status.borrow().status());
                         message.add_css_class("menu-error");
                     }
                 }
@@ -792,8 +806,9 @@ fn show_page(app: &gtk::Application, state: &Rc<AppState>, page: Page) {
     }
     crate::ui::close_popover();
     state
-        .launcher_generation
-        .set(state.launcher_generation.get().wrapping_add(1));
+        .launcher_model
+        .generation
+        .set(state.launcher_model.generation.get().wrapping_add(1));
     let launcher = state.launcher.borrow_mut().take();
     if let Some(launcher) = launcher {
         launcher.close();

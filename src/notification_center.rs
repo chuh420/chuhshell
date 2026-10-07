@@ -1,3 +1,4 @@
+use crate::service_state::ServiceState;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -32,7 +33,7 @@ const XML: &str = r#"<node>
 </node>"#;
 
 #[derive(Clone, PartialEq, Eq)]
-struct NotificationView {
+struct NotificationContent {
     id: u32,
     app: String,
     icon: String,
@@ -46,14 +47,26 @@ struct NotificationView {
 }
 
 struct Notification {
-    view: NotificationView,
-    rendered: NotificationView,
+    view: NotificationContent,
     sender: String,
     dirty: bool,
     popup_pending: bool,
     active: bool,
+    presentation: NotificationPresentation,
+}
+
+struct NotificationPresentation {
+    rendered: NotificationContent,
     popup: Option<gtk::Window>,
     timer: Option<glib::SourceId>,
+}
+
+#[derive(Default)]
+struct DrawerView {
+    buttons: RefCell<Vec<glib::WeakRef<gtk::Button>>>,
+    drawer: RefCell<Option<gtk::Popover>>,
+    rows: RefCell<HashMap<u32, (NotificationContent, bool, gtk::Box)>>,
+    list: RefCell<Option<gtk::Box>>,
 }
 
 pub struct NotificationCenter {
@@ -64,11 +77,8 @@ pub struct NotificationCenter {
     render_timer: RefCell<Option<glib::SourceId>>,
     render_cursor: Cell<usize>,
     popup_times: RefCell<std::collections::VecDeque<std::time::Instant>>,
-    owned: Cell<bool>,
-    buttons: RefCell<Vec<glib::WeakRef<gtk::Button>>>,
-    drawer: RefCell<Option<gtk::Popover>>,
-    rows: RefCell<HashMap<u32, (NotificationView, bool, gtk::Box)>>,
-    list: RefCell<Option<gtk::Box>>,
+    status: RefCell<ServiceState<()>>,
+    presentation: DrawerView,
 }
 
 impl NotificationCenter {
@@ -81,11 +91,8 @@ impl NotificationCenter {
             render_timer: RefCell::new(None),
             render_cursor: Cell::new(0),
             popup_times: RefCell::new(std::collections::VecDeque::new()),
-            owned: Cell::new(false),
-            buttons: RefCell::new(Vec::new()),
-            rows: RefCell::new(HashMap::new()),
-            drawer: RefCell::new(None),
-            list: RefCell::new(None),
+            status: RefCell::new(ServiceState::Loading),
+            presentation: DrawerView::default(),
         })
     }
 
@@ -121,18 +128,29 @@ impl NotificationCenter {
                     .build()
                 {
                     Ok(_) => *center.connection.borrow_mut() = Some(connection),
-                    Err(error) => eprintln!("Could not register notification service: {error}"),
+                    Err(error) => {
+                        center
+                            .status
+                            .borrow_mut()
+                            .fail(format!("Could not register notification service: {error}"));
+                        center.refresh_buttons();
+                    }
                 }
             },
             move |_, _| {
                 if let Some(center) = owner.upgrade() {
-                    center.owned.set(true);
+                    if center.connection.borrow().is_some() {
+                        *center.status.borrow_mut() = ServiceState::Ready(());
+                    }
                     center.refresh_buttons();
                 }
             },
             move |_, _| {
                 if let Some(center) = lost.upgrade() {
-                    center.owned.set(false);
+                    center
+                        .status
+                        .borrow_mut()
+                        .fail("Notification service unavailable or owned by another daemon".into());
                     center.refresh_buttons();
                 }
                 eprintln!("chuhshell: notification service unavailable or owned by another daemon");
@@ -207,7 +225,7 @@ impl NotificationCenter {
                 let id = self.notify_from(
                     invocation.sender().as_deref().unwrap_or("unknown"),
                     replaces_id,
-                    NotificationView {
+                    NotificationContent {
                         id: 0,
                         app: limited(&app, 128),
                         icon: limited(&icon, 1024),
@@ -279,7 +297,7 @@ impl NotificationCenter {
     pub fn reminder(self: &Rc<Self>, text: &str) -> u32 {
         self.notify(
             0,
-            NotificationView {
+            NotificationContent {
                 id: 0,
                 app: "chuhshell".into(),
                 icon: "alarm-symbolic".into(),
@@ -295,7 +313,7 @@ impl NotificationCenter {
         )
     }
 
-    fn notify(self: &Rc<Self>, replaces_id: u32, view: NotificationView, timeout: i32) -> u32 {
+    fn notify(self: &Rc<Self>, replaces_id: u32, view: NotificationContent, timeout: i32) -> u32 {
         self.notify_from("chuhshell", replaces_id, view, timeout)
     }
 
@@ -303,7 +321,7 @@ impl NotificationCenter {
         self: &Rc<Self>,
         sender: &str,
         replaces_id: u32,
-        mut view: NotificationView,
+        mut view: NotificationContent,
         timeout: i32,
     ) -> u32 {
         let replacing = self
@@ -331,7 +349,7 @@ impl NotificationCenter {
             .iter_mut()
             .find(|entry| entry.active && entry.view.id == replaces_id);
         let id = if let Some(entry) = existing {
-            if let Some(timer) = entry.timer.take() {
+            if let Some(timer) = entry.presentation.timer.take() {
                 timer.remove();
             }
             view.id = entry.view.id;
@@ -347,23 +365,23 @@ impl NotificationCenter {
             self.next_id.set(id.wrapping_add(1).max(1));
             view.id = id;
             entries.push(Notification {
-                rendered: view.clone(),
+                presentation: NotificationPresentation {
+                    rendered: view.clone(),
+                    popup: None,
+                    timer: None,
+                },
                 sender: sender.to_owned(),
                 dirty: false,
                 popup_pending: false,
                 view,
                 active: true,
-                popup: None,
-                timer: None,
             });
             id
         };
         drop(entries);
-        let existing_popup = self
-            .notifications
-            .borrow()
-            .iter()
-            .any(|entry| entry.view.id == id && (entry.popup.is_some() || entry.popup_pending));
+        let existing_popup = self.notifications.borrow().iter().any(|entry| {
+            entry.view.id == id && (entry.presentation.popup.is_some() || entry.popup_pending)
+        });
         let mut times = self.popup_times.borrow_mut();
         let now = std::time::Instant::now();
         while times
@@ -386,7 +404,7 @@ impl NotificationCenter {
                 .borrow_mut()
                 .iter_mut()
                 .find(|entry| entry.view.id == id)
-            && entry.popup.is_none()
+            && entry.presentation.popup.is_none()
         {
             entry.popup_pending = true;
         }
@@ -408,7 +426,7 @@ impl NotificationCenter {
                 .iter_mut()
                 .find(|e| e.view.id == id)
             {
-                entry.timer = Some(timer);
+                entry.presentation.timer = Some(timer);
             }
         }
         self.schedule_render();
@@ -448,8 +466,8 @@ impl NotificationCenter {
                 continue;
             }
             entry.dirty = false;
-            entry.rendered = entry.view.clone();
-            if entry.active && (entry.popup.is_some() || entry.popup_pending) {
+            entry.presentation.rendered = entry.view.clone();
+            if entry.active && (entry.presentation.popup.is_some() || entry.popup_pending) {
                 popups.push(entry.view.id);
             }
             entry.popup_pending = false;
@@ -481,7 +499,7 @@ impl NotificationCenter {
             .borrow()
             .iter()
             .find(|entry| entry.view.id == id)
-            .and_then(|entry| entry.popup.clone());
+            .and_then(|entry| entry.presentation.popup.clone());
         if let Some(popup) = existing_popup {
             popup.set_child(Some(&self.notification_content(&view, true, true)));
             self.position_popups();
@@ -491,7 +509,7 @@ impl NotificationCenter {
             .notifications
             .borrow()
             .iter()
-            .filter(|entry| entry.popup.is_some())
+            .filter(|entry| entry.presentation.popup.is_some())
             .count()
             >= 4
         {
@@ -499,7 +517,7 @@ impl NotificationCenter {
                 .notifications
                 .borrow_mut()
                 .iter_mut()
-                .filter_map(|entry| entry.popup.take())
+                .filter_map(|entry| entry.presentation.popup.take())
                 .next();
             if let Some(oldest) = oldest {
                 oldest.close();
@@ -526,7 +544,7 @@ impl NotificationCenter {
             .iter_mut()
             .find(|entry| entry.view.id == id)
         {
-            entry.popup = Some(window.clone());
+            entry.presentation.popup = Some(window.clone());
         }
         window.set_monitor(crate::ui::active_monitor().as_ref());
         crate::ui::animate_close(&window);
@@ -536,7 +554,7 @@ impl NotificationCenter {
 
     fn notification_content(
         self: &Rc<Self>,
-        view: &NotificationView,
+        view: &NotificationContent,
         active: bool,
         compact: bool,
     ) -> gtk::Box {
@@ -695,12 +713,12 @@ impl NotificationCenter {
         };
         entry.active = false;
         entry.popup_pending = false;
-        if let Some(timer) = entry.timer.take()
+        if let Some(timer) = entry.presentation.timer.take()
             && reason != 1
         {
             timer.remove();
         }
-        if let Some(popup) = entry.popup.take() {
+        if let Some(popup) = entry.presentation.popup.take() {
             popup.close();
         }
         let transient = entry.view.transient;
@@ -726,7 +744,7 @@ impl NotificationCenter {
         let mut offsets: HashMap<Option<String>, i32> = HashMap::new();
         let mut entries = self.notifications.borrow_mut();
         for entry in entries.iter_mut().rev() {
-            let Some(popup) = entry.popup.as_ref() else {
+            let Some(popup) = entry.presentation.popup.as_ref() else {
                 continue;
             };
             let monitor = popup.monitor().or_else(crate::ui::active_monitor);
@@ -740,7 +758,7 @@ impl NotificationCenter {
             });
             let available = monitor.map_or(900, |m| m.geometry().height());
             if *bottom + height + 48 > available {
-                if let Some(popup) = entry.popup.take() {
+                if let Some(popup) = entry.presentation.popup.take() {
                     popup.close();
                 }
             } else {
@@ -751,17 +769,21 @@ impl NotificationCenter {
     }
 
     pub fn attach_button(&self, button: &gtk::Button) {
-        self.buttons.borrow_mut().push(button.downgrade());
+        self.presentation
+            .buttons
+            .borrow_mut()
+            .push(button.downgrade());
         self.refresh_buttons();
     }
     fn refresh_buttons(&self) {
         let count = self.notifications.borrow().len();
-        self.buttons.borrow_mut().retain(|weak| {
+        self.presentation.buttons.borrow_mut().retain(|weak| {
             if let Some(button) = weak.upgrade() {
-                button.set_tooltip_text(Some(if self.owned.get() {
+                let status = self.status.borrow();
+                button.set_tooltip_text(Some(if status.ready().is_some() {
                     "Notifications"
                 } else {
-                    "Notification service unavailable or owned by another daemon"
+                    status.status()
                 }));
                 button.set_label(&if count == 0 {
                     "󰂚".into()
@@ -775,13 +797,13 @@ impl NotificationCenter {
         });
     }
     pub fn toggle_drawer(self: &Rc<Self>) {
-        let button = crate::ui::active_button(&self.buttons.borrow());
+        let button = crate::ui::active_button(&self.presentation.buttons.borrow());
         if let Some(button) = button {
             self.toggle_at(&button);
         }
     }
     pub fn toggle_at(self: &Rc<Self>, anchor: &gtk::Button) {
-        let old = self.drawer.borrow_mut().take();
+        let old = self.presentation.drawer.borrow_mut().take();
         if let Some(old) = old {
             old.popdown();
             return;
@@ -812,14 +834,14 @@ impl NotificationCenter {
         });
         root.append(&clear);
         let popup = crate::ui::popover(anchor, &root);
-        *self.list.borrow_mut() = Some(list);
-        *self.drawer.borrow_mut() = Some(popup.clone());
+        *self.presentation.list.borrow_mut() = Some(list);
+        *self.presentation.drawer.borrow_mut() = Some(popup.clone());
         let weak = Rc::downgrade(self);
         popup.connect_closed(move |_| {
             if let Some(center) = weak.upgrade() {
-                center.drawer.borrow_mut().take();
-                center.list.borrow_mut().take();
-                center.rows.borrow_mut().clear();
+                center.presentation.drawer.borrow_mut().take();
+                center.presentation.list.borrow_mut().take();
+                center.presentation.rows.borrow_mut().clear();
             }
         });
         self.refresh();
@@ -827,14 +849,16 @@ impl NotificationCenter {
     }
     fn refresh(self: &Rc<Self>) {
         self.refresh_buttons();
-        let Some(list) = self.list.borrow().clone() else {
+        let Some(list) = self.presentation.list.borrow().clone() else {
             return;
         };
         let entries = self.notifications.borrow();
-        let mut rows = self.rows.borrow_mut();
+        let mut rows = self.presentation.rows.borrow_mut();
         rows.retain(|id, (view, active, row)| {
             if entries.iter().any(|entry| {
-                entry.view.id == *id && entry.rendered == *view && entry.active == *active
+                entry.view.id == *id
+                    && entry.presentation.rendered == *view
+                    && entry.active == *active
             }) {
                 true
             } else {
@@ -851,9 +875,10 @@ impl NotificationCenter {
         let mut previous: Option<gtk::Box> = None;
         for entry in entries.iter().rev() {
             let (_, _, row) = rows.entry(entry.view.id).or_insert_with(|| {
-                let row = self.notification_content(&entry.rendered, entry.active, false);
+                let row =
+                    self.notification_content(&entry.presentation.rendered, entry.active, false);
                 list.append(&row);
-                (entry.rendered.clone(), entry.active, row)
+                (entry.presentation.rendered.clone(), entry.active, row)
             });
             list.reorder_child_after(row, previous.as_ref());
             previous = Some(row.clone());
@@ -872,10 +897,10 @@ impl NotificationCenter {
         }
         let entries = std::mem::take(&mut *self.notifications.borrow_mut());
         for mut entry in entries {
-            if let Some(timer) = entry.timer.take() {
+            if let Some(timer) = entry.presentation.timer.take() {
                 timer.remove();
             }
-            if let Some(popup) = entry.popup.take() {
+            if let Some(popup) = entry.presentation.popup.take() {
                 popup.close();
             }
             if entry.active
@@ -962,7 +987,7 @@ impl NotificationCenter {
         for _ in 0..20 {
             self.notify(
                 0,
-                NotificationView {
+                NotificationContent {
                     id: 0,
                     app: "Soak test".into(),
                     icon: String::new(),
@@ -1067,7 +1092,7 @@ pub fn regression_checks(app: &gtk::Application) {
             .iter()
             .any(|entry| entry.view.id == dbus_id)
     );
-    let view = || NotificationView {
+    let view = || NotificationContent {
         id: 0,
         app: "Regression test".into(),
         icon: String::new(),
@@ -1082,7 +1107,11 @@ pub fn regression_checks(app: &gtk::Application) {
     let first = center.notify(0, view(), 0);
     assert_eq!(center.notify(first, view(), 0), first);
     assert_eq!(center.notifications.borrow().len(), 1);
-    let popup = center.notifications.borrow()[0].popup.clone().unwrap();
+    let popup = center.notifications.borrow()[0]
+        .presentation
+        .popup
+        .clone()
+        .unwrap();
     let original = popup.child().unwrap();
     for index in 0..1000 {
         let mut updated = view();
@@ -1094,7 +1123,10 @@ pub fn regression_checks(app: &gtk::Application) {
     crate::ui_tests::pump(150);
     assert_ne!(popup.child().unwrap(), original);
     assert_eq!(
-        center.notifications.borrow()[0].rendered.summary,
+        center.notifications.borrow()[0]
+            .presentation
+            .rendered
+            .summary,
         "Update 999"
     );
     let stable = popup.child().unwrap();
@@ -1151,7 +1183,7 @@ pub fn regression_checks(app: &gtk::Application) {
             .notifications
             .borrow()
             .iter()
-            .filter(|entry| entry.popup.is_some())
+            .filter(|entry| entry.presentation.popup.is_some())
             .count()
             <= 5
     );
@@ -1164,7 +1196,7 @@ pub fn regression_checks(app: &gtk::Application) {
             .notifications
             .borrow()
             .iter()
-            .filter(|entry| entry.popup.is_some())
+            .filter(|entry| entry.presentation.popup.is_some())
             .count()
             <= 4
     );

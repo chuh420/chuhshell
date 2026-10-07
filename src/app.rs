@@ -13,6 +13,15 @@ pub enum LauncherMode {
 }
 
 #[derive(Default)]
+pub struct LauncherModel {
+    pub generation: Cell<u64>,
+    pub mode: Cell<Option<LauncherMode>>,
+    pub apps: RefCell<Vec<AppEntry>>,
+    pub focus_window: Cell<Option<Option<u64>>>,
+    pub status: RefCell<crate::service_state::ServiceState<()>>,
+}
+
+#[derive(Default)]
 pub struct AppState {
     pub reminders: RefCell<Option<Rc<crate::reminder::Service>>>,
     pub idle: RefCell<Option<Rc<crate::idle::Service>>>,
@@ -35,10 +44,7 @@ pub struct AppState {
     pub workspaces: RefCell<Vec<Workspace>>,
     pub layout_names: RefCell<Vec<String>>,
     pub current_layout: Cell<usize>,
-    pub launcher_generation: Cell<u64>,
-    pub launcher_mode: Cell<Option<LauncherMode>>,
-    pub launcher_apps: RefCell<Vec<AppEntry>>,
-    pub launcher_focus_window: Cell<Option<Option<u64>>>,
+    pub launcher_model: LauncherModel,
 }
 
 impl AppState {

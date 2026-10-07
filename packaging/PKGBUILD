@@ -5,9 +5,9 @@ pkgdesc='Integrated desktop shell for Niri'
 arch=('x86_64' 'aarch64')
 url='https://github.com/chuh420/chuhshell'
 license=('LicenseRef-unlicensed')
-depends=('gtk4' 'gtk4-layer-shell' 'glib2>=2.80' 'niri' 'wireplumber' 'libpulse' 'networkmanager' 'brightnessctl' 'systemd' 'bluez' 'wl-clipboard' 'curl')
+depends=('gtk4' 'gtk4-layer-shell' 'glib2>=2.80' 'niri' 'wireplumber' 'libpulse' 'networkmanager' 'brightnessctl' 'systemd' 'bluez' 'wl-clipboard' 'curl' 'ttf-dejavu' 'ttf-nerd-fonts-symbols-mono')
 makedepends=('cargo' 'git')
-optdepends=('power-profiles-daemon: battery power profiles' 'ttf-input: interface font')
+optdepends=('power-profiles-daemon: battery power profiles' 'ttf-input: optional unpatched input text font')
 source=("$pkgname-$pkgver.tar.gz")
 sha256sums=('SOURCE_ARCHIVE_CHECKSUM')
 

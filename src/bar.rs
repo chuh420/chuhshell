@@ -251,47 +251,51 @@ fn build(
                 update_workspaces(&left, &workspace_buttons, &data.niri.workspaces, &output);
             }
             if changes.audio {
-                if let Some(text) = &data.audio {
-                    let muted = text.contains("MUTED");
-                    let percent = text
-                        .split_whitespace()
-                        .nth(1)
-                        .and_then(|s| s.parse::<f32>().ok())
-                        .unwrap_or(0.0)
-                        * 100.0;
+                if let Some(value) = data.audio.value() {
                     audio.set_label(&format!(
-                        "{} {:.0}%",
-                        if muted { "󰝟" } else { "󰕾" },
-                        percent
+                        "{} {}%",
+                        if value.muted { "󰝟" } else { "󰕾" },
+                        value.percent
                     ));
-                    audio.set_tooltip_text(Some(if muted {
+                    audio.set_tooltip_text(Some(if data.audio.ready().is_none() {
+                        data.audio.status()
+                    } else if value.muted {
                         "Audio muted"
                     } else {
                         "Audio volume"
                     }));
                 } else {
                     audio.set_label("󰝟 --");
-                    audio.set_tooltip_text(Some("Audio unavailable"));
+                    audio.set_tooltip_text(Some(data.audio.status()));
                 }
             }
             if changes.brightness {
                 brightness.set_label(
                     &data
                         .brightness
+                        .value()
                         .map_or_else(|| "--".into(), |(p, icon)| format!("{icon} {p}%")),
                 );
-                brightness.set_tooltip_text(Some(if data.brightness.is_some() {
+                brightness.set_tooltip_text(Some(if data.brightness.ready().is_some() {
                     "Screen brightness — scroll to adjust"
                 } else {
-                    "Screen brightness unavailable"
+                    data.brightness.status()
                 }));
             }
             if changes.temperature {
                 temperature.set_label(
                     &data
                         .temperature
+                        .value()
                         .map_or_else(|| "󰔏 --°C".into(), |t| format!("󰔏 {}°C", t / 1000)),
                 );
+            }
+            if changes.temperature {
+                temperature.set_tooltip_text(Some(if data.temperature.ready().is_some() {
+                    "CPU temperature"
+                } else {
+                    data.temperature.status()
+                }));
             }
             if changes.layouts {
                 let name = data.niri.layouts.names.get(data.niri.layouts.current_idx);

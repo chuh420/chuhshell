@@ -24,7 +24,7 @@ in menus, use up/down to move, enter or right to select, left to go back and esc
 
 chuh menu lets you toggle and arrange panel modules, move or resize the launcher, and edit shortcuts. save applies changes; cancel or escape discards them. niri bindings include their source files and are validated before saving.
 
-click the keyboard layout module to select a configured layout. click volume or brightness for a slider; scrolling still adjusts them. volume stays within 0-100%, and moving its slider unmutes audio. brightness stays within 1-100%.
+click the keyboard layout module to select a configured layout. click volume or brightness for a slider; scrolling still adjusts them. volume stays within 0-100%, and moving its slider unmutes audio. brightness stays within 1-100%. if the audio observer fails, the panel keeps the last confirmed value and shows the error in its tooltip; the volume slider stays disabled until fresh data arrives.
 
 click the temperature module for live system metrics, refreshed every two seconds. gpu collection runs only while the menu is open. gpu usage falls back to the busiest engine across accessible applications when the driver has no global usage counter. missing sensors show unavailable; integrated intel graphics may have no separate gpu temperature sensor.
 
@@ -36,7 +36,7 @@ for wallpapers, put images in `~/Pictures/Wallpapers` and provide `~/.local/bin/
 
 ## installation
 
-on arch, building needs rust 1.92+, pkgconf, gtk4, gtk4-layer-shell and glib 2.80+. desktop controls use niri, wireplumber, pactl, networkmanager, brightnessctl, udevadm, bluez, wl-clipboard and curl. the intended font is inputsans nerd font.
+on arch, building needs rust 1.92+, pkgconf, gtk4, gtk4-layer-shell and glib 2.80+. desktop controls use niri, wireplumber, pactl, networkmanager, brightnessctl, udevadm, bluez, wl-clipboard and curl. the preferred font is inputsans nerd font. css falls back to input sans, dejavu sans, symbols nerd font mono and the system sans-serif. unpatched ttf-input supplies text only; panel icons require nerd fonts 3 glyphs (including material design icons in the supplementary private-use area). the package includes ttf-dejavu and ttf-nerd-fonts-symbols-mono for text and icon fallback. manual installations need these fallback packages or a patched nerd font.
 
 run this from the project directory in your niri session:
 
@@ -77,7 +77,7 @@ the running shell shares one validated settings snapshot. weather and shortcuts 
 
 ## troubleshooting and development
 
-`chuhshell --help` lists commands. `chuhshell doctor` checks desktop integrations and notification ownership; add `--json` for machine-readable output. read service logs with:
+`chuhshell --help` lists commands. `chuhshell doctor` checks desktop integrations, notification ownership, power profiles, the cpu sensor, backlight access, idle/session-lock protocols and pending installation/autologin recovery journals. disabled panel modules are skipped; optional services and absent hardware produce warnings. brightness checks read sysfs and inspect the active logind session without changing brightness; add `--json` for machine-readable output. read service logs with:
 
 ```sh
 journalctl --user -u chuhshell.service
