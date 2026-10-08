@@ -2,6 +2,8 @@
 
 a personal desktop shell for niri, written in rust with gtk4. the panel, launcher, menus and notifications share one process and one look.
 
+was mostly vibecoded
+
 i made this for my own desktop. i think it should work on other people's desktops too, but i'm not sure. it only supports the niri window manager. feel free to use it, change it, share it or borrow ideas - i don't mind what you do with it.
 
 ## what it does
