@@ -311,6 +311,146 @@ impl Tree {
             .fold(Transform::identity(), |acc, local| acc.pre_concat(local))
     }
 
+    fn update<F: FnOnce(&mut Node) -> bool>(&mut self, id: NodeId, f: F) {
+        if let Some(node) = self.get_mut_clean(id)
+            && f(node)
+        {
+            node.dirty = true;
+        }
+    }
+
+    pub fn set_pos(&mut self, id: NodeId, x: f32, y: f32) {
+        self.update(id, |node| {
+            let changed = node.x != x || node.y != y;
+            node.x = x;
+            node.y = y;
+            changed
+        });
+    }
+
+    pub fn set_size(&mut self, id: NodeId, width: f32, height: f32) {
+        self.update(id, |node| {
+            let changed = node.width != width || node.height != height;
+            node.width = width;
+            node.height = height;
+            changed
+        });
+    }
+
+    pub fn set_opacity(&mut self, id: NodeId, opacity: f32) {
+        self.update(id, |node| {
+            let changed = node.opacity != opacity;
+            node.opacity = opacity;
+            changed
+        });
+    }
+
+    pub fn set_visible(&mut self, id: NodeId, visible: bool) {
+        self.update(id, |node| {
+            let changed = node.visible != visible;
+            node.visible = visible;
+            changed
+        });
+    }
+
+    pub fn set_scale(&mut self, id: NodeId, scale: f32) {
+        self.update(id, |node| {
+            let changed = node.scale != scale;
+            node.scale = scale;
+            changed
+        });
+    }
+
+    pub fn set_transforms(&mut self, id: NodeId, transforms: &[TransformOp]) {
+        self.update(id, |node| {
+            let changed = node.transforms != transforms;
+            if changed {
+                node.transforms = transforms.to_vec();
+            }
+            changed
+        });
+    }
+
+    pub fn set_fill(&mut self, id: NodeId, color: Color) {
+        self.update(id, |node| match &mut node.paint {
+            Paint::Rect(rect) if rect.color != color => {
+                rect.color = color;
+                true
+            }
+            _ => false,
+        });
+    }
+
+    pub fn set_text(&mut self, id: NodeId, spec: TextSpec) {
+        self.update(id, |node| match &mut node.paint {
+            Paint::Text(text) => text.set_spec(spec),
+            _ => false,
+        });
+    }
+
+    pub fn text_spec(&self, id: NodeId) -> Option<&TextSpec> {
+        match &self.get(id)?.paint {
+            Paint::Text(text) => Some(text.spec()),
+            _ => None,
+        }
+    }
+
+    pub fn parent(&self, id: NodeId) -> Option<NodeId> {
+        self.get(id).and_then(|node| node.parent)
+    }
+
+    pub fn is_ancestor_or_self(&self, ancestor: NodeId, id: NodeId) -> bool {
+        let mut current = Some(id);
+        while let Some(node) = current {
+            if node == ancestor {
+                return true;
+            }
+            current = self.parent(node);
+        }
+        false
+    }
+
+    pub fn paint_order(&self) -> Vec<NodeId> {
+        let mut order = Vec::new();
+        let mut stack = vec![self.root];
+        while let Some(id) = stack.pop() {
+            order.push(id);
+            if let Some(node) = self.get(id) {
+                stack.extend(node.children.iter().rev().copied());
+            }
+        }
+        order
+    }
+
+    pub fn hit(&self, id: NodeId, x: f32, y: f32) -> bool {
+        let mut current = Some(id);
+        while let Some(node_id) = current {
+            let Some(node) = self.get(node_id) else {
+                return false;
+            };
+            if !node.visible {
+                return false;
+            }
+            if (node_id == id || node.clip) && !self.local_contains(node_id, x, y) {
+                return false;
+            }
+            current = node.parent;
+        }
+        true
+    }
+
+    fn local_contains(&self, id: NodeId, x: f32, y: f32) -> bool {
+        let Some(node) = self.get(id) else {
+            return false;
+        };
+        let Some(inverse) = self.device_transform(id).invert() else {
+            return false;
+        };
+        let mut point = tiny_skia::Point::from_xy(x, y);
+        inverse.map_point(&mut point);
+        point.x >= 0.0 && point.y >= 0.0 && point.x < node.width && point.y < node.height
+    }
+
     pub fn mark_all(&mut self) {
         for node in self.nodes.iter_mut().flatten() {
             node.dirty = true;

@@ -1,4 +1,5 @@
 mod geometry;
+mod pointer;
 mod surface;
 
 use std::collections::HashMap;
@@ -9,21 +10,33 @@ use smithay_client_toolkit::{
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
-    seat::{Capability, SeatHandler, SeatState},
-    shell::wlr_layer::{LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure},
+    seat::{Capability, SeatHandler, SeatState, pointer::cursor_shape::CursorShapeManager},
+    shell::{
+        wlr_layer::{LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure},
+        xdg::{
+            XdgPositioner, XdgShell,
+            popup::{Popup, PopupConfigure, PopupHandler},
+            window::{Window, WindowConfigure, WindowHandler},
+        },
+    },
     shm::{Shm, ShmHandler},
 };
 use wayland_client::{
     Connection, EventQueue, QueueHandle,
     globals::registry_queue_init,
-    protocol::{wl_output, wl_seat, wl_surface},
+    protocol::{wl_output, wl_pointer, wl_seat, wl_surface},
+};
+use wayland_protocols::{
+    wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::{Shape, WpCursorShapeDeviceV1},
+    xdg::shell::client::xdg_positioner,
 };
 
 pub use calloop_wayland_source::WaylandSource;
 pub use geometry::{Damage, Rect};
-pub use surface::{Edges, InputRegion, KeyboardMode, Layer, LayerConfig};
+pub use pointer::{CursorShape, MouseButton, PointerEvent, PointerKind};
+pub use surface::{Edges, InputRegion, KeyboardMode, Layer, LayerConfig, PopupPlacement};
 
-use surface::Surface;
+use surface::{Role, Surface};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct OutputId(u32);
@@ -39,7 +52,7 @@ pub struct OutputDesc {
     pub scale: i32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     OutputAdded(OutputId),
     OutputRemoved(OutputId),
@@ -50,6 +63,7 @@ pub enum Event {
     },
     Closed(SurfaceId),
     Frame(SurfaceId),
+    Pointer(PointerEvent),
 }
 
 #[derive(Debug)]
@@ -77,7 +91,13 @@ pub struct Platform {
     seat_state: SeatState,
     compositor: CompositorState,
     layer_shell: LayerShell,
+    xdg_shell: XdgShell,
     shm: Shm,
+    cursor_shapes: Option<CursorShapeManager>,
+    pointer: Option<wl_pointer::WlPointer>,
+    cursor_device: Option<WpCursorShapeDeviceV1>,
+    enter_serial: Option<u32>,
+    cursor: CursorShape,
     qh: QueueHandle<Platform>,
     outputs: HashMap<OutputId, wl_output::WlOutput>,
     surfaces: HashMap<SurfaceId, Surface>,
@@ -94,13 +114,27 @@ impl Platform {
         let compositor = CompositorState::bind(&globals, &qh).map_err(Error::Bind)?;
         let layer_shell = LayerShell::bind(&globals, &qh).map_err(Error::Bind)?;
         let shm = Shm::bind(&globals, &qh).map_err(Error::Bind)?;
+        let xdg_shell = XdgShell::bind(&globals, &qh).map_err(Error::Bind)?;
+        let cursor_shapes = match CursorShapeManager::bind(&globals, &qh) {
+            Ok(manager) => Some(manager),
+            Err(err) => {
+                log::warn!("cursor shape: {err}");
+                None
+            }
+        };
         let platform = Platform {
             registry_state: RegistryState::new(&globals),
             output_state: OutputState::new(&globals, &qh),
             seat_state: SeatState::new(&globals, &qh),
             compositor,
             layer_shell,
+            xdg_shell,
             shm,
+            cursor_shapes,
+            pointer: None,
+            cursor_device: None,
+            enter_serial: None,
+            cursor: CursorShape::Default,
             qh,
             outputs: HashMap::new(),
             surfaces: HashMap::new(),
@@ -153,6 +187,75 @@ impl Platform {
         id
     }
 
+    pub fn create_popup(
+        &mut self,
+        parent: SurfaceId,
+        placement: &PopupPlacement,
+    ) -> Option<SurfaceId> {
+        let parent_layer = match self.surfaces.get(&parent)?.role() {
+            Role::Layer(layer) => layer.clone(),
+            Role::Popup(_) => return None,
+        };
+        let positioner = match XdgPositioner::new(&self.xdg_shell) {
+            Ok(positioner) => positioner,
+            Err(err) => {
+                log::error!("positioner: {err}");
+                return None;
+            }
+        };
+        positioner.set_anchor_rect(
+            placement.anchor_x,
+            placement.anchor_y,
+            placement.anchor_width.max(1),
+            placement.anchor_height.max(1),
+        );
+        positioner.set_anchor(xdg_positioner::Anchor::BottomRight);
+        positioner.set_gravity(xdg_positioner::Gravity::BottomRight);
+        positioner.set_size(
+            placement.width.max(1) as i32,
+            placement.height.max(1) as i32,
+        );
+        positioner.set_constraint_adjustment(
+            xdg_positioner::ConstraintAdjustment::from_bits_truncate(15),
+        );
+        positioner.set_offset(0, 0);
+        let wl_surface = self.compositor.create_surface(&self.qh);
+        let popup =
+            match Popup::from_surface(None, &positioner, &self.qh, wl_surface, &self.xdg_shell) {
+                Ok(popup) => popup,
+                Err(err) => {
+                    log::error!("popup: {err}");
+                    return None;
+                }
+            };
+        parent_layer.get_popup(popup.xdg_popup());
+        popup.wl_surface().commit();
+        let id = SurfaceId(self.next_surface);
+        self.next_surface += 1;
+        self.surfaces
+            .insert(id, Surface::new_popup(popup, placement));
+        Some(id)
+    }
+
+    pub fn set_cursor(&mut self, shape: CursorShape) {
+        if self.cursor == shape {
+            return;
+        }
+        self.cursor = shape;
+        self.apply_cursor();
+    }
+
+    fn apply_cursor(&mut self) {
+        let (Some(device), Some(serial)) = (&self.cursor_device, self.enter_serial) else {
+            return;
+        };
+        let shape = match self.cursor {
+            CursorShape::Default => Shape::Default,
+            CursorShape::Pointer => Shape::Pointer,
+        };
+        device.set_shape(serial, shape);
+    }
+
     pub fn destroy_surface(&mut self, id: SurfaceId) {
         self.surfaces.remove(&id);
     }
@@ -183,7 +286,14 @@ impl Platform {
     fn surface_by_layer(&self, layer: &LayerSurface) -> Option<SurfaceId> {
         self.surfaces
             .iter()
-            .find(|(_, surface)| surface.layer() == layer)
+            .find(|(_, surface)| matches!(surface.role(), Role::Layer(own) if own == layer))
+            .map(|(id, _)| *id)
+    }
+
+    fn surface_by_popup(&self, popup: &Popup) -> Option<SurfaceId> {
+        self.surfaces
+            .iter()
+            .find(|(_, surface)| matches!(surface.role(), Role::Popup(own) if own == popup))
             .map(|(id, _)| *id)
     }
 
@@ -318,10 +428,22 @@ impl SeatHandler for Platform {
     fn new_capability(
         &mut self,
         _: &Connection,
-        _: &QueueHandle<Self>,
-        _: wl_seat::WlSeat,
-        _: Capability,
+        qh: &QueueHandle<Self>,
+        seat: wl_seat::WlSeat,
+        capability: Capability,
     ) {
+        if capability == Capability::Pointer && self.pointer.is_none() {
+            match self.seat_state.get_pointer(qh, &seat) {
+                Ok(pointer) => {
+                    self.cursor_device = self
+                        .cursor_shapes
+                        .as_ref()
+                        .map(|manager| manager.get_shape_device(&pointer, qh));
+                    self.pointer = Some(pointer);
+                }
+                Err(err) => log::error!("pointer: {err}"),
+            }
+        }
     }
 
     fn remove_capability(
@@ -329,11 +451,64 @@ impl SeatHandler for Platform {
         _: &Connection,
         _: &QueueHandle<Self>,
         _: wl_seat::WlSeat,
-        _: Capability,
+        capability: Capability,
     ) {
+        if capability == Capability::Pointer {
+            if let Some(device) = self.cursor_device.take() {
+                device.destroy();
+            }
+            if let Some(pointer) = self.pointer.take() {
+                pointer.release();
+            }
+            self.enter_serial = None;
+        }
     }
 
     fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+}
+
+impl WindowHandler for Platform {
+    fn request_close(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &Window) {}
+
+    fn configure(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &Window,
+        _: WindowConfigure,
+        _: u32,
+    ) {
+    }
+}
+
+impl PopupHandler for Platform {
+    fn configure(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        popup: &Popup,
+        config: PopupConfigure,
+    ) {
+        let Some(id) = self.surface_by_popup(popup) else {
+            return;
+        };
+        if let Some(surface) = self.surfaces.get_mut(&id) {
+            let (width, height) =
+                surface.configure((config.width.max(0) as u32, config.height.max(0) as u32));
+            self.events.push(Event::Configure {
+                surface: id,
+                width,
+                height,
+            });
+        }
+    }
+
+    fn done(&mut self, _: &Connection, _: &QueueHandle<Self>, popup: &Popup) {
+        if let Some(id) = self.surface_by_popup(popup) {
+            self.surfaces.remove(&id);
+            self.events.push(Event::Closed(id));
+        }
+    }
 }
 
 impl ShmHandler for Platform {

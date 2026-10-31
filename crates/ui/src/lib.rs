@@ -1,10 +1,13 @@
+pub mod anim;
 mod color;
 pub mod image;
+pub mod input;
 pub mod layout;
 mod render;
 pub mod rich;
 pub mod text;
 mod tree;
+pub mod widgets;
 
 pub use color::Color;
 pub use render::Canvas;

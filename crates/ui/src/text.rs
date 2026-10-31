@@ -138,7 +138,8 @@ impl TextEngine {
             buffer.set_ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1)));
             buffer.set_size(Some(width * scale), None);
         }
-        let default = Attrs::new();
+        let default_family = spec.spans.first().map_or("", |span| span.family.as_str());
+        let default = Attrs::new().family(Family::Name(default_family));
         let spans = spec.spans.iter().map(|span| {
             let size = span.size * scale;
             (
@@ -154,10 +155,11 @@ impl TextEngine {
         buffer
     }
 
-    fn line_metrics(&mut self, buffer: &mut Buffer) -> (f32, f32, f32) {
+    fn line_metrics(&mut self, buffer: &mut Buffer) -> (f32, f32, f32, usize) {
         let mut width: f32 = 0.0;
         let mut ascent: f32 = 0.0;
         let mut descent: f32 = 0.0;
+        let mut count = 0;
         let lines = buffer.lines.len();
         for index in 0..lines {
             if let Some(layout) = buffer.line_layout(&mut self.fonts, index) {
@@ -165,18 +167,19 @@ impl TextEngine {
                     width = width.max(line.w);
                     ascent = ascent.max(line.max_ascent);
                     descent = descent.max(line.max_descent);
+                    count += 1;
                 }
             }
         }
-        (width, ascent, descent)
+        (width, ascent, descent, count.max(1))
     }
 
     pub fn measure(&mut self, spec: &TextSpec, scale: f32) -> TextMetrics {
         let mut buffer = self.shape(spec, scale, None);
-        let (width, ascent, descent) = self.line_metrics(&mut buffer);
+        let (width, ascent, descent, lines) = self.line_metrics(&mut buffer);
         TextMetrics {
             width: width / scale,
-            height: ((ascent + descent) / scale).ceil(),
+            height: ((ascent + descent) * lines as f32 / scale).ceil(),
             ascent: ascent / scale,
         }
     }
@@ -185,19 +188,21 @@ impl TextEngine {
         let natural = self.measure(spec, scale);
         let elide = spec.elide_width.filter(|width| *width < natural.width);
         let mut buffer = self.shape(spec, scale, elide);
-        let (width, ascent, descent) = self.line_metrics(&mut buffer);
+        let (width, ascent, descent, lines) = self.line_metrics(&mut buffer);
+        let line_height = ascent + descent;
         let max_size = spec.spans.iter().map(|span| span.size).fold(1.0, f32::max) * scale;
         let pad = (max_size * 0.4).ceil() as i32 + 2;
         let pw = width.ceil() as i32 + pad * 2;
-        let ph = (ascent + descent).ceil() as i32 + pad * 2;
+        let ph = (line_height * lines as f32).ceil() as i32 + pad * 2;
         let size = IntSize::from_wh(pw.max(1) as u32, ph.max(1) as u32)?;
         let mut pixmap = Pixmap::new(size.width(), size.height())?;
         let color = spec.color.to_rgba8();
         let stride = size.width() as i32;
         let data = pixmap.data_mut();
-        for run in buffer.layout_runs() {
+        for (line_index, run) in buffer.layout_runs().enumerate() {
+            let baseline = pad as f32 + ascent + line_index as f32 * line_height;
             for glyph in run.glyphs {
-                let physical = glyph.physical((pad as f32, pad as f32 + ascent), 1.0);
+                let physical = glyph.physical((pad as f32, baseline), 1.0);
                 let Some(image) = self
                     .swash
                     .get_image_uncached(&mut self.fonts, physical.cache_key)

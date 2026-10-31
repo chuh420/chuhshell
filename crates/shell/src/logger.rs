@@ -28,7 +28,8 @@ impl Log for Logger {
 }
 
 pub fn init() {
-    let level = std::env::var("IDK_YET_LOG")
+    let variable = format!("{}_LOG", crate::APP_NAME.to_uppercase().replace('-', "_"));
+    let level = std::env::var(variable)
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(LevelFilter::Info);

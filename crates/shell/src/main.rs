@@ -1,9 +1,11 @@
 mod bar;
 mod logger;
+mod model;
 #[allow(dead_code)]
 mod theme;
+mod tooltip;
 
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration, time::Instant};
 
 use calloop::{
     EventLoop,
@@ -11,14 +13,13 @@ use calloop::{
 };
 use platform::{
     Damage, Edges, Event, InputRegion, KeyboardMode, Layer, LayerConfig, OutputId, Platform,
-    SurfaceId,
+    PointerEvent, PointerKind, SurfaceId,
 };
-use ui::{Canvas, TextEngine};
+use ui::{Canvas, TextEngine, anim::Millis};
 
-use crate::{
-    bar::{Bar, BarModel},
-    theme::UI_SCALE,
-};
+use crate::{bar::Bar, model::BarModel, theme::UI_SCALE, tooltip::Tooltips};
+
+pub const APP_NAME: &str = "idk-yet";
 
 struct BarSurface {
     surface: SurfaceId,
@@ -30,6 +31,8 @@ struct App {
     engine: TextEngine,
     model: BarModel,
     bars: HashMap<OutputId, BarSurface>,
+    tooltips: Tooltips,
+    start: Instant,
     running: bool,
 }
 
@@ -59,6 +62,77 @@ fn bar_config(output: OutputId) -> LayerConfig {
 }
 
 impl App {
+    fn now(&self) -> Millis {
+        self.start.elapsed().as_secs_f64() * 1000.0
+    }
+
+    fn bar_by_surface(&mut self, surface: SurfaceId) -> Option<&mut BarSurface> {
+        self.bars.values_mut().find(|bar| bar.surface == surface)
+    }
+
+    fn draw_bar(&mut self, surface: SurfaceId, full: bool) {
+        let now = self.now();
+        let Some(entry) = self.bars.values_mut().find(|bar| bar.surface == surface) else {
+            return;
+        };
+        let Some((bar, canvas)) = entry.view.as_mut() else {
+            return;
+        };
+        let running = bar.tick(now);
+        let events = bar.input.refresh(&bar.tree);
+        if !events.is_empty() {
+            bar.handle(&events, now);
+        }
+        let mut damage = bar.tree.collect_damage();
+        if full {
+            damage = Damage::full(canvas.width() as i32, canvas.height() as i32);
+        }
+        if damage.is_empty() {
+            if running {
+                self.platform.schedule_frame(surface);
+            }
+            return;
+        }
+        canvas.render(&mut bar.tree, &mut self.engine, &damage);
+        self.platform
+            .present(surface, canvas.data(), &damage, running);
+    }
+
+    fn pointer(&mut self, event: PointerEvent) {
+        let now = self.now();
+        let Some(entry) = self.bar_by_surface(event.surface) else {
+            return;
+        };
+        let Some((bar, _)) = entry.view.as_mut() else {
+            return;
+        };
+        let events = match event.kind {
+            PointerKind::Enter | PointerKind::Motion => {
+                bar.input.motion(&bar.tree, event.x, event.y)
+            }
+            PointerKind::Leave => bar.input.leave(&bar.tree),
+            PointerKind::Press(button) => bar.input.press(&bar.tree, button, event.x, event.y),
+            PointerKind::Release(button) => bar.input.release(&bar.tree, button, event.x, event.y),
+            PointerKind::Wheel { y, .. } => {
+                if y == 0 {
+                    Vec::new()
+                } else {
+                    bar.input.wheel(&bar.tree, event.x, event.y, y)
+                }
+            }
+        };
+        let actions = bar.handle(&events, now);
+        for action in actions {
+            log::debug!("bar action {action:?}");
+        }
+        let cursor = bar.input.cursor();
+        let tooltip = bar.tooltip();
+        self.platform.set_cursor(cursor);
+        self.platform.schedule_frame(event.surface);
+        self.tooltips
+            .update(&mut self.platform, event.surface, tooltip, now);
+    }
+
     fn handle(&mut self, event: Event) {
         match event {
             Event::OutputAdded(output) => {
@@ -83,6 +157,18 @@ impl App {
                 width,
                 height,
             } => {
+                let now = self.now();
+                if self.tooltips.owns(surface) {
+                    self.tooltips.configure(
+                        &mut self.platform,
+                        &mut self.engine,
+                        surface,
+                        width,
+                        height,
+                        now,
+                    );
+                    return;
+                }
                 let Some(entry) = self.bars.values_mut().find(|bar| bar.surface == surface) else {
                     return;
                 };
@@ -94,24 +180,25 @@ impl App {
                     let Some(canvas) = Canvas::new(width, height) else {
                         return;
                     };
-                    let mut bar = Bar::new(width, height);
-                    bar.rebuild(&mut self.engine, &self.model);
+                    let bar = Bar::new(&mut self.engine, width, height, &self.model, now);
                     entry.view = Some((bar, canvas));
                 }
-                if let Some((bar, canvas)) = entry.view.as_mut() {
-                    let mut damage = bar.tree.collect_damage();
-                    if resized {
-                        damage = Damage::full(width as i32, height as i32);
-                    }
-                    canvas.render(&mut bar.tree, &mut self.engine, &damage);
-                    self.platform
-                        .present(surface, canvas.data(), &damage, false);
-                }
+                self.draw_bar(surface, resized);
             }
             Event::Closed(surface) => {
+                self.tooltips.closed(surface);
                 self.bars.retain(|_, bar| bar.surface != surface);
             }
-            Event::Frame(_) => {}
+            Event::Frame(surface) => {
+                let now = self.now();
+                if self.tooltips.owns(surface) {
+                    self.tooltips
+                        .frame(&mut self.platform, &mut self.engine, surface, now);
+                } else {
+                    self.draw_bar(surface, false);
+                }
+            }
+            Event::Pointer(event) => self.pointer(event),
         }
     }
 
@@ -121,6 +208,15 @@ impl App {
                 self.handle(event);
             }
         }
+        let now = self.now();
+        self.tooltips
+            .poll(&mut self.platform, &mut self.engine, now);
+    }
+
+    fn timeout(&self) -> Option<Duration> {
+        let deadline = self.tooltips.next_deadline()?;
+        let wait = (deadline - self.now()).max(0.0);
+        Some(Duration::from_secs_f64(wait / 1000.0))
     }
 }
 
@@ -138,10 +234,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         engine: TextEngine::new(theme::FONT_FAMILIES),
         model: BarModel::placeholder(),
         bars: HashMap::new(),
+        tooltips: Tooltips::default(),
+        start: Instant::now(),
         running: true,
     };
     while app.running {
-        event_loop.dispatch(None, &mut app)?;
+        let timeout = app.timeout();
+        event_loop.dispatch(timeout, &mut app)?;
         app.process();
     }
     Ok(())

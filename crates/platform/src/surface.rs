@@ -3,6 +3,7 @@ use smithay_client_toolkit::{
     shell::{
         WaylandSurface,
         wlr_layer::{self, Anchor, KeyboardInteractivity, LayerSurface},
+        xdg::popup::Popup,
     },
     shm::{
         Shm,
@@ -108,8 +109,24 @@ struct Slot {
     pending: Damage,
 }
 
+pub(crate) enum Role {
+    Layer(LayerSurface),
+    Popup(Popup),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PopupPlacement {
+    pub anchor_x: i32,
+    pub anchor_y: i32,
+    pub anchor_width: i32,
+    pub anchor_height: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
 pub(crate) struct Surface {
-    layer: LayerSurface,
+    wl: wl_surface::WlSurface,
+    role: Role,
     requested: (u32, u32),
     size: Option<(u32, u32)>,
     pool: Option<SlotPool>,
@@ -149,7 +166,8 @@ impl Surface {
         }
         layer.commit();
         Self {
-            layer,
+            wl: layer.wl_surface().clone(),
+            role: Role::Layer(layer),
             requested: (config.width, config.height),
             size: None,
             pool: None,
@@ -160,12 +178,26 @@ impl Surface {
         }
     }
 
-    pub(crate) fn layer(&self) -> &LayerSurface {
-        &self.layer
+    pub(crate) fn new_popup(popup: Popup, placement: &PopupPlacement) -> Self {
+        Self {
+            wl: popup.wl_surface().clone(),
+            role: Role::Popup(popup),
+            requested: (placement.width, placement.height),
+            size: None,
+            pool: None,
+            slots: Vec::new(),
+            slot_size: (0, 0),
+            full_damage: true,
+            frame_pending: false,
+        }
+    }
+
+    pub(crate) fn role(&self) -> &Role {
+        &self.role
     }
 
     pub(crate) fn wl_surface(&self) -> &wl_surface::WlSurface {
-        self.layer.wl_surface()
+        &self.wl
     }
 
     pub(crate) fn size(&self) -> Option<(u32, u32)> {
@@ -198,7 +230,7 @@ impl Surface {
         if self.frame_pending || self.slots.is_empty() {
             return;
         }
-        let wl = self.layer.wl_surface();
+        let wl = &self.wl;
         wl.frame(qh, FrameCallbackData(wl.clone()));
         wl.commit();
         self.frame_pending = true;
@@ -277,7 +309,7 @@ impl Surface {
                 slot.pending.extend(damage);
             }
         }
-        let wl = self.layer.wl_surface();
+        let wl = &self.wl;
         if self.full_damage {
             wl.damage_buffer(0, 0, width, height);
             self.full_damage = false;

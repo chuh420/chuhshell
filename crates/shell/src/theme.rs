@@ -14,9 +14,9 @@ pub const RED: Color = Color::rgb(0xea6962);
 pub const BLUE: Color = Color::rgb(0x7daea3);
 pub const FONT: &str = "Adwaita Sans";
 pub const ICONS: &str = "JetBrainsMono Nerd Font Mono";
-pub const FAST: u32 = 140;
-pub const NORMAL: u32 = 220;
-pub const SLOW: u32 = 340;
+pub const FAST: f64 = 140.0;
+pub const NORMAL: f64 = 220.0;
+pub const SLOW: f64 = 340.0;
 
 pub const FONT_FAMILIES: &[&str] = &[
     FONT,
