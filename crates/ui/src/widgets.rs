@@ -300,6 +300,25 @@ impl SwapText {
         self.current_metrics.height
     }
 
+    pub fn set_distance(&mut self, distance: f32) {
+        self.distance = distance;
+    }
+
+    pub fn set_font(&mut self, engine: &mut TextEngine, family: &'static str, pixel_size: f32) {
+        if self.family == family && self.pixel_size == pixel_size {
+            return;
+        }
+        self.family = family;
+        self.pixel_size = pixel_size;
+        let measure = |engine: &mut TextEngine, text: &str| {
+            engine.measure(&TextSpec::plain(text, family, pixel_size, self.color), 1.0)
+        };
+        self.current_metrics = measure(engine, &self.shown);
+        self.previous_metrics = measure(engine, &self.previous_text);
+        let target = self.max_width.min(self.current_metrics.width);
+        self.implicit_width.jump(target);
+    }
+
     pub fn set(&mut self, text: &str, key: &str) {
         if self.text != text || self.key != key {
             self.text = text.to_string();

@@ -13,9 +13,9 @@ ui = { path = "crates/ui" }
 services = { path = "crates/services" }
 smithay-client-toolkit = { version = "0.21.1", default-features = false, features = ["calloop", "xkbcommon"] }
 wayland-client = "0.31.15"
-wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }
+wayland-protocols = { version = "0.32.13", features = ["client", "staging", "unstable"] }
 wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
-calloop = { version = "0.14.5", features = ["signals"] }
+calloop = { version = "0.14.5", features = ["signals", "executor"] }
 calloop-wayland-source = "0.4.1"
 tiny-skia = { version = "0.12.0", default-features = false, features = ["std", "simd"] }
 cosmic-text = { version = "0.19.0", default-features = false, features = ["std", "swash"] }
@@ -23,6 +23,9 @@ resvg = { version = "0.49.0", default-features = false }
 jiff = "0.2.38"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+pipewire = "0.10.1"
+zbus = { version = "6.2.0", default-features = false, features = ["default-rt", "proxy", "service"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 log = "0.4.35"
 
 [workspace.lints.clippy]

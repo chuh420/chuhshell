@@ -27,7 +27,13 @@ use wayland_client::{
     protocol::{wl_output, wl_pointer, wl_seat, wl_surface},
 };
 use wayland_protocols::{
-    wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::{Shape, WpCursorShapeDeviceV1},
+    wp::{
+        cursor_shape::v1::client::wp_cursor_shape_device_v1::{Shape, WpCursorShapeDeviceV1},
+        idle_inhibit::zv1::client::{
+            zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1,
+            zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1,
+        },
+    },
     xdg::shell::client::xdg_positioner,
 };
 
@@ -98,6 +104,8 @@ pub struct Platform {
     cursor_device: Option<WpCursorShapeDeviceV1>,
     enter_serial: Option<u32>,
     cursor: CursorShape,
+    idle_manager: Option<ZwpIdleInhibitManagerV1>,
+    inhibitors: HashMap<SurfaceId, ZwpIdleInhibitorV1>,
     qh: QueueHandle<Platform>,
     outputs: HashMap<OutputId, wl_output::WlOutput>,
     surfaces: HashMap<SurfaceId, Surface>,
@@ -122,6 +130,13 @@ impl Platform {
                 None
             }
         };
+        let idle_manager = match globals.bind(&qh, 1..=1, IdleData) {
+            Ok(manager) => Some(manager),
+            Err(err) => {
+                log::warn!("idle inhibit: {err}");
+                None
+            }
+        };
         let platform = Platform {
             registry_state: RegistryState::new(&globals),
             output_state: OutputState::new(&globals, &qh),
@@ -135,6 +150,8 @@ impl Platform {
             cursor_device: None,
             enter_serial: None,
             cursor: CursorShape::Default,
+            idle_manager,
+            inhibitors: HashMap::new(),
             qh,
             outputs: HashMap::new(),
             surfaces: HashMap::new(),
@@ -256,7 +273,25 @@ impl Platform {
         device.set_shape(serial, shape);
     }
 
+    pub fn set_idle_inhibit(&mut self, id: SurfaceId, enabled: bool) {
+        if !enabled {
+            if let Some(inhibitor) = self.inhibitors.remove(&id) {
+                inhibitor.destroy();
+            }
+            return;
+        }
+        if self.inhibitors.contains_key(&id) {
+            return;
+        }
+        let (Some(manager), Some(surface)) = (&self.idle_manager, self.surfaces.get(&id)) else {
+            return;
+        };
+        let inhibitor = manager.create_inhibitor(surface.wl_surface(), &self.qh, IdleData);
+        self.inhibitors.insert(id, inhibitor);
+    }
+
     pub fn destroy_surface(&mut self, id: SurfaceId) {
+        self.set_idle_inhibit(id, false);
         self.surfaces.remove(&id);
     }
 
@@ -465,6 +500,32 @@ impl SeatHandler for Platform {
     }
 
     fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+}
+
+pub struct IdleData;
+
+impl smithay_client_toolkit::dispatch2::Dispatch2<ZwpIdleInhibitManagerV1, Platform> for IdleData {
+    fn event(
+        &self,
+        _: &mut Platform,
+        _: &ZwpIdleInhibitManagerV1,
+        _: <ZwpIdleInhibitManagerV1 as wayland_client::Proxy>::Event,
+        _: &Connection,
+        _: &QueueHandle<Platform>,
+    ) {
+    }
+}
+
+impl smithay_client_toolkit::dispatch2::Dispatch2<ZwpIdleInhibitorV1, Platform> for IdleData {
+    fn event(
+        &self,
+        _: &mut Platform,
+        _: &ZwpIdleInhibitorV1,
+        _: <ZwpIdleInhibitorV1 as wayland_client::Proxy>::Event,
+        _: &Connection,
+        _: &QueueHandle<Platform>,
+    ) {
+    }
 }
 
 impl WindowHandler for Platform {

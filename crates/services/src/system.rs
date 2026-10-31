@@ -85,9 +85,77 @@ impl ResourceMonitor {
     }
 }
 
+pub fn brightness() -> u32 {
+    let Ok(entries) = std::fs::read_dir("/sys/class/backlight") else {
+        return 50;
+    };
+    let mut devices: Vec<std::path::PathBuf> =
+        entries.flatten().map(|entry| entry.path()).collect();
+    devices.sort();
+    let Some(device) = devices.first() else {
+        return 50;
+    };
+    let number = |name: &str| -> f64 {
+        std::fs::read_to_string(device.join(name))
+            .ok()
+            .and_then(|text| text.trim().parse().ok())
+            .unwrap_or(0.0)
+    };
+    let maximum = number("max_brightness");
+    if maximum <= 0.0 {
+        return 50;
+    }
+    round_half_even(number("brightness") / maximum * 100.0).clamp(0.0, 100.0) as u32
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Wired {
+    pub network: String,
+    pub connected: bool,
+}
+
+pub fn wired_from(route: &str, is_wireless: impl Fn(&str) -> bool) -> Wired {
+    for line in route.lines().skip(1) {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() > 3
+            && fields[1] == "00000000"
+            && u32::from_str_radix(fields[3], 16).is_ok_and(|flags| flags & 1 != 0)
+            && !is_wireless(fields[0])
+        {
+            return Wired {
+                network: fields[0].to_string(),
+                connected: true,
+            };
+        }
+    }
+    Wired {
+        network: "Offline".into(),
+        connected: false,
+    }
+}
+
+pub fn wired() -> Wired {
+    wired_from(&read("/proc/net/route"), |device| {
+        std::path::Path::new("/sys/class/net")
+            .join(device)
+            .join("wireless")
+            .exists()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wired_needs_up_default_route_on_non_wireless() {
+        let route = "Iface\tDestination\tGateway\tFlags\nwlan0\t00000000\t0101A8C0\t0003\nenp1\t00000000\t0101A8C0\t0003\n";
+        let result = wired_from(route, |device| device == "wlan0");
+        assert_eq!(result.network, "enp1");
+        assert!(result.connected);
+        let offline = wired_from(route, |_| true);
+        assert_eq!(offline.network, "Offline");
+    }
 
     #[test]
     fn python_rounding() {
