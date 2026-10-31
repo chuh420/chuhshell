@@ -1,12 +1,16 @@
 mod app;
 mod bar;
+mod card;
 mod history;
+mod icons;
 mod ipc;
 mod logger;
 mod model;
+mod notify;
 mod osd;
 mod overlay;
 mod panels;
+mod popups;
 mod state;
 #[allow(dead_code)]
 mod theme;

@@ -74,6 +74,8 @@ impl Chip {
             spans: chip_spans(label, style.family, font_size, icon_size),
             color: ink,
             elide_width: None,
+            wrap_width: None,
+            max_lines: None,
         };
         let metrics = engine.measure(&spec, 1.0);
         let text = tree.add(
@@ -134,6 +136,8 @@ impl Chip {
             spans: chip_spans(&self.label, self.family, self.font_size, self.icon_size),
             color: self.ink.value(),
             elide_width: None,
+            wrap_width: None,
+            max_lines: None,
         }
     }
 
@@ -277,9 +281,32 @@ impl Label {
         self.spec.color = color;
     }
 
+    pub fn set_spec(&mut self, engine: &mut TextEngine, spec: TextSpec) {
+        if self.spec == spec {
+            return;
+        }
+        self.spec = spec;
+        self.metrics = engine.measure(&self.spec, 1.0);
+    }
+
+    pub fn spec(&self) -> &TextSpec {
+        &self.spec
+    }
+
+    pub fn wrap(&mut self, engine: &mut TextEngine, width: f32, max_lines: usize) -> f32 {
+        let width = width.max(1.0);
+        if self.spec.wrap_width != Some(width) || self.spec.max_lines != Some(max_lines) {
+            self.spec.wrap_width = Some(width);
+            self.spec.max_lines = Some(max_lines);
+            self.metrics = engine.measure(&self.spec, 1.0);
+        }
+        self.metrics.height
+    }
+
     pub fn place(&mut self, tree: &mut Tree, x: f32, y: f32, width: f32, height: f32) {
         self.width = width;
-        self.spec.elide_width = (width + 0.01 < self.metrics.width).then_some(width);
+        self.spec.elide_width =
+            (self.spec.wrap_width.is_none() && width + 0.01 < self.metrics.width).then_some(width);
         tree.set_pos(self.node, x, y);
         tree.set_size(self.node, width.min(self.metrics.width), height);
         tree.set_text(self.node, self.spec.clone());
@@ -759,6 +786,8 @@ impl SwapText {
             spans: vec![Span::new(text, self.family, self.pixel_size)],
             color: self.color,
             elide_width: Some(width),
+            wrap_width: None,
+            max_lines: None,
         };
         tree.set_text(self.previous, spec(&self.previous_text));
         tree.set_text(self.current, spec(&self.shown));

@@ -38,6 +38,9 @@ use crate::{
 };
 
 pub enum ServiceEvent {
+    Notification(services::notifications::Event),
+    NotificationServer(services::notifications::Handle),
+    Icon(u32, Option<ui::tiny_skia::Pixmap>),
     Hyprland(hyprland::Event),
     Audio(AudioState),
     Power(PowerState),
@@ -57,13 +60,14 @@ pub struct App {
     bars: HashMap<OutputId, BarSurface>,
     tooltips: Tooltips,
     osd: Osd,
-    overlay: Overlay,
+    pub(crate) overlay: Overlay,
+    pub(crate) notes: crate::notify::Notifications,
     resources: ResourceMonitor,
     audio: Option<AudioHandle>,
     history: History,
     handle: LoopHandle<'static, App>,
-    scheduler: Scheduler<()>,
-    events: Sender<ServiceEvent>,
+    pub(crate) scheduler: Scheduler<()>,
+    pub(crate) events: Sender<ServiceEvent>,
     brightness_throttle: bool,
     brightness_running: bool,
     start: Instant,
@@ -120,6 +124,7 @@ impl App {
             tooltips: Tooltips::default(),
             osd,
             overlay: Overlay::new(),
+            notes: crate::notify::Notifications::default(),
             resources: ResourceMonitor::default(),
             audio: None,
             history: History::load(),
@@ -136,8 +141,8 @@ impl App {
     pub fn now(&self) -> Millis {
         self.start.elapsed().as_secs_f64() * 1000.0
     }
-
     pub fn start_services(&mut self) {
+        self.start_notifications();
         let sender = self.events.clone();
         if let Err(err) = hyprland::spawn(move |event| {
             let _ = sender.send(ServiceEvent::Hyprland(event));
@@ -236,6 +241,9 @@ impl App {
 
     pub fn service(&mut self, event: ServiceEvent) {
         match event {
+            ServiceEvent::Notification(event) => self.notification_event(event),
+            ServiceEvent::NotificationServer(handle) => self.notes.handle = Some(handle),
+            ServiceEvent::Icon(id, pixmap) => self.icon_loaded(id, pixmap),
             ServiceEvent::Hyprland(event) => self.hyprland(event),
             ServiceEvent::Audio(state) => {
                 self.state.audio = state;
@@ -584,15 +592,13 @@ impl App {
                 "level": self.state.battery_level(),
                 "plugged": self.state.battery_plugged(),
             },
-            "brightness": self.state.brightness,
-            "notifications": [],
-            "popups": 0,
+            "brightness": self.state.brightness,            "notifications": self.notifications_json(),
+            "popups": self.notes.popups.len(),
             "dnd": self.state.dnd,
         })
         .to_string()
     }
-
-    fn sync(&mut self) {
+    pub(crate) fn sync(&mut self) {
         let state = &self.state;
         self.model.panel = state.panel.clone();
         self.model.keyboard_label = state.keyboard.label.clone();
@@ -604,9 +610,24 @@ impl App {
         self.model.battery_level = state.battery_level();
         self.model.battery_plugged = state.battery_plugged();
         self.model.network_connected = self.model.wifi_connected || state.wired.connected;
+        self.model.unread_notifications = self.notes.unread();
         self.refresh_bars();
         self.sync_osd();
         self.sync_overlay();
+        self.sync_popups();
+    }
+
+    pub(crate) fn ring_bells(&mut self, now: Millis) {
+        let mut surfaces = Vec::new();
+        for entry in self.bars.values_mut() {
+            if let Some((bar, _)) = entry.view.as_mut() {
+                bar.ring_bell(now);
+                surfaces.push(entry.surface);
+            }
+        }
+        for surface in surfaces {
+            self.platform.schedule_frame(surface);
+        }
     }
 
     fn panel_data(&self) -> PanelData {
@@ -622,6 +643,9 @@ impl App {
             volume: self.state.volume(),
             brightness: self.state.brightness,
             keep_awake: self.state.keep_awake,
+            dnd: self.state.dnd,
+            notifications: self.notes.list.clone(),
+            ages: self.notes.ages(),
         }
     }
 
@@ -633,7 +657,11 @@ impl App {
         if self.overlay.panel != self.state.panel {
             let panel = self.state.panel.clone();
             self.overlay.panel_changed(&mut self.engine, &panel, now);
+            self.panel_opened(&panel);
+            self.model.unread_notifications = self.notes.unread();
+            self.refresh_bars();
         }
+        self.overlay.set_icons(&self.notes.icons);
         self.ensure_overlay();
         self.overlay.schedule(&mut self.platform);
     }
@@ -735,12 +763,34 @@ impl App {
                 self.state.panel.clear();
                 self.sync();
             }
+            PanelAction::ToggleDnd => {
+                self.state.dnd = !self.state.dnd;
+                self.sync();
+            }
+            PanelAction::ClearAll => {
+                self.clear_notifications();
+                self.sync();
+            }
+            PanelAction::Card(action) => self.card_action(action, false),
+        }
+    }
+    fn draw_overlay(&mut self, now: Millis) {
+        let actions = self.overlay.draw(&mut self.platform, &mut self.engine, now);
+        if let Some(surface) = self.overlay.surface {
+            let tooltip = self.overlay.tooltip();
+            self.tooltips
+                .update(&mut self.platform, surface, tooltip, now);
+        }
+        for action in actions {
+            self.panel_action(action);
         }
     }
 
     fn overlay_pointer(&mut self, event: PointerEvent) {
         let now = self.now();
-        let actions = self.overlay.pointer(event.kind, event.x, event.y);
+        let actions = self
+            .overlay
+            .pointer(event.kind, event.x, event.y, &mut self.engine, now);
         let cursor = self.overlay.cursor();
         let tooltip = self.overlay.tooltip();
         self.platform.set_cursor(cursor);
@@ -782,8 +832,7 @@ impl App {
             self.platform.schedule_frame(surface);
         }
     }
-
-    fn focused_output(&self) -> Option<OutputId> {
+    pub(crate) fn focused_output(&self) -> Option<OutputId> {
         let outputs = self.platform.outputs();
         let name = self.state.focused_monitor.as_deref();
         outputs
@@ -882,6 +931,10 @@ impl App {
             self.overlay_pointer(event);
             return;
         }
+        if self.popups_owns(event.surface) {
+            self.popups_pointer(event);
+            return;
+        }
         let now = self.now();
         let Some(entry) = self
             .bars
@@ -963,7 +1016,11 @@ impl App {
                 }
                 if self.overlay.owns(surface) {
                     self.overlay.configure(width, height);
-                    self.overlay.draw(&mut self.platform, &mut self.engine, now);
+                    self.draw_overlay(now);
+                    return;
+                }
+                if self.popups_owns(surface) {
+                    self.popups_configure(width, height);
                     return;
                 }
                 if self.osd.surface == Some(surface) {
@@ -992,6 +1049,7 @@ impl App {
             }
             Event::Closed(surface) => {
                 self.tooltips.closed(surface);
+                self.popups_closed(surface);
                 if self.overlay.owns(surface) {
                     self.teardown_overlay();
                     self.state.panel.clear();
@@ -1008,10 +1066,12 @@ impl App {
                     self.tooltips
                         .frame(&mut self.platform, &mut self.engine, surface, now);
                 } else if self.overlay.owns(surface) {
-                    self.overlay.draw(&mut self.platform, &mut self.engine, now);
+                    self.draw_overlay(now);
                     if self.overlay.finished() {
                         self.teardown_overlay();
                     }
+                } else if self.popups_owns(surface) {
+                    self.popups_draw(now);
                 } else if self.osd.surface == Some(surface) {
                     self.osd.draw(&mut self.platform, &mut self.engine, now);
                     if self.osd.finished()
@@ -1074,7 +1134,7 @@ fn chuhshell() -> String {
     format!("{home}/.local/bin/chuhshell")
 }
 
-fn reap(mut child: std::process::Child) {
+pub(crate) fn reap(mut child: std::process::Child) {
     std::thread::spawn(move || {
         let _ = child.wait();
     });

@@ -86,3 +86,7 @@ mod tests {
         );
     }
 }
+
+pub fn render_svg_into(tree: &usvg::Tree, transform: Transform, pixmap: &mut Pixmap) {
+    resvg::render(tree, transform, &mut pixmap.as_mut());
+}

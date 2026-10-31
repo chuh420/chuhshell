@@ -436,6 +436,8 @@ fn resource_spec(icon: &str, value: &str, color: Color) -> TextSpec {
         ],
         color,
         elide_width: None,
+        wrap_width: None,
+        max_lines: None,
     }
 }
 

@@ -1,8 +1,15 @@
 pub mod control;
+pub mod notifications;
+
+use std::collections::HashMap;
+
+use services::notifications::Notification;
+
+use crate::card::CardAction;
 
 use ui::{NodeId, input::AreaId};
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum PanelAction {
     Toggle(&'static str),
     Run(&'static str),
@@ -13,6 +20,9 @@ pub enum PanelAction {
     ToggleKeepAwake,
     BluetoothPower,
     Close,
+    ToggleDnd,
+    ClearAll,
+    Card(CardAction),
 }
 
 pub struct TooltipSpot {
@@ -35,4 +45,7 @@ pub struct PanelData {
     pub volume: u32,
     pub brightness: u32,
     pub keep_awake: bool,
+    pub dnd: bool,
+    pub notifications: Vec<Notification>,
+    pub ages: HashMap<u32, String>,
 }

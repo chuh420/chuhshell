@@ -16,6 +16,8 @@ calloop.workspace = true
 log.workspace = true
 jiff.workspace = true
 serde_json.workspace = true
+image.workspace = true
+freedesktop-icons.workspace = true
 
 [lints]
 workspace = true

@@ -329,6 +329,34 @@ impl Platform {
         surface.set_size(width, height);
     }
 
+    pub fn set_layer_size(&mut self, id: SurfaceId, width: u32, height: u32) {
+        let Some(surface) = self.surfaces.get(&id) else {
+            return;
+        };
+        if let Role::Layer(layer) = surface.role() {
+            layer.set_size(width, height);
+            surface.wl_surface().commit();
+        }
+    }
+
+    pub fn set_input_rect(&mut self, id: SurfaceId, rect: Option<Rect>) {
+        let Some(surface) = self.surfaces.get(&id) else {
+            return;
+        };
+        match rect {
+            None => surface.wl_surface().set_input_region(None),
+            Some(rect) => match Region::new(&self.compositor) {
+                Ok(region) => {
+                    region.add(rect.x, rect.y, rect.width, rect.height);
+                    surface
+                        .wl_surface()
+                        .set_input_region(Some(region.wl_region()));
+                }
+                Err(err) => log::error!("input region: {err}"),
+            },
+        }
+    }
+
     pub fn set_keyboard_mode(&mut self, id: SurfaceId, mode: KeyboardMode) {
         let Some(surface) = self.surfaces.get(&id) else {
             return;

@@ -10,7 +10,7 @@ use ui::{
 
 use crate::{
     bar::TooltipTarget,
-    panels::{PanelAction, PanelData, control::ControlPanel},
+    panels::{PanelAction, PanelData, control::ControlPanel, notifications::NotificationsPanel},
     theme::{BG, LINE, NORMAL, SLOW, UI_SCALE},
 };
 
@@ -131,6 +131,7 @@ enum Swap {
 enum View {
     None,
     Control(Box<ControlPanel>),
+    Notifications(Box<NotificationsPanel>),
 }
 
 pub struct Overlay {
@@ -303,7 +304,7 @@ impl Overlay {
                 self.swap = Swap::Idle;
                 self.content_opacity.jump(1.0);
                 self.content_shift.jump(0.0);
-                self.set_content(engine, panel);
+                self.set_content(engine, panel, now);
             }
             self.displayed = panel.to_string();
             let from = self.reveal;
@@ -317,18 +318,34 @@ impl Overlay {
         }
     }
 
-    fn set_content(&mut self, engine: &mut TextEngine, name: &str) {
+    fn set_content(&mut self, engine: &mut TextEngine, name: &str, now: Millis) {
         if self.content_panel == name && !matches!(self.view, View::None) {
             return;
         }
         let old = std::mem::replace(&mut self.view, View::None);
-        if let View::Control(panel) = old {
-            for area in panel.areas() {
-                self.input.remove(area);
-            }
-            self.tree.remove(panel.root);
+        let (areas, root) = match old {
+            View::Control(panel) => (panel.areas(), Some(panel.root)),
+            View::Notifications(panel) => (panel.areas(), Some(panel.root)),
+            View::None => (Vec::new(), None),
+        };
+        for area in areas {
+            self.input.remove(area);
+        }
+        if let Some(root) = root {
+            self.tree.remove(root);
         }
         self.content_panel = name.to_string();
+        if name == "notifications" {
+            let panel = NotificationsPanel::new(
+                &mut self.tree,
+                &mut self.input,
+                engine,
+                self.content,
+                &self.data,
+                now,
+            );
+            self.view = View::Notifications(Box::new(panel));
+        }
         if name == "control" {
             let mut panel = ControlPanel::new(
                 &mut self.tree,
@@ -347,8 +364,28 @@ impl Overlay {
             return;
         }
         self.data = data.clone();
-        if let View::Control(panel) = &mut self.view {
-            panel.sync(engine, data, now);
+        match &mut self.view {
+            View::Control(panel) => panel.sync(engine, data, now),
+            View::Notifications(panel) => {
+                panel.sync(&mut self.tree, &mut self.input, engine, data, now)
+            }
+            View::None => {}
+        }
+    }
+
+    pub fn set_icons(
+        &mut self,
+        icons: &std::collections::HashMap<u32, Option<std::sync::Arc<ui::tiny_skia::Pixmap>>>,
+    ) {
+        if let View::Notifications(panel) = &mut self.view {
+            panel.set_icons(&mut self.tree, icons);
+        }
+    }
+
+    pub fn icon_requests(&self) -> Vec<(u32, u32)> {
+        match &self.view {
+            View::Notifications(panel) => panel.icon_requests(),
+            _ => Vec::new(),
         }
     }
 
@@ -390,7 +427,7 @@ impl Overlay {
                     self.phase = Reveal::Idle;
                     self.morph = false;
                     self.displayed.clear();
-                    self.set_content(engine, "");
+                    self.set_content(engine, "", now);
                     self.content_panel.clear();
                 }
             }
@@ -402,7 +439,7 @@ impl Overlay {
                 self.content_opacity.tick(now);
                 if !self.content_opacity.is_running() {
                     let pending = std::mem::take(&mut self.pending);
-                    self.set_content(engine, &pending);
+                    self.set_content(engine, &pending, now);
                     self.content_opacity = Tween::new(0.0, NORMAL, Easing::OutCubic);
                     self.content_opacity.start(now, 0.0, 1.0);
                     self.content_shift = Tween::new(8.0, SLOW, Easing::OutCubic);
@@ -438,7 +475,7 @@ impl Overlay {
         ))
     }
 
-    fn update_card(&mut self, now: Millis) -> bool {
+    fn update_card(&mut self, engine: &mut TextEngine, now: Millis) -> bool {
         let Some((tx, ty, tw, th)) = self.targets() else {
             return false;
         };
@@ -549,8 +586,10 @@ impl Overlay {
                 y: self.content_shift.value(),
             }],
         );
-        if let View::Control(panel) = &mut self.view {
-            panel.layout(tree, cw, ch);
+        match &mut self.view {
+            View::Control(panel) => panel.layout(tree, cw, ch),
+            View::Notifications(panel) => panel.layout(tree, engine, cw, ch),
+            View::None => {}
         }
         running
     }
@@ -594,25 +633,37 @@ impl Overlay {
         ))
     }
 
-    pub fn draw(&mut self, platform: &mut Platform, engine: &mut TextEngine, now: Millis) {
+    pub fn draw(
+        &mut self,
+        platform: &mut Platform,
+        engine: &mut TextEngine,
+        now: Millis,
+    ) -> Vec<PanelAction> {
+        let mut actions = Vec::new();
         let (Some(surface), Some(card_surface)) = (self.surface, self.card_surface) else {
-            return;
+            return actions;
         };
         let Some((sw, sh)) = self.size else {
-            return;
+            return actions;
         };
         let mut running = self.tick(engine, now);
         if self.displayed.is_empty() && self.phase == Reveal::Idle {
-            return;
+            return actions;
         }
         self.tree.set_size(self.dim, sw, sh);
-        running |= self.update_card(now);
-        if let View::Control(panel) = &mut self.view {
-            running |= panel.tick(&mut self.tree, &self.input, now);
+        running |= self.update_card(engine, now);
+        match &mut self.view {
+            View::Control(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
+            View::Notifications(panel) => {
+                let (busy, more) = panel.tick(&mut self.tree, &self.input, now);
+                running |= busy;
+                actions.extend(more);
+            }
+            View::None => {}
         }
         let events = self.input.refresh(&self.tree);
         if !events.is_empty() {
-            self.handle_events(&events);
+            actions.extend(self.handle_events(engine, &events, now));
         }
         running |= self.morph_arm.is_some();
         let mut presented = false;
@@ -657,6 +708,7 @@ impl Overlay {
         } else if presented || running {
             platform.commit(surface, running);
         }
+        actions
     }
 
     pub fn schedule(&self, platform: &mut Platform) {
@@ -665,7 +717,12 @@ impl Overlay {
         }
     }
 
-    fn handle_events(&mut self, events: &[InputEvent]) -> Vec<PanelAction> {
+    fn handle_events(
+        &mut self,
+        engine: &mut TextEngine,
+        events: &[InputEvent],
+        now: Millis,
+    ) -> Vec<PanelAction> {
         let mut actions = Vec::new();
         for event in events {
             if let InputEvent::Click(area, platform::MouseButton::Left) = event
@@ -675,8 +732,12 @@ impl Overlay {
             }
         }
         let pointer = self.local(self.pointer);
-        if let View::Control(panel) = &mut self.view {
-            actions.extend(panel.handle(&self.tree, events, pointer));
+        match &mut self.view {
+            View::Control(panel) => actions.extend(panel.handle(&self.tree, events, pointer)),
+            View::Notifications(panel) => {
+                actions.extend(panel.handle(&self.tree, engine, events, pointer, now))
+            }
+            View::None => {}
         }
         actions
     }
@@ -688,7 +749,14 @@ impl Overlay {
         )
     }
 
-    pub fn pointer(&mut self, kind: PointerKind, x: f32, y: f32) -> Vec<PanelAction> {
+    pub fn pointer(
+        &mut self,
+        kind: PointerKind,
+        x: f32,
+        y: f32,
+        engine: &mut TextEngine,
+        now: Millis,
+    ) -> Vec<PanelAction> {
         self.pointer = (x, y);
         let (lx, ly) = self.local((x, y));
         let tree = &self.tree;
@@ -706,12 +774,16 @@ impl Overlay {
             }
         };
         let mut actions = Vec::new();
-        if matches!(kind, PointerKind::Motion)
-            && let View::Control(panel) = &mut self.view
-        {
-            actions.extend(panel.motion(&self.tree, &self.input, lx, ly));
+        if matches!(kind, PointerKind::Motion) {
+            match &mut self.view {
+                View::Control(panel) => {
+                    actions.extend(panel.motion(&self.tree, &self.input, lx, ly))
+                }
+                View::Notifications(panel) => panel.motion(&self.input, lx),
+                View::None => {}
+            }
         }
-        actions.extend(self.handle_events(&events));
+        actions.extend(self.handle_events(engine, &events, now));
         actions
     }
 
@@ -727,6 +799,7 @@ impl Overlay {
     pub fn tooltip(&self) -> Option<TooltipTarget> {
         let spot = match &self.view {
             View::Control(panel) => panel.tooltip(&self.input)?,
+            View::Notifications(panel) => panel.tooltip(&self.input)?,
             View::None => return None,
         };
         let transform = self.tree.device_transform(spot.node);

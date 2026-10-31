@@ -10,6 +10,7 @@ mod tree;
 pub mod widgets;
 
 pub use color::Color;
+pub use image::render_svg_into;
 pub use render::Canvas;
 pub use resvg::usvg::Tree as SvgTree;
 pub use text::{Span, TextEngine, TextMetrics, TextSpec, Weight};
