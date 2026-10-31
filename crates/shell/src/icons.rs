@@ -47,6 +47,55 @@ fn theme_icon(name: &str) -> Option<PathBuf> {
         })
 }
 
+fn search_dir(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
+    for ext in ["png", "svg", "xpm"] {
+        let path = dir.join(format!("{name}.{ext}"));
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    if depth == 0 {
+        return None;
+    }
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    dirs.sort();
+    dirs.reverse();
+    dirs.iter().find_map(|dir| search_dir(dir, name, depth - 1))
+}
+
+pub fn tray_source(item: &services::tray::TrayItem) -> Option<IconSource> {
+    let (name, pixels) = if item.needs_attention()
+        && (!item.attention_icon_name.is_empty() || item.attention_pixmap.is_some())
+    {
+        (&item.attention_icon_name, &item.attention_pixmap)
+    } else {
+        (&item.icon_name, &item.icon_pixmap)
+    };
+    if !name.is_empty() {
+        if let Some(path) = file_url(name) {
+            return Some(IconSource::File(path));
+        }
+        if !item.icon_theme_path.is_empty()
+            && let Some(path) = search_dir(Path::new(&item.icon_theme_path), name, 3)
+        {
+            return Some(IconSource::File(path));
+        }
+        if let Some(path) = theme_icon(name) {
+            return Some(IconSource::File(path));
+        }
+    }
+    pixels.as_ref().map(|pixels| IconSource::Pixels {
+        width: pixels.width,
+        height: pixels.height,
+        rgba: pixels.rgba.clone(),
+    })
+}
+
 pub fn source(notification: &Notification) -> Option<IconSource> {
     match &notification.image {
         Some(Image::Pixels {

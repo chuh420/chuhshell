@@ -41,6 +41,11 @@ pub enum ServiceEvent {
     Notification(services::notifications::Event),
     NotificationServer(services::notifications::Handle),
     Icon(u32, Option<ui::tiny_skia::Pixmap>),
+    Tray(services::tray::Event),
+    TrayServer(services::tray::Handle),
+    TrayItem(String, Option<services::tray::TrayItem>),
+    TrayIcon(String, Option<ui::tiny_skia::Pixmap>),
+    TrayMenu(String, Vec<services::tray::MenuEntry>),
     Hyprland(hyprland::Event),
     Audio(AudioState),
     Power(PowerState),
@@ -62,6 +67,7 @@ pub struct App {
     osd: Osd,
     pub(crate) overlay: Overlay,
     pub(crate) notes: crate::notify::Notifications,
+    pub(crate) tray: crate::trayctl::Tray,
     resources: ResourceMonitor,
     audio: Option<AudioHandle>,
     history: History,
@@ -125,6 +131,7 @@ impl App {
             osd,
             overlay: Overlay::new(),
             notes: crate::notify::Notifications::default(),
+            tray: crate::trayctl::Tray::default(),
             resources: ResourceMonitor::default(),
             audio: None,
             history: History::load(),
@@ -143,6 +150,7 @@ impl App {
     }
     pub fn start_services(&mut self) {
         self.start_notifications();
+        self.start_tray();
         let sender = self.events.clone();
         if let Err(err) = hyprland::spawn(move |event| {
             let _ = sender.send(ServiceEvent::Hyprland(event));
@@ -244,6 +252,11 @@ impl App {
             ServiceEvent::Notification(event) => self.notification_event(event),
             ServiceEvent::NotificationServer(handle) => self.notes.handle = Some(handle),
             ServiceEvent::Icon(id, pixmap) => self.icon_loaded(id, pixmap),
+            ServiceEvent::Tray(event) => self.tray_event(event),
+            ServiceEvent::TrayServer(handle) => self.tray_server(handle),
+            ServiceEvent::TrayItem(key, item) => self.tray_item_loaded(key, item),
+            ServiceEvent::TrayIcon(key, pixmap) => self.tray_icon_loaded(key, pixmap),
+            ServiceEvent::TrayMenu(key, entries) => self.tray_menu_loaded(key, entries),
             ServiceEvent::Hyprland(event) => self.hyprland(event),
             ServiceEvent::Audio(state) => {
                 self.state.audio = state;
@@ -562,7 +575,10 @@ impl App {
             }
             "brightnessUp" => self.step_brightness(5.0),
             "brightnessDown" => self.step_brightness(-5.0),
-            "tray" => {}
+            "tray" => {
+                let id = args.get(1).cloned().unwrap_or_default();
+                self.tray_ipc(&id);
+            }
             "close" => {
                 self.state.panel.clear();
                 self.sync();
@@ -611,6 +627,8 @@ impl App {
         self.model.battery_plugged = state.battery_plugged();
         self.model.network_connected = self.model.wifi_connected || state.wired.connected;
         self.model.unread_notifications = self.notes.unread();
+        self.model.tray = self.tray.bar_entries();
+        self.overlay.tray_tall = self.tray.only_menu || self.tray.expanded;
         self.refresh_bars();
         self.sync_osd();
         self.sync_overlay();
@@ -646,6 +664,10 @@ impl App {
             dnd: self.state.dnd,
             notifications: self.notes.list.clone(),
             ages: self.notes.ages(),
+            tray_title: self.tray.title(),
+            tray_only_menu: self.tray.only_menu,
+            tray_serial: self.tray.serial,
+            tray_menu: self.tray.menu.clone(),
         }
     }
 
@@ -772,6 +794,11 @@ impl App {
                 self.sync();
             }
             PanelAction::Card(action) => self.card_action(action, false),
+            action @ (PanelAction::TrayExpanded(_)
+            | PanelAction::TrayLoadMenu
+            | PanelAction::TrayActivate
+            | PanelAction::TrayQuit
+            | PanelAction::TrayEvent(..)) => self.tray_action(action),
         }
     }
     fn draw_overlay(&mut self, now: Millis) {
@@ -803,10 +830,12 @@ impl App {
     }
 
     fn key(&mut self, event: KeyEvent) {
-        if event.surface.is_some()
-            && event.surface == self.overlay.surface
-            && let Some(action) = self.overlay.key(&event)
-        {
+        if event.surface.is_none() || event.surface != self.overlay.surface {
+            return;
+        }
+        let actions = self.overlay.key(&mut self.engine, &event);
+        self.overlay.schedule(&mut self.platform);
+        for action in actions {
             self.panel_action(action);
         }
     }
@@ -875,6 +904,14 @@ impl App {
                     None => self.state.open_at(panel, &screen),
                 }
                 self.sync();
+                Ok(())
+            }
+            BarAction::Tray { key, right, anchor } => {
+                self.tray_click(&key, right, anchor, &screen);
+                Ok(())
+            }
+            BarAction::TrayScroll { key, delta } => {
+                self.tray_scroll(&key, delta);
                 Ok(())
             }
             BarAction::Workspace(id) => hyprland::focus_workspace(id),

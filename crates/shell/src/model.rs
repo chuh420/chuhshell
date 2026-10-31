@@ -24,6 +24,7 @@ pub struct BarModel {
     pub hotkeys_paused: bool,
     pub dnd: bool,
     pub unread_notifications: u32,
+    pub tray: Vec<(String, Option<std::sync::Arc<ui::tiny_skia::Pixmap>>)>,
 }
 
 impl Default for BarModel {
@@ -52,6 +53,7 @@ impl Default for BarModel {
             hotkeys_paused: false,
             dnd: false,
             unread_notifications: 0,
+            tray: Vec::new(),
         }
     }
 }

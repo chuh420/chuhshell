@@ -133,7 +133,10 @@ impl Watcher {
 
     #[zbus(property)]
     async fn registered_status_notifier_items(&self) -> Vec<String> {
-        self.items.lock().map(|items| items.clone()).unwrap_or_default()
+        self.items
+            .lock()
+            .map(|items| items.clone())
+            .unwrap_or_default()
     }
 
     #[zbus(property)]
@@ -338,7 +341,14 @@ impl Handle {
         })
     }
 
-    async fn call<B>(&self, item: &TrayItem, interface: &str, path: &str, method: &str, body: &B) -> zbus::Result<zbus::Message>
+    async fn call<B>(
+        &self,
+        item: &TrayItem,
+        interface: &str,
+        path: &str,
+        method: &str,
+        body: &B,
+    ) -> zbus::Result<zbus::Message>
     where
         B: serde::Serialize + zbus::DynamicType,
     {
@@ -397,9 +407,7 @@ impl Handle {
         let Ok((_, (_, _, children))) = reply.body().deserialize::<(u32, Layout)>() else {
             return Vec::new();
         };
-        let entries = children.iter().filter_map(|child| entry(child)).collect();
-        self.event(item, 0, "opened").await;
-        entries
+        children.iter().filter_map(|child| entry(child)).collect()
     }
 
     pub async fn event(&self, item: &TrayItem, id: i32, name: &str) {
@@ -455,7 +463,9 @@ impl Handle {
             let Ok(pid) = dbus.get_connection_unix_process_id(name).await else {
                 continue;
             };
-            let uid = std::fs::metadata(format!("/proc/{pid}")).map(|meta| meta.uid()).ok();
+            let uid = std::fs::metadata(format!("/proc/{pid}"))
+                .map(|meta| meta.uid())
+                .ok();
             if pid > 1 && uid.is_some() && uid == own_uid && !pids.contains(&pid) {
                 pids.push(pid);
             }
@@ -464,13 +474,20 @@ impl Handle {
             log::warn!("tray quit: could not uniquely identify the tray application");
             return;
         }
-        match Command::new("kill").arg("-TERM").arg(pids[0].to_string()).status() {
+        match Command::new("kill")
+            .arg("-TERM")
+            .arg(pids[0].to_string())
+            .status()
+        {
             Ok(_) => {}
             Err(err) => log::warn!("tray quit: {err}"),
         }
     }
 
-    pub async fn watch(&self, callback: impl Fn(Event) + Send + Sync + 'static) -> zbus::Result<()> {
+    pub async fn watch(
+        &self,
+        callback: impl Fn(Event) + Send + Sync + 'static,
+    ) -> zbus::Result<()> {
         let mut streams = Vec::new();
         for rule in [
             MatchRule::builder()
@@ -499,8 +516,14 @@ impl Handle {
                 .interface()
                 .map(|name| name.to_string())
                 .unwrap_or_default();
-            let member = header.member().map(|name| name.to_string()).unwrap_or_default();
-            let sender = header.sender().map(|name| name.to_string()).unwrap_or_default();
+            let member = header
+                .member()
+                .map(|name| name.to_string())
+                .unwrap_or_default();
+            let sender = header
+                .sender()
+                .map(|name| name.to_string())
+                .unwrap_or_default();
             if member == "NameOwnerChanged" {
                 if let Ok((name, _, new)) = message.body().deserialize::<(String, String, String)>()
                     && new.is_empty()

@@ -15,6 +15,7 @@ mod state;
 #[allow(dead_code)]
 mod theme;
 mod tooltip;
+mod trayctl;
 
 use calloop::{
     EventLoop,

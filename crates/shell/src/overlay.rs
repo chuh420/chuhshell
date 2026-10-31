@@ -10,7 +10,10 @@ use ui::{
 
 use crate::{
     bar::TooltipTarget,
-    panels::{PanelAction, PanelData, control::ControlPanel, notifications::NotificationsPanel},
+    panels::{
+        PanelAction, PanelData, control::ControlPanel, notifications::NotificationsPanel,
+        tray::TrayPanel,
+    },
     theme::{BG, LINE, NORMAL, SLOW, UI_SCALE},
 };
 
@@ -58,14 +61,20 @@ pub fn panel_width(p: &str, available: f64) -> f64 {
     }
 }
 
-pub fn panel_height(p: &str, available: f64) -> f64 {
+pub fn panel_height(p: &str, available: f64, tray_tall: bool) -> f64 {
     let value = match p {
         "battery" => 700.0,
         "system" => 800.0,
         "audio" => 492.0,
         "wifi" => 680.0,
         "bluetooth" => 600.0,
-        "tray" => 220.0,
+        "tray" => {
+            if tray_tall {
+                460.0
+            } else {
+                220.0
+            }
+        }
         "wallpapers" => 700.0,
         "launcher" | "clipboard" => 650.0,
         "calendar" => 500.0,
@@ -132,6 +141,7 @@ enum View {
     None,
     Control(Box<ControlPanel>),
     Notifications(Box<NotificationsPanel>),
+    Tray(Box<TrayPanel>),
 }
 
 pub struct Overlay {
@@ -152,6 +162,8 @@ pub struct Overlay {
     content: NodeId,
     pub panel: String,
     pub anchor: f64,
+    pub tray_tall: bool,
+    queued: Vec<PanelAction>,
     pub displayed: String,
     content_panel: String,
     pending: String,
@@ -228,6 +240,8 @@ impl Overlay {
             content,
             panel: String::new(),
             anchor: 0.0,
+            tray_tall: false,
+            queued: Vec::new(),
             displayed: String::new(),
             content_panel: String::new(),
             pending: String::new(),
@@ -283,6 +297,13 @@ impl Overlay {
     }
 
     pub fn panel_changed(&mut self, engine: &mut TextEngine, panel: &str, now: Millis) {
+        if self.panel == "tray"
+            && panel != "tray"
+            && let View::Tray(view) = &mut self.view
+        {
+            let actions = view.closing();
+            self.queued.extend(actions);
+        }
         self.panel = panel.to_string();
         if !panel.is_empty() {
             if self.phase == Reveal::Closing {
@@ -326,6 +347,7 @@ impl Overlay {
         let (areas, root) = match old {
             View::Control(panel) => (panel.areas(), Some(panel.root)),
             View::Notifications(panel) => (panel.areas(), Some(panel.root)),
+            View::Tray(panel) => (panel.areas(), Some(panel.root)),
             View::None => (Vec::new(), None),
         };
         for area in areas {
@@ -345,6 +367,16 @@ impl Overlay {
                 now,
             );
             self.view = View::Notifications(Box::new(panel));
+        } else if name == "tray" {
+            let (panel, actions) = TrayPanel::new(
+                &mut self.tree,
+                &mut self.input,
+                engine,
+                self.content,
+                &self.data,
+            );
+            self.queued.extend(actions);
+            self.view = View::Tray(Box::new(panel));
         }
         if name == "control" {
             let mut panel = ControlPanel::new(
@@ -368,6 +400,10 @@ impl Overlay {
             View::Control(panel) => panel.sync(engine, data, now),
             View::Notifications(panel) => {
                 panel.sync(&mut self.tree, &mut self.input, engine, data, now)
+            }
+            View::Tray(panel) => {
+                let actions = panel.sync(&mut self.tree, &mut self.input, engine, data);
+                self.queued.extend(actions);
             }
             View::None => {}
         }
@@ -464,7 +500,7 @@ impl Overlay {
         let (sw, sh) = self.size?;
         let kind = self.displayed.as_str();
         let vw = panel_width(kind, sw as f64);
-        let vh = panel_height(kind, sh as f64);
+        let vh = panel_height(kind, sh as f64, self.tray_tall);
         let x = panel_x(kind, vw, sw as f64, self.anchor);
         let y = panel_y(kind, vh, sh as f64);
         Some((
@@ -589,6 +625,7 @@ impl Overlay {
         match &mut self.view {
             View::Control(panel) => panel.layout(tree, cw, ch),
             View::Notifications(panel) => panel.layout(tree, engine, cw, ch),
+            View::Tray(panel) => panel.layout(tree, cw, ch),
             View::None => {}
         }
         running
@@ -639,7 +676,7 @@ impl Overlay {
         engine: &mut TextEngine,
         now: Millis,
     ) -> Vec<PanelAction> {
-        let mut actions = Vec::new();
+        let mut actions = std::mem::take(&mut self.queued);
         let (Some(surface), Some(card_surface)) = (self.surface, self.card_surface) else {
             return actions;
         };
@@ -659,6 +696,7 @@ impl Overlay {
                 running |= busy;
                 actions.extend(more);
             }
+            View::Tray(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
             View::None => {}
         }
         let events = self.input.refresh(&self.tree);
@@ -737,6 +775,9 @@ impl Overlay {
             View::Notifications(panel) => {
                 actions.extend(panel.handle(&self.tree, engine, events, pointer, now))
             }
+            View::Tray(panel) => {
+                actions.extend(panel.handle(&mut self.tree, &mut self.input, engine, events))
+            }
             View::None => {}
         }
         actions
@@ -780,16 +821,24 @@ impl Overlay {
                     actions.extend(panel.motion(&self.tree, &self.input, lx, ly))
                 }
                 View::Notifications(panel) => panel.motion(&self.input, lx),
-                View::None => {}
+                View::Tray(_) | View::None => {}
             }
         }
         actions.extend(self.handle_events(engine, &events, now));
         actions
     }
 
-    pub fn key(&self, event: &KeyEvent) -> Option<PanelAction> {
-        (event.pressed && event.keysym == keys::ESCAPE && !self.panel.is_empty())
-            .then_some(PanelAction::Close)
+    pub fn key(&mut self, engine: &mut TextEngine, event: &KeyEvent) -> Vec<PanelAction> {
+        if !event.pressed || self.panel.is_empty() {
+            return Vec::new();
+        }
+        if event.keysym == keys::ESCAPE {
+            return vec![PanelAction::Close];
+        }
+        match &mut self.view {
+            View::Tray(panel) => panel.key(&mut self.tree, &mut self.input, engine, event.keysym),
+            _ => Vec::new(),
+        }
     }
 
     pub fn cursor(&self) -> platform::CursorShape {
@@ -800,7 +849,7 @@ impl Overlay {
         let spot = match &self.view {
             View::Control(panel) => panel.tooltip(&self.input)?,
             View::Notifications(panel) => panel.tooltip(&self.input)?,
-            View::None => return None,
+            View::Tray(_) | View::None => return None,
         };
         let transform = self.tree.device_transform(spot.node);
         let mut origin = ui::tiny_skia::Point::from_xy(0.0, 0.0);
@@ -827,7 +876,7 @@ mod tests {
     #[test]
     fn control_geometry_matches_qml() {
         let w = panel_width("control", 1920.0);
-        let h = panel_height("control", 1080.0);
+        let h = panel_height("control", 1080.0, false);
         assert_eq!((w, h), (520.0, 704.0));
         assert_eq!(panel_x("control", w, 1920.0, 0.0), 1386.0);
         assert_eq!(panel_y("control", h, 1080.0), 58.0);

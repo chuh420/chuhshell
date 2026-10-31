@@ -32,6 +32,15 @@ pub enum BarAction {
         anchor: Option<f64>,
     },
     Workspace(i32),
+    Tray {
+        key: String,
+        right: bool,
+        anchor: Option<f64>,
+    },
+    TrayScroll {
+        key: String,
+        delta: i32,
+    },
     KeyboardNext,
     ToggleMute,
     Volume(i32),
@@ -418,6 +427,84 @@ impl HoverRect {
     }
 }
 
+struct TrayIcon {
+    key: String,
+    rect: HoverRect,
+    image: NodeId,
+    glyph: NodeId,
+    opacity: Tween<f32>,
+    icon: Option<Arc<ui::tiny_skia::Pixmap>>,
+}
+
+impl TrayIcon {
+    fn new(
+        tree: &mut Tree,
+        input: &mut Input,
+        engine: &mut TextEngine,
+        parent: NodeId,
+        key: &str,
+        now: Millis,
+    ) -> Self {
+        let rect = HoverRect::new(tree, input, parent, 23.0, 0.9);
+        if let Some(area) = input.get_mut(rect.area) {
+            area.buttons = ui::input::Buttons::LEFT_RIGHT;
+            area.wheel = true;
+        }
+        let image = tree.add(
+            rect.root,
+            Node::new(center(23.0, 17.0), center(22.0, 17.0), 17.0, 17.0),
+        );
+        let spec = TextSpec::plain("󰀻", ICONS, 16.0, MUTED);
+        let metrics = engine.measure(&spec, 1.0);
+        let glyph = tree.add(
+            rect.root,
+            Node::new(
+                center(23.0, metrics.width),
+                center(22.0, metrics.height),
+                metrics.width,
+                metrics.height,
+            )
+            .with_paint(Paint::Text(TextPaint::new(spec))),
+        );
+        let mut opacity = Tween::new(0.0, NORMAL, Easing::Linear);
+        opacity.start(now, 0.0, 1.0);
+        tree.set_opacity(rect.root, 0.0);
+        Self {
+            key: key.to_string(),
+            rect,
+            image,
+            glyph,
+            opacity,
+            icon: None,
+        }
+    }
+
+    fn set_icon(&mut self, tree: &mut Tree, icon: Option<Arc<ui::tiny_skia::Pixmap>>) {
+        let same = match (&self.icon, &icon) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        if same {
+            return;
+        }
+        self.icon = icon;
+        if let Some(node) = tree.get_mut(self.image) {
+            node.paint = match &self.icon {
+                Some(pixmap) => Paint::Image(pixmap.clone()),
+                None => Paint::None,
+            };
+        }
+        tree.set_visible(self.glyph, self.icon.is_none());
+    }
+
+    fn tick(&mut self, tree: &mut Tree, now: Millis) -> bool {
+        let running = self.rect.tick(tree, now) | self.opacity.tick(now);
+        tree.set_opacity(self.rect.root, self.opacity.value());
+        running
+    }
+}
+
 struct Resources {
     rect: HoverRect,
     cpu: NodeId,
@@ -566,6 +653,7 @@ pub struct Bar {
     title: SwapText,
     clock: Chip,
     right_row: NodeId,
+    tray: Vec<TrayIcon>,
     resources: Resources,
     keyboard: Keyboard,
     network: Chip,
@@ -713,6 +801,7 @@ impl Bar {
             title,
             clock,
             right_row,
+            tray: Vec::new(),
             resources,
             keyboard,
             network,
@@ -856,6 +945,7 @@ impl Bar {
         };
         set(&mut self.battery, engine, &battery_label, battery_ink);
         self.battery_visible = model.battery_present;
+        self.sync_tray(engine, model, now);
         if let Some(previous) = self.battery_plugged
             && previous != model.battery_plugged
         {
@@ -911,6 +1001,34 @@ impl Bar {
         ]
     }
 
+    fn sync_tray(&mut self, engine: &mut TextEngine, model: &BarModel, now: Millis) {
+        let keys: Vec<&String> = model.tray.iter().map(|(key, _)| key).collect();
+        let current: Vec<&String> = self.tray.iter().map(|icon| &icon.key).collect();
+        if keys != current {
+            let mut old = std::mem::take(&mut self.tray);
+            for (key, _) in &model.tray {
+                match old.iter().position(|icon| &icon.key == key) {
+                    Some(index) => self.tray.push(old.remove(index)),
+                    None => self.tray.push(TrayIcon::new(
+                        &mut self.tree,
+                        &mut self.input,
+                        engine,
+                        self.right_row,
+                        key,
+                        now,
+                    )),
+                }
+            }
+            for icon in old {
+                self.input.remove(icon.rect.area);
+                self.tree.remove(icon.rect.root);
+            }
+        }
+        for (icon, (_, pixmap)) in self.tray.iter_mut().zip(&model.tray) {
+            icon.set_icon(&mut self.tree, pixmap.clone());
+        }
+    }
+
     fn chips(&self) -> [&Chip; 9] {
         [
             &self.launcher,
@@ -944,6 +1062,9 @@ impl Bar {
         let system = self.panel == "system";
         self.resources.rect.sync(now, input, system);
         self.keyboard.rect.sync(now, input, false);
+        for icon in &mut self.tray {
+            icon.rect.sync(now, input, false);
+        }
     }
 
     pub fn handle(&mut self, events: &[InputEvent], now: Millis) -> Vec<BarAction> {
@@ -957,6 +1078,14 @@ impl Bar {
                 }
                 InputEvent::Wheel(area, delta) if area == self.audio.area => {
                     actions.push(BarAction::Volume(delta));
+                }
+                InputEvent::Wheel(area, delta) => {
+                    if let Some(icon) = self.tray.iter().find(|icon| icon.rect.area == area) {
+                        actions.push(BarAction::TrayScroll {
+                            key: icon.key.clone(),
+                            delta,
+                        });
+                    }
                 }
                 _ => {}
             }
@@ -986,6 +1115,13 @@ impl Bar {
             return Some(BarAction::Open {
                 panel: "launcher",
                 anchor: None,
+            });
+        }
+        if let Some(icon) = self.tray.iter().find(|icon| icon.rect.area == area) {
+            return Some(BarAction::Tray {
+                key: icon.key.clone(),
+                right,
+                anchor: self.anchor_x(area),
             });
         }
         if let Some(entry) = self
@@ -1095,6 +1231,7 @@ impl Bar {
         );
 
         enum Slot {
+            Tray(usize),
             Resources,
             Keyboard,
             Network,
@@ -1106,7 +1243,10 @@ impl Bar {
             Bell,
             Control,
         }
-        let mut slots = vec![
+        let mut slots: Vec<(Slot, Item)> = (0..self.tray.len())
+            .map(|index| (Slot::Tray(index), Item::new(23.0, 22.0)))
+            .collect();
+        slots.extend([
             (
                 Slot::Resources,
                 Item::new(self.resources.width, 22.0).margins(2.0, 0.0),
@@ -1121,7 +1261,7 @@ impl Bar {
                 Item::new(self.bluetooth.implicit_width(), 22.0),
             ),
             (Slot::Audio, Item::new(self.audio.implicit_width(), 22.0)),
-        ];
+        ]);
         if self.battery_visible {
             slots.push((
                 Slot::Battery,
@@ -1150,6 +1290,7 @@ impl Bar {
         for ((slot, item), (x, y)) in slots.iter().zip(right.positions.iter().copied()) {
             let width = item.layout_width();
             match slot {
+                Slot::Tray(index) => tree.set_pos(self.tray[*index].rect.root, x, y),
                 Slot::Resources => tree.set_pos(self.resources.rect.root, x, y),
                 Slot::Keyboard => tree.set_pos(self.keyboard.rect.root, x, y),
                 Slot::Network => self.network.place(tree, x, y, width),
@@ -1179,6 +1320,9 @@ impl Bar {
         running |= self.title.advance(now);
         running |= self.resources.tick(&mut self.tree, now);
         running |= self.keyboard.rect.tick(&mut self.tree, now);
+        for icon in &mut self.tray {
+            running |= icon.tick(&mut self.tree, now);
+        }
         running |= self.keyboard.label.tick(&mut self.tree, now);
         running |= self.battery_pulse.tick(now);
         let pulse = self.battery_pulse.value() as f32;

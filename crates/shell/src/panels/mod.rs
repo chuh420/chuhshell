@@ -1,5 +1,6 @@
 pub mod control;
 pub mod notifications;
+pub mod tray;
 
 use std::collections::HashMap;
 
@@ -23,6 +24,11 @@ pub enum PanelAction {
     ToggleDnd,
     ClearAll,
     Card(CardAction),
+    TrayExpanded(bool),
+    TrayLoadMenu,
+    TrayActivate,
+    TrayQuit,
+    TrayEvent(i32, &'static str),
 }
 
 pub struct TooltipSpot {
@@ -48,4 +54,8 @@ pub struct PanelData {
     pub dnd: bool,
     pub notifications: Vec<Notification>,
     pub ages: HashMap<u32, String>,
+    pub tray_title: String,
+    pub tray_only_menu: bool,
+    pub tray_serial: u64,
+    pub tray_menu: Option<Vec<services::tray::MenuEntry>>,
 }
