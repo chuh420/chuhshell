@@ -1,6 +1,9 @@
+pub mod bluetooth;
 pub mod control;
+pub mod kit;
 pub mod notifications;
 pub mod tray;
+pub mod wifi;
 
 use std::collections::HashMap;
 
@@ -29,6 +32,30 @@ pub enum PanelAction {
     TrayActivate,
     TrayQuit,
     TrayEvent(i32, &'static str),
+    Net(NetAction),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum NetAction {
+    Airplane(bool),
+    WifiPower(bool),
+    Scan,
+    Connect(String),
+    Disconnect,
+    Forget(String),
+    Autoconnect(String, bool),
+    ConnectHidden(String),
+    Password(String),
+    Cancel,
+    BtPower(bool),
+    BtScan(bool),
+    BtPair(String),
+    BtDevice(String, &'static str),
+    BtTrust(String, bool),
+    BtRename(String, String),
+    BtForget(String),
+    BtProfile(i64, i64),
+    BtReply(bool, String),
 }
 
 pub struct TooltipSpot {
@@ -58,4 +85,13 @@ pub struct PanelData {
     pub tray_only_menu: bool,
     pub tray_serial: u64,
     pub tray_menu: Option<Vec<services::tray::MenuEntry>>,
+    pub wifi: services::network::WifiState,
+    pub wifi_details: Option<services::network::WifiDetails>,
+    pub wifi_down: Vec<f64>,
+    pub wifi_up: Vec<f64>,
+    pub wifi_prompt: String,
+    pub bluetooth: services::network::BluetoothState,
+    pub bluetooth_profiles: HashMap<String, services::network::DeviceProfiles>,
+    pub bluetooth_prompt: services::network::BluetoothPrompt,
+    pub bluetooth_error: String,
 }

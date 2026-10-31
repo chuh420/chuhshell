@@ -13,7 +13,7 @@ pub struct BarModel {
     pub keyboard_label: String,
     pub network_connected: bool,
     pub wifi_connected: bool,
-    pub wifi_strength: u32,
+    pub wifi_strength: f64,
     pub bluetooth_powered: bool,
     pub bluetooth_connected: Vec<(String, i32)>,
     pub muted: bool,
@@ -42,7 +42,7 @@ impl Default for BarModel {
             keyboard_label: "…".into(),
             network_connected: false,
             wifi_connected: false,
-            wifi_strength: 0,
+            wifi_strength: 0.0,
             bluetooth_powered: false,
             bluetooth_connected: Vec::new(),
             muted: false,
@@ -63,7 +63,7 @@ impl BarModel {
         Self {
             network_connected: true,
             wifi_connected: true,
-            wifi_strength: 100,
+            wifi_strength: 100.0,
             bluetooth_powered: true,
             volume: 50,
             battery_present: true,
@@ -97,9 +97,9 @@ pub fn network_icon(model: &BarModel) -> &'static str {
         return "󰈀";
     }
     match model.wifi_strength {
-        s if s > 75 => "󰤨",
-        s if s > 50 => "󰤥",
-        s if s > 25 => "󰤢",
+        s if s > 75.0 => "󰤨",
+        s if s > 50.0 => "󰤥",
+        s if s > 25.0 => "󰤢",
         _ => "󰤟",
     }
 }

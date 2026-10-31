@@ -180,6 +180,9 @@ impl Context<'_> {
                         );
                     }
                 }
+                Paint::Path(path) => {
+                    draw_path(self.pixmap, path, transform, opacity, mask.as_ref())
+                }
                 Paint::Image(image) => {
                     if image.width() > 0 && image.height() > 0 {
                         let matrix = transform.pre_scale(
@@ -205,6 +208,67 @@ impl Context<'_> {
         }
         for child in children {
             self.node(tree, child, transform, opacity, clip);
+        }
+    }
+}
+
+fn draw_path(
+    pixmap: &mut Pixmap,
+    path: &crate::PathPaint,
+    transform: Transform,
+    opacity: f32,
+    mask: Option<&Mask>,
+) {
+    if path.points.len() < 2 {
+        return;
+    }
+    let mut line = PathBuilder::new();
+    for (index, (x, y)) in path.points.iter().enumerate() {
+        if index == 0 {
+            line.move_to(*x, *y);
+        } else {
+            line.line_to(*x, *y);
+        }
+    }
+    if let Some(line) = line.finish()
+        && !path.stroke.is_transparent()
+    {
+        let mut paint = SkPaint::default();
+        paint.set_color(path.stroke.to_skia(opacity));
+        paint.anti_alias = true;
+        let stroke = tiny_skia::Stroke {
+            width: path.width,
+            line_join: tiny_skia::LineJoin::Round,
+            ..tiny_skia::Stroke::default()
+        };
+        pixmap.stroke_path(&line, &paint, &stroke, transform, mask);
+    }
+    if let Some(bottom) = path.fill_to
+        && !path.fill.is_transparent()
+    {
+        let mut area = PathBuilder::new();
+        for (index, (x, y)) in path.points.iter().enumerate() {
+            if index == 0 {
+                area.move_to(*x, *y);
+            } else {
+                area.line_to(*x, *y);
+            }
+        }
+        if let (Some(first), Some(last)) = (path.points.first(), path.points.last()) {
+            area.line_to(last.0, bottom);
+            area.line_to(first.0, bottom);
+        }
+        area.close();
+        if let Some(area) = area.finish() {
+            fill(
+                pixmap,
+                &area,
+                path.fill,
+                opacity,
+                FillRule::Winding,
+                transform,
+                mask,
+            );
         }
     }
 }

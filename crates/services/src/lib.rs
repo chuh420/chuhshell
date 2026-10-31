@@ -1,7 +1,9 @@
 pub mod audio;
 pub mod clock;
 pub mod hyprland;
+pub mod network;
 pub mod notifications;
+pub mod oneshot;
 pub mod system;
 pub mod tray;
 pub mod upower;

@@ -6,6 +6,7 @@ mod icons;
 mod ipc;
 mod logger;
 mod model;
+mod netctl;
 mod notify;
 mod osd;
 mod overlay;

@@ -46,6 +46,8 @@ pub enum ServiceEvent {
     TrayItem(String, Option<services::tray::TrayItem>),
     TrayIcon(String, Option<ui::tiny_skia::Pixmap>),
     TrayMenu(String, Vec<services::tray::MenuEntry>),
+    Network(services::network::Event),
+    NetworkReady(services::network::Handle),
     Hyprland(hyprland::Event),
     Audio(AudioState),
     Power(PowerState),
@@ -68,6 +70,8 @@ pub struct App {
     pub(crate) overlay: Overlay,
     pub(crate) notes: crate::notify::Notifications,
     pub(crate) tray: crate::trayctl::Tray,
+    pub(crate) net: crate::netctl::Net,
+    repeat: Option<(KeyEvent, Millis)>,
     resources: ResourceMonitor,
     audio: Option<AudioHandle>,
     history: History,
@@ -132,6 +136,8 @@ impl App {
             overlay: Overlay::new(),
             notes: crate::notify::Notifications::default(),
             tray: crate::trayctl::Tray::default(),
+            net: crate::netctl::Net::default(),
+            repeat: None,
             resources: ResourceMonitor::default(),
             audio: None,
             history: History::load(),
@@ -151,6 +157,7 @@ impl App {
     pub fn start_services(&mut self) {
         self.start_notifications();
         self.start_tray();
+        self.start_network();
         let sender = self.events.clone();
         if let Err(err) = hyprland::spawn(move |event| {
             let _ = sender.send(ServiceEvent::Hyprland(event));
@@ -204,7 +211,7 @@ impl App {
         });
     }
 
-    fn add_timer(
+    pub(crate) fn add_timer(
         &self,
         first: Duration,
         mut f: impl FnMut(&mut App) -> Option<Duration> + 'static,
@@ -257,6 +264,8 @@ impl App {
             ServiceEvent::TrayItem(key, item) => self.tray_item_loaded(key, item),
             ServiceEvent::TrayIcon(key, pixmap) => self.tray_icon_loaded(key, pixmap),
             ServiceEvent::TrayMenu(key, entries) => self.tray_menu_loaded(key, entries),
+            ServiceEvent::Network(event) => self.network_event(event),
+            ServiceEvent::NetworkReady(handle) => self.network_ready(handle),
             ServiceEvent::Hyprland(event) => self.hyprland(event),
             ServiceEvent::Audio(state) => {
                 self.state.audio = state;
@@ -595,8 +604,8 @@ impl App {
             "panel": self.state.panel,
             "applications": 0,
             "hidden": [],
-            "wifi": "",
-            "bluetooth": false,
+                        "wifi": self.net.wifi.state,
+            "bluetooth": self.net.bluetooth.powered,
             "wallpapers": 0,
             "wallpaper": "",
             "previews": 0,
@@ -625,7 +634,12 @@ impl App {
         self.model.battery_present = state.battery_present();
         self.model.battery_level = state.battery_level();
         self.model.battery_plugged = state.battery_plugged();
-        self.model.network_connected = self.model.wifi_connected || state.wired.connected;
+        self.model.wifi_connected = self.net.wifi.connected;
+        self.model.wifi_strength = self.net.strength();
+        self.model.bluetooth_powered = self.net.bluetooth.powered;
+        self.model.bluetooth_connected = self.net.connected_devices();
+        self.model.network_connected = self.net.network_connected(state.wired.connected);
+        self.overlay.wifi_prompt = !self.net.prompt.is_empty();
         self.model.unread_notifications = self.notes.unread();
         self.model.tray = self.tray.bar_entries();
         self.overlay.tray_tall = self.tray.only_menu || self.tray.expanded;
@@ -654,9 +668,13 @@ impl App {
             time: now.strftime("%H:%M").to_string(),
             date: now.strftime("%A, %-d %B").to_string(),
             network_connected: self.model.network_connected,
-            network_name: self.state.wired.network.clone(),
-            bluetooth_powered: false,
-            bluetooth_name: String::new(),
+            network_name: if self.net.wifi.connected {
+                self.net.wifi.network.clone()
+            } else {
+                self.state.wired.network.clone()
+            },
+            bluetooth_powered: self.net.bluetooth.powered,
+            bluetooth_name: self.net.bluetooth.name.clone(),
             muted: self.state.muted(),
             volume: self.state.volume(),
             brightness: self.state.brightness,
@@ -668,6 +686,15 @@ impl App {
             tray_only_menu: self.tray.only_menu,
             tray_serial: self.tray.serial,
             tray_menu: self.tray.menu.clone(),
+            wifi: self.net.wifi.clone(),
+            wifi_details: self.net.details.clone(),
+            wifi_down: self.net.down.clone(),
+            wifi_up: self.net.up.clone(),
+            wifi_prompt: self.net.prompt.clone(),
+            bluetooth: self.net.bluetooth.clone(),
+            bluetooth_profiles: self.net.profiles.clone(),
+            bluetooth_prompt: self.net.bluetooth_prompt.clone(),
+            bluetooth_error: self.net.bluetooth_error.clone(),
         }
     }
 
@@ -680,6 +707,7 @@ impl App {
             let panel = self.state.panel.clone();
             self.overlay.panel_changed(&mut self.engine, &panel, now);
             self.panel_opened(&panel);
+            self.network_panel_changed(&panel);
             self.model.unread_notifications = self.notes.unread();
             self.refresh_bars();
         }
@@ -780,7 +808,11 @@ impl App {
                 self.set_keep_awake(!self.state.keep_awake);
                 self.sync();
             }
-            PanelAction::BluetoothPower => log::debug!("bluetooth power is not available yet"),
+            PanelAction::BluetoothPower => {
+                let powered = self.net.bluetooth.powered;
+                self.net_action(crate::panels::NetAction::BtPower(!powered));
+            }
+            PanelAction::Net(action) => self.net_action(action),
             PanelAction::Close => {
                 self.state.panel.clear();
                 self.sync();
@@ -802,6 +834,7 @@ impl App {
         }
     }
     fn draw_overlay(&mut self, now: Millis) {
+        self.overlay.set_now(now);
         let actions = self.overlay.draw(&mut self.platform, &mut self.engine, now);
         if let Some(surface) = self.overlay.surface {
             let tooltip = self.overlay.tooltip();
@@ -815,6 +848,7 @@ impl App {
 
     fn overlay_pointer(&mut self, event: PointerEvent) {
         let now = self.now();
+        self.overlay.set_now(now);
         let actions = self
             .overlay
             .pointer(event.kind, event.x, event.y, &mut self.engine, now);
@@ -831,8 +865,28 @@ impl App {
 
     fn key(&mut self, event: KeyEvent) {
         if event.surface.is_none() || event.surface != self.overlay.surface {
+            self.repeat = None;
             return;
         }
+        let modifier = (0xffe1..=0xffee).contains(&event.keysym);
+        if !event.pressed {
+            if self
+                .repeat
+                .as_ref()
+                .is_some_and(|(held, _)| held.keysym == event.keysym)
+            {
+                self.repeat = None;
+            }
+        } else if !modifier {
+            let delay = self.platform.key_repeat().map(|repeat| repeat.delay as f64);
+            self.repeat = delay.map(|delay| (event.clone(), self.now() + delay));
+        }
+        self.dispatch_key(event);
+    }
+
+    fn dispatch_key(&mut self, event: KeyEvent) {
+        let now = self.now();
+        self.overlay.set_now(now);
         let actions = self.overlay.key(&mut self.engine, &event);
         self.overlay.schedule(&mut self.platform);
         for action in actions {
@@ -1136,6 +1190,23 @@ impl App {
         self.tooltips
             .poll(&mut self.platform, &mut self.engine, now);
         if self
+            .overlay
+            .next_deadline()
+            .is_some_and(|deadline| deadline <= now)
+        {
+            self.overlay.schedule(&mut self.platform);
+        }
+        if let Some((event, at)) = self.repeat.clone()
+            && at <= now
+        {
+            let interval = self
+                .platform
+                .key_repeat()
+                .map_or(40.0, |repeat| 1000.0 / repeat.rate.max(1) as f64);
+            self.repeat = Some((event.clone(), at + interval));
+            self.dispatch_key(event);
+        }
+        if self
             .osd
             .next_deadline()
             .is_some_and(|deadline| deadline <= now)
@@ -1150,6 +1221,7 @@ impl App {
             self.tooltips.next_deadline(),
             self.osd.next_deadline(),
             self.overlay.next_deadline(),
+            self.repeat.as_ref().map(|(_, at)| *at),
         ]
         .into_iter()
         .flatten()

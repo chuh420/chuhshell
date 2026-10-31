@@ -106,6 +106,15 @@ impl SvgPaint {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PathPaint {
+    pub points: Vec<(f32, f32)>,
+    pub stroke: Color,
+    pub width: f32,
+    pub fill: Color,
+    pub fill_to: Option<f32>,
+}
+
 #[derive(Default)]
 pub enum Paint {
     #[default]
@@ -114,6 +123,7 @@ pub enum Paint {
     Text(TextPaint),
     Svg(SvgPaint),
     Image(Arc<Pixmap>),
+    Path(PathPaint),
 }
 
 pub struct Node {

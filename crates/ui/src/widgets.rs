@@ -922,3 +922,128 @@ impl TooltipView {
         running
     }
 }
+
+pub struct Sparkline {
+    pub root: NodeId,
+    baseline: NodeId,
+    second: NodeId,
+    first: NodeId,
+    pub capacity: usize,
+    pub minimum: f64,
+    pub maximum: f64,
+    pub stroke: Color,
+    pub second_stroke: Color,
+    pub line: Color,
+}
+
+impl Sparkline {
+    pub fn new(
+        tree: &mut Tree,
+        parent: NodeId,
+        stroke: Color,
+        second_stroke: Color,
+        line: Color,
+    ) -> Self {
+        let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 44.0));
+        let baseline = tree.add(
+            root,
+            Node::new(0.0, 0.0, 0.0, 0.0).with_paint(Paint::Path(crate::PathPaint::default())),
+        );
+        let second = tree.add(
+            root,
+            Node::new(0.0, 0.0, 0.0, 0.0).with_paint(Paint::Path(crate::PathPaint::default())),
+        );
+        let first = tree.add(
+            root,
+            Node::new(0.0, 0.0, 0.0, 0.0).with_paint(Paint::Path(crate::PathPaint::default())),
+        );
+        Self {
+            root,
+            baseline,
+            second,
+            first,
+            capacity: 60,
+            minimum: 0.0,
+            maximum: 0.0,
+            stroke,
+            second_stroke,
+            line,
+        }
+    }
+
+    fn set(tree: &mut Tree, node: NodeId, width: f32, height: f32, path: crate::PathPaint) {
+        tree.set_size(node, width, height);
+        let changed = tree
+            .get(node)
+            .is_some_and(|node| !matches!(&node.paint, Paint::Path(old) if *old == path));
+        if changed && let Some(node) = tree.get_mut(node) {
+            node.paint = Paint::Path(path);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn place(
+        &mut self,
+        tree: &mut Tree,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        values: &[f64],
+        second: &[f64],
+    ) {
+        tree.set_pos(self.root, x, y);
+        tree.set_size(self.root, width, height);
+        let ceiling = if self.maximum > 0.0 {
+            self.maximum
+        } else {
+            (values.iter().chain(second).copied().fold(0.0, f64::max) * 1.15).max(1.0)
+        };
+        let span = (self.capacity.max(2) - 1) as f64;
+        let range = (ceiling - self.minimum).max(0.0001);
+        let trace = |data: &[f64], color: Color| -> crate::PathPaint {
+            if data.is_empty() {
+                return crate::PathPaint::default();
+            }
+            let offset = self.capacity as f64 - data.len() as f64;
+            let points = data
+                .iter()
+                .enumerate()
+                .map(|(i, value)| {
+                    let px = width as f64 * (i as f64 + offset) / span;
+                    let level = ((value - self.minimum) / range).clamp(0.0, 1.0);
+                    let py = height as f64 - 1.0 - (height as f64 - 2.0) * level;
+                    (px as f32, py as f32)
+                })
+                .collect();
+            crate::PathPaint {
+                points,
+                stroke: color,
+                width: 1.4,
+                fill: color.with_alpha(0.14),
+                fill_to: Some(height),
+            }
+        };
+        Self::set(
+            tree,
+            self.baseline,
+            width,
+            height,
+            crate::PathPaint {
+                points: vec![(0.0, height - 0.5), (width, height - 0.5)],
+                stroke: self.line,
+                width: 1.0,
+                fill: Color::TRANSPARENT,
+                fill_to: None,
+            },
+        );
+        Self::set(
+            tree,
+            self.second,
+            width,
+            height,
+            trace(second, self.second_stroke),
+        );
+        Self::set(tree, self.first, width, height, trace(values, self.stroke));
+    }
+}

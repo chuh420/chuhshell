@@ -445,6 +445,7 @@ impl Platform {
         let shape = match self.cursor {
             CursorShape::Default => Shape::Default,
             CursorShape::Pointer => Shape::Pointer,
+            CursorShape::Text => Shape::Text,
         };
         device.set_shape(serial, shape);
     }

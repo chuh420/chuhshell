@@ -11,8 +11,8 @@ use ui::{
 use crate::{
     bar::TooltipTarget,
     panels::{
-        PanelAction, PanelData, control::ControlPanel, notifications::NotificationsPanel,
-        tray::TrayPanel,
+        PanelAction, PanelData, bluetooth::BluetoothPanel, control::ControlPanel,
+        notifications::NotificationsPanel, tray::TrayPanel, wifi::WifiPanel,
     },
     theme::{BG, LINE, NORMAL, SLOW, UI_SCALE},
 };
@@ -61,12 +61,18 @@ pub fn panel_width(p: &str, available: f64) -> f64 {
     }
 }
 
-pub fn panel_height(p: &str, available: f64, tray_tall: bool) -> f64 {
+pub fn panel_height(p: &str, available: f64, tray_tall: bool, wifi_prompt: bool) -> f64 {
     let value = match p {
         "battery" => 700.0,
         "system" => 800.0,
         "audio" => 492.0,
-        "wifi" => 680.0,
+        "wifi" => {
+            if wifi_prompt {
+                820.0
+            } else {
+                680.0
+            }
+        }
         "bluetooth" => 600.0,
         "tray" => {
             if tray_tall {
@@ -142,6 +148,8 @@ enum View {
     Control(Box<ControlPanel>),
     Notifications(Box<NotificationsPanel>),
     Tray(Box<TrayPanel>),
+    Wifi(Box<WifiPanel>),
+    Bluetooth(Box<BluetoothPanel>),
 }
 
 pub struct Overlay {
@@ -163,6 +171,8 @@ pub struct Overlay {
     pub panel: String,
     pub anchor: f64,
     pub tray_tall: bool,
+    pub wifi_prompt: bool,
+    last_now: Millis,
     queued: Vec<PanelAction>,
     pub displayed: String,
     content_panel: String,
@@ -241,6 +251,8 @@ impl Overlay {
             panel: String::new(),
             anchor: 0.0,
             tray_tall: false,
+            wifi_prompt: false,
+            last_now: 0.0,
             queued: Vec::new(),
             displayed: String::new(),
             content_panel: String::new(),
@@ -348,6 +360,8 @@ impl Overlay {
             View::Control(panel) => (panel.areas(), Some(panel.root)),
             View::Notifications(panel) => (panel.areas(), Some(panel.root)),
             View::Tray(panel) => (panel.areas(), Some(panel.root)),
+            View::Wifi(panel) => (panel.areas(), Some(panel.root)),
+            View::Bluetooth(panel) => (panel.areas(), Some(panel.root)),
             View::None => (Vec::new(), None),
         };
         for area in areas {
@@ -367,6 +381,26 @@ impl Overlay {
                 now,
             );
             self.view = View::Notifications(Box::new(panel));
+        } else if name == "wifi" {
+            let panel = WifiPanel::new(
+                &mut self.tree,
+                &mut self.input,
+                engine,
+                self.content,
+                &self.data,
+                now,
+            );
+            self.view = View::Wifi(Box::new(panel));
+        } else if name == "bluetooth" {
+            let panel = BluetoothPanel::new(
+                &mut self.tree,
+                &mut self.input,
+                engine,
+                self.content,
+                &self.data,
+                now,
+            );
+            self.view = View::Bluetooth(Box::new(panel));
         } else if name == "tray" {
             let (panel, actions) = TrayPanel::new(
                 &mut self.tree,
@@ -405,6 +439,10 @@ impl Overlay {
                 let actions = panel.sync(&mut self.tree, &mut self.input, engine, data);
                 self.queued.extend(actions);
             }
+            View::Wifi(panel) => panel.sync(&mut self.tree, &mut self.input, engine, data, now),
+            View::Bluetooth(panel) => {
+                panel.sync(&mut self.tree, &mut self.input, engine, data, now)
+            }
             View::None => {}
         }
     }
@@ -431,7 +469,19 @@ impl Overlay {
     }
 
     pub fn next_deadline(&self) -> Option<Millis> {
-        self.morph_arm
+        let blink = match &self.view {
+            View::Wifi(panel) => panel.next_deadline(self.last_now),
+            View::Bluetooth(panel) => panel.next_deadline(self.last_now),
+            _ => None,
+        };
+        [self.morph_arm, blink]
+            .into_iter()
+            .flatten()
+            .reduce(f64::min)
+    }
+
+    pub fn set_now(&mut self, now: Millis) {
+        self.last_now = now;
     }
 
     pub fn finished(&self) -> bool {
@@ -500,7 +550,7 @@ impl Overlay {
         let (sw, sh) = self.size?;
         let kind = self.displayed.as_str();
         let vw = panel_width(kind, sw as f64);
-        let vh = panel_height(kind, sh as f64, self.tray_tall);
+        let vh = panel_height(kind, sh as f64, self.tray_tall, self.wifi_prompt);
         let x = panel_x(kind, vw, sw as f64, self.anchor);
         let y = panel_y(kind, vh, sh as f64);
         Some((
@@ -626,6 +676,8 @@ impl Overlay {
             View::Control(panel) => panel.layout(tree, cw, ch),
             View::Notifications(panel) => panel.layout(tree, engine, cw, ch),
             View::Tray(panel) => panel.layout(tree, cw, ch),
+            View::Wifi(panel) => panel.layout(tree, engine, cw, ch),
+            View::Bluetooth(panel) => panel.layout(tree, engine, cw, ch),
             View::None => {}
         }
         running
@@ -697,6 +749,8 @@ impl Overlay {
                 actions.extend(more);
             }
             View::Tray(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
+            View::Wifi(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
+            View::Bluetooth(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
             View::None => {}
         }
         let events = self.input.refresh(&self.tree);
@@ -778,6 +832,22 @@ impl Overlay {
             View::Tray(panel) => {
                 actions.extend(panel.handle(&mut self.tree, &mut self.input, engine, events))
             }
+            View::Wifi(panel) => actions.extend(panel.handle(
+                &mut self.tree,
+                &mut self.input,
+                engine,
+                events,
+                pointer,
+                now,
+            )),
+            View::Bluetooth(panel) => actions.extend(panel.handle(
+                &mut self.tree,
+                &mut self.input,
+                engine,
+                events,
+                pointer,
+                now,
+            )),
             View::None => {}
         }
         actions
@@ -821,6 +891,8 @@ impl Overlay {
                     actions.extend(panel.motion(&self.tree, &self.input, lx, ly))
                 }
                 View::Notifications(panel) => panel.motion(&self.input, lx),
+                View::Wifi(panel) => panel.motion(&mut self.tree, engine, &self.input, lx, ly),
+                View::Bluetooth(panel) => panel.motion(&mut self.tree, engine, &self.input, lx, ly),
                 View::Tray(_) | View::None => {}
             }
         }
@@ -831,6 +903,17 @@ impl Overlay {
     pub fn key(&mut self, engine: &mut TextEngine, event: &KeyEvent) -> Vec<PanelAction> {
         if !event.pressed || self.panel.is_empty() {
             return Vec::new();
+        }
+        let now = self.last_now;
+        let (consumed, actions) = match &mut self.view {
+            View::Wifi(panel) => panel.key(&mut self.tree, engine, event, now),
+            View::Bluetooth(panel) => {
+                panel.key(&mut self.tree, &mut self.input, engine, event, now)
+            }
+            _ => (false, Vec::new()),
+        };
+        if consumed {
+            return actions;
         }
         if event.keysym == keys::ESCAPE {
             return vec![PanelAction::Close];
@@ -849,6 +932,8 @@ impl Overlay {
         let spot = match &self.view {
             View::Control(panel) => panel.tooltip(&self.input)?,
             View::Notifications(panel) => panel.tooltip(&self.input)?,
+            View::Wifi(panel) => panel.tooltip(&self.input)?,
+            View::Bluetooth(panel) => panel.tooltip(&self.input)?,
             View::Tray(_) | View::None => return None,
         };
         let transform = self.tree.device_transform(spot.node);
@@ -876,7 +961,7 @@ mod tests {
     #[test]
     fn control_geometry_matches_qml() {
         let w = panel_width("control", 1920.0);
-        let h = panel_height("control", 1080.0, false);
+        let h = panel_height("control", 1080.0, false, false);
         assert_eq!((w, h), (520.0, 704.0));
         assert_eq!(panel_x("control", w, 1920.0, 0.0), 1386.0);
         assert_eq!(panel_y("control", h, 1080.0), 58.0);

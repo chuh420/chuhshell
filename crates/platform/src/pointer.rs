@@ -10,6 +10,7 @@ pub enum CursorShape {
     #[default]
     Default,
     Pointer,
+    Text,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

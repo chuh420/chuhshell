@@ -222,6 +222,23 @@ impl TextEngine {
         }
     }
 
+    pub fn carets(&mut self, spec: &TextSpec) -> Vec<(usize, f32)> {
+        let buffer = self.shape(spec, 1.0, None);
+        let mut carets = Vec::new();
+        let mut end = 0.0f32;
+        for run in buffer.layout_runs() {
+            for glyph in run.glyphs {
+                carets.push((glyph.start, glyph.x));
+                end = end.max(glyph.x + glyph.w);
+            }
+        }
+        let total: usize = spec.spans.iter().map(|span| span.text.len()).sum();
+        carets.push((total, end));
+        carets.sort_by_key(|caret| caret.0);
+        carets.dedup_by_key(|caret| caret.0);
+        carets
+    }
+
     pub fn link_at(&mut self, spec: &TextSpec, x: f32, y: f32) -> Option<String> {
         if spec.spans.iter().all(|span| span.link.is_none()) {
             return None;
