@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+log.workspace = true
+jiff.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

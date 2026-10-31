@@ -363,12 +363,16 @@ impl SwapText {
         tree.set_size(self.root, width, height);
     }
 
-    pub fn tick(&mut self, tree: &mut Tree, now: Millis) -> bool {
+    pub fn advance(&mut self, now: Millis) -> bool {
         let mut running = self.implicit_width.tick(now);
         running |= self.previous_opacity.tick(now);
         running |= self.previous_offset.tick(now);
         running |= self.current_opacity.tick(now);
         running |= self.current_offset.tick(now);
+        running
+    }
+
+    pub fn apply(&self, tree: &mut Tree) {
         let width = self.width;
         let spec = |text: &str| TextSpec {
             spans: vec![Span::new(text, self.family, self.pixel_size)],
@@ -387,6 +391,11 @@ impl SwapText {
         tree.set_pos(self.current, 0.0, current_y);
         tree.set_size(self.current, width, self.current_metrics.height);
         tree.set_opacity(self.current, self.current_opacity.value());
+    }
+
+    pub fn tick(&mut self, tree: &mut Tree, now: Millis) -> bool {
+        let running = self.advance(now);
+        self.apply(tree);
         running
     }
 }

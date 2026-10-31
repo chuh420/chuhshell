@@ -787,7 +787,7 @@ impl Bar {
             model.workspaces.clone(),
             now,
         );
-        self.title.set(&title_text(model), "none");
+        self.title.set(&title_text(model), &model.title_key);
         self.title.flush(engine, now);
         self.clock.set_label(engine, &model.clock, 11.0);
         self.resources.apply(model, now);
@@ -1158,7 +1158,7 @@ impl Bar {
             }],
         );
         running |= self.workspaces.tick(&mut self.tree, now);
-        running |= self.title.tick(&mut self.tree, now);
+        running |= self.title.advance(now);
         running |= self.resources.tick(&mut self.tree, now);
         running |= self.keyboard.rect.tick(&mut self.tree, now);
         running |= self.keyboard.label.tick(&mut self.tree, now);
@@ -1179,6 +1179,7 @@ impl Bar {
             origin_y: 3.0,
         }];
         self.layout();
+        self.title.apply(&mut self.tree);
         let tree = &mut self.tree;
         for chip in [
             &mut self.launcher,

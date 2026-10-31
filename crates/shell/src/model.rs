@@ -3,6 +3,7 @@ use std::path::PathBuf;
 pub struct BarModel {
     pub panel: String,
     pub title: Option<String>,
+    pub title_key: String,
     pub workspaces: Vec<i32>,
     pub active_workspace: i32,
     pub clock: String,
@@ -30,13 +31,14 @@ impl Default for BarModel {
         Self {
             panel: String::new(),
             title: None,
-            workspaces: vec![1],
+            title_key: "none".into(),
+            workspaces: Vec::new(),
             active_workspace: 1,
             clock: format_clock(&jiff::Zoned::now()),
             cpu: None,
             ram_used: 0.0,
             ram_total: 0.0,
-            keyboard_label: String::new(),
+            keyboard_label: "…".into(),
             network_connected: false,
             wifi_connected: false,
             wifi_strength: 0,
@@ -57,7 +59,6 @@ impl Default for BarModel {
 impl BarModel {
     pub fn placeholder() -> Self {
         Self {
-            keyboard_label: "RU".into(),
             network_connected: true,
             wifi_connected: true,
             wifi_strength: 100,

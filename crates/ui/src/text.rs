@@ -186,7 +186,9 @@ impl TextEngine {
 
     pub fn raster(&mut self, spec: &TextSpec, scale: f32) -> Option<Raster> {
         let natural = self.measure(spec, scale);
-        let elide = spec.elide_width.filter(|width| *width < natural.width);
+        let elide = spec
+            .elide_width
+            .filter(|width| *width + 0.01 < natural.width);
         let mut buffer = self.shape(spec, scale, elide);
         let (width, ascent, descent, lines) = self.line_metrics(&mut buffer);
         let line_height = ascent + descent;
