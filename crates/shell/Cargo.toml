@@ -1,0 +1,20 @@
+[package]
+name = "shell"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "idk-yet"
+path = "src/main.rs"
+
+[dependencies]
+platform.workspace = true
+ui.workspace = true
+services.workspace = true
+calloop.workspace = true
+log.workspace = true
+jiff.workspace = true
+
+[lints]
+workspace = true
