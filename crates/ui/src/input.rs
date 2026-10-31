@@ -119,6 +119,10 @@ impl Input {
         }
     }
 
+    pub fn node(&self, id: AreaId) -> Option<NodeId> {
+        self.areas.get(&id).map(|area| area.node)
+    }
+
     pub fn get_mut(&mut self, id: AreaId) -> Option<&mut MouseArea> {
         self.areas.get_mut(&id)
     }

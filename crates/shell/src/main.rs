@@ -5,6 +5,8 @@ mod ipc;
 mod logger;
 mod model;
 mod osd;
+mod overlay;
+mod panels;
 mod state;
 #[allow(dead_code)]
 mod theme;

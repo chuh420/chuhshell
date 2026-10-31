@@ -1,11 +1,12 @@
 mod geometry;
+mod keyboard;
 mod pointer;
 mod surface;
 
 use std::collections::HashMap;
 
 use smithay_client_toolkit::{
-    compositor::{CompositorHandler, CompositorState},
+    compositor::{CompositorHandler, CompositorState, Region},
     delegate_dispatch2, delegate_registry,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
@@ -20,11 +21,12 @@ use smithay_client_toolkit::{
         },
     },
     shm::{Shm, ShmHandler},
+    subcompositor::SubcompositorState,
 };
 use wayland_client::{
     Connection, EventQueue, QueueHandle,
     globals::registry_queue_init,
-    protocol::{wl_output, wl_pointer, wl_seat, wl_surface},
+    protocol::{wl_buffer, wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface},
 };
 use wayland_protocols::{
     wp::{
@@ -33,12 +35,15 @@ use wayland_protocols::{
             zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1,
             zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1,
         },
+        single_pixel_buffer::v1::client::wp_single_pixel_buffer_manager_v1::WpSinglePixelBufferManagerV1,
+        viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter},
     },
     xdg::shell::client::xdg_positioner,
 };
 
 pub use calloop_wayland_source::WaylandSource;
 pub use geometry::{Damage, Rect};
+pub use keyboard::{KeyEvent, KeyRepeat, Modifiers, keys};
 pub use pointer::{CursorShape, MouseButton, PointerEvent, PointerKind};
 pub use surface::{Edges, InputRegion, KeyboardMode, Layer, LayerConfig, PopupPlacement};
 
@@ -70,6 +75,8 @@ pub enum Event {
     Closed(SurfaceId),
     Frame(SurfaceId),
     Pointer(PointerEvent),
+    Key(KeyEvent),
+    KeyboardFocus(Option<SurfaceId>),
 }
 
 #[derive(Debug)]
@@ -106,6 +113,13 @@ pub struct Platform {
     cursor: CursorShape,
     idle_manager: Option<ZwpIdleInhibitManagerV1>,
     inhibitors: HashMap<SurfaceId, ZwpIdleInhibitorV1>,
+    subcompositor: Option<SubcompositorState>,
+    viewporter: Option<WpViewporter>,
+    single_pixel: Option<WpSinglePixelBufferManagerV1>,
+    keyboard: Option<wl_keyboard::WlKeyboard>,
+    keyboard_focus: Option<SurfaceId>,
+    modifiers: Modifiers,
+    key_repeat: Option<KeyRepeat>,
     qh: QueueHandle<Platform>,
     outputs: HashMap<OutputId, wl_output::WlOutput>,
     surfaces: HashMap<SurfaceId, Surface>,
@@ -137,6 +151,28 @@ impl Platform {
                 None
             }
         };
+        let subcompositor =
+            match SubcompositorState::bind(compositor.wl_compositor().clone(), &globals, &qh) {
+                Ok(state) => Some(state),
+                Err(err) => {
+                    log::warn!("subcompositor: {err}");
+                    None
+                }
+            };
+        let viewporter = match globals.bind(&qh, 1..=1, ProtocolData) {
+            Ok(viewporter) => Some(viewporter),
+            Err(err) => {
+                log::warn!("viewporter: {err}");
+                None
+            }
+        };
+        let single_pixel = match globals.bind(&qh, 1..=1, ProtocolData) {
+            Ok(manager) => Some(manager),
+            Err(err) => {
+                log::warn!("single pixel buffer: {err}");
+                None
+            }
+        };
         let platform = Platform {
             registry_state: RegistryState::new(&globals),
             output_state: OutputState::new(&globals, &qh),
@@ -152,6 +188,13 @@ impl Platform {
             cursor: CursorShape::Default,
             idle_manager,
             inhibitors: HashMap::new(),
+            subcompositor,
+            viewporter,
+            single_pixel,
+            keyboard: None,
+            keyboard_focus: None,
+            modifiers: Modifiers::default(),
+            key_repeat: None,
             qh,
             outputs: HashMap::new(),
             surfaces: HashMap::new(),
@@ -211,7 +254,7 @@ impl Platform {
     ) -> Option<SurfaceId> {
         let parent_layer = match self.surfaces.get(&parent)?.role() {
             Role::Layer(layer) => layer.clone(),
-            Role::Popup(_) => return None,
+            Role::Popup(_) | Role::Subsurface(_) => return None,
         };
         let positioner = match XdgPositioner::new(&self.xdg_shell) {
             Ok(positioner) => positioner,
@@ -252,6 +295,111 @@ impl Platform {
         self.surfaces
             .insert(id, Surface::new_popup(popup, placement));
         Some(id)
+    }
+
+    pub fn create_subsurface(&mut self, parent: SurfaceId) -> Option<SurfaceId> {
+        let parent_wl = self.surfaces.get(&parent)?.wl_surface().clone();
+        let subcompositor = self.subcompositor.as_ref()?;
+        let (subsurface, wl) = subcompositor.create_subsurface(parent_wl, &self.qh);
+        match Region::new(&self.compositor) {
+            Ok(region) => wl.set_input_region(Some(region.wl_region())),
+            Err(err) => log::error!("input region: {err}"),
+        }
+        let id = SurfaceId(self.next_surface);
+        self.next_surface += 1;
+        self.surfaces
+            .insert(id, Surface::new_subsurface(subsurface, wl));
+        Some(id)
+    }
+
+    pub fn set_subsurface_geometry(
+        &mut self,
+        id: SurfaceId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) {
+        let Some(surface) = self.surfaces.get_mut(&id) else {
+            return;
+        };
+        if let Role::Subsurface(subsurface) = surface.role() {
+            subsurface.set_position(x, y);
+        }
+        surface.set_size(width, height);
+    }
+
+    pub fn set_keyboard_mode(&mut self, id: SurfaceId, mode: KeyboardMode) {
+        let Some(surface) = self.surfaces.get(&id) else {
+            return;
+        };
+        if let Role::Layer(layer) = surface.role() {
+            layer.set_keyboard_interactivity(mode.into());
+        }
+    }
+
+    pub fn commit(&mut self, id: SurfaceId, request_frame: bool) {
+        let Some(surface) = self.surfaces.get_mut(&id) else {
+            return;
+        };
+        if request_frame {
+            surface.request_frame(&self.qh);
+        }
+        surface.wl_surface().commit();
+    }
+
+    pub fn frame_pending(&self, id: SurfaceId) -> bool {
+        self.surfaces.get(&id).is_some_and(Surface::frame_pending)
+    }
+
+    pub fn set_solid(&mut self, id: SurfaceId, rgba: [f32; 4], request_frame: bool) -> bool {
+        let Some((width, height)) = self.surfaces.get(&id).and_then(Surface::size) else {
+            return false;
+        };
+        let alpha = rgba[3].clamp(0.0, 1.0);
+        if let (Some(viewporter), Some(manager)) = (&self.viewporter, &self.single_pixel) {
+            let Some(surface) = self.surfaces.get_mut(&id) else {
+                return false;
+            };
+            let channel = |value: f32| {
+                ((value.clamp(0.0, 1.0) * alpha) as f64 * u32::MAX as f64).round() as u32
+            };
+            let buffer = manager.create_u32_rgba_buffer(
+                channel(rgba[0]),
+                channel(rgba[1]),
+                channel(rgba[2]),
+                (alpha as f64 * u32::MAX as f64).round() as u32,
+                &self.qh,
+                PixelBuffer,
+            );
+            let wl = surface.wl_surface().clone();
+            let viewport = surface
+                .viewport
+                .get_or_insert_with(|| viewporter.get_viewport(&wl, &self.qh, ProtocolData));
+            viewport.set_destination(width as i32, height as i32);
+            wl.attach(Some(&buffer), 0, 0);
+            wl.damage_buffer(0, 0, 1, 1);
+            if request_frame {
+                surface.request_frame(&self.qh);
+            }
+            wl.commit();
+            surface.mark_content();
+            return true;
+        }
+        let pixel = [
+            (rgba[0].clamp(0.0, 1.0) * alpha * 255.0).round() as u8,
+            (rgba[1].clamp(0.0, 1.0) * alpha * 255.0).round() as u8,
+            (rgba[2].clamp(0.0, 1.0) * alpha * 255.0).round() as u8,
+            (alpha * 255.0).round() as u8,
+        ];
+        let pixels: Vec<u8> = pixel
+            .iter()
+            .copied()
+            .cycle()
+            .take(width as usize * height as usize * 4)
+            .collect();
+        let damage = Damage::full(width as i32, height as i32);
+        self.present(id, &pixels, &damage, request_frame)
     }
 
     pub fn set_cursor(&mut self, shape: CursorShape) {
@@ -467,6 +615,12 @@ impl SeatHandler for Platform {
         seat: wl_seat::WlSeat,
         capability: Capability,
     ) {
+        if capability == Capability::Keyboard && self.keyboard.is_none() {
+            match self.seat_state.get_keyboard(qh, &seat, None) {
+                Ok(keyboard) => self.keyboard = Some(keyboard),
+                Err(err) => log::error!("keyboard: {err}"),
+            }
+        }
         if capability == Capability::Pointer && self.pointer.is_none() {
             match self.seat_state.get_pointer(qh, &seat) {
                 Ok(pointer) => {
@@ -488,6 +642,12 @@ impl SeatHandler for Platform {
         _: wl_seat::WlSeat,
         capability: Capability,
     ) {
+        if capability == Capability::Keyboard
+            && let Some(keyboard) = self.keyboard.take()
+        {
+            keyboard.release();
+            self.keyboard_focus = None;
+        }
         if capability == Capability::Pointer {
             if let Some(device) = self.cursor_device.take() {
                 device.destroy();
@@ -525,6 +685,63 @@ impl smithay_client_toolkit::dispatch2::Dispatch2<ZwpIdleInhibitorV1, Platform> 
         _: &Connection,
         _: &QueueHandle<Platform>,
     ) {
+    }
+}
+
+pub struct ProtocolData;
+
+impl smithay_client_toolkit::dispatch2::Dispatch2<WpViewporter, Platform> for ProtocolData {
+    fn event(
+        &self,
+        _: &mut Platform,
+        _: &WpViewporter,
+        _: <WpViewporter as wayland_client::Proxy>::Event,
+        _: &Connection,
+        _: &QueueHandle<Platform>,
+    ) {
+    }
+}
+
+impl smithay_client_toolkit::dispatch2::Dispatch2<WpViewport, Platform> for ProtocolData {
+    fn event(
+        &self,
+        _: &mut Platform,
+        _: &WpViewport,
+        _: <WpViewport as wayland_client::Proxy>::Event,
+        _: &Connection,
+        _: &QueueHandle<Platform>,
+    ) {
+    }
+}
+
+impl smithay_client_toolkit::dispatch2::Dispatch2<WpSinglePixelBufferManagerV1, Platform>
+    for ProtocolData
+{
+    fn event(
+        &self,
+        _: &mut Platform,
+        _: &WpSinglePixelBufferManagerV1,
+        _: <WpSinglePixelBufferManagerV1 as wayland_client::Proxy>::Event,
+        _: &Connection,
+        _: &QueueHandle<Platform>,
+    ) {
+    }
+}
+
+pub struct PixelBuffer;
+
+impl smithay_client_toolkit::dispatch2::Dispatch2<wl_buffer::WlBuffer, Platform> for PixelBuffer {
+    fn event(
+        &self,
+        _: &mut Platform,
+        buffer: &wl_buffer::WlBuffer,
+        event: wl_buffer::Event,
+        _: &Connection,
+        _: &QueueHandle<Platform>,
+    ) {
+        if let wl_buffer::Event::Release = event {
+            buffer.destroy();
+        }
     }
 }
 

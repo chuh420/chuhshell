@@ -34,6 +34,7 @@ pub struct Span {
     pub family: String,
     pub size: f32,
     pub weight: Weight,
+    pub letter_spacing: f32,
 }
 
 impl Span {
@@ -43,6 +44,7 @@ impl Span {
             family: family.into(),
             size,
             weight: Weight::Normal,
+            letter_spacing: 0.0,
         }
     }
 }
@@ -147,6 +149,11 @@ impl TextEngine {
                 Attrs::new()
                     .family(Family::Name(&span.family))
                     .weight(span.weight.fontdb())
+                    .letter_spacing(if span.size > 0.0 {
+                        span.letter_spacing / span.size
+                    } else {
+                        0.0
+                    })
                     .metrics(Metrics::new(size, size)),
             )
         });

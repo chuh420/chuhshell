@@ -169,6 +169,11 @@ impl<T: Lerp> Tween<T> {
     pub fn end_time(&self) -> Millis {
         self.start + self.duration
     }
+
+    pub fn stop(&mut self) {
+        self.running = false;
+        self.to = self.value;
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -239,6 +244,14 @@ impl Spring {
         }
         let from = self.value;
         self.start(now, from, to);
+    }
+
+    pub fn stop(&mut self) {
+        self.running = false;
+    }
+
+    pub fn set_value(&mut self, value: f64) {
+        self.value = value;
     }
 
     pub fn tick(&mut self, now: Millis) -> bool {

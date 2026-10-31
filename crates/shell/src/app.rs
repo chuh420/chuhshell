@@ -13,8 +13,8 @@ use calloop::{
     timer::{TimeoutAction, TimeoutFuture, Timer},
 };
 use platform::{
-    Damage, Edges, Event, InputRegion, KeyboardMode, Layer, LayerConfig, OutputId, Platform,
-    PointerEvent, PointerKind, SurfaceId,
+    Damage, Edges, Event, InputRegion, KeyEvent, KeyboardMode, Layer, LayerConfig, OutputId,
+    Platform, PointerEvent, PointerKind, SurfaceId,
 };
 use services::{
     audio::{self, AudioHandle, AudioState},
@@ -30,6 +30,8 @@ use crate::{
     ipc::{self, Reply},
     model::{BarModel, format_clock},
     osd::{self, Osd},
+    overlay::{self, Overlay},
+    panels::{PanelAction, PanelData},
     state::{BatteryAlert, ShellState},
     theme::UI_SCALE,
     tooltip::Tooltips,
@@ -55,6 +57,7 @@ pub struct App {
     bars: HashMap<OutputId, BarSurface>,
     tooltips: Tooltips,
     osd: Osd,
+    overlay: Overlay,
     resources: ResourceMonitor,
     audio: Option<AudioHandle>,
     history: History,
@@ -116,6 +119,7 @@ impl App {
             bars: HashMap::new(),
             tooltips: Tooltips::default(),
             osd,
+            overlay: Overlay::new(),
             resources: ResourceMonitor::default(),
             audio: None,
             history: History::load(),
@@ -386,6 +390,7 @@ impl App {
             self.model.clock = text;
             self.refresh_bars();
         }
+        self.sync_overlay();
     }
 
     fn change_volume(&mut self, step: f64, osd: bool) {
@@ -601,6 +606,159 @@ impl App {
         self.model.network_connected = self.model.wifi_connected || state.wired.connected;
         self.refresh_bars();
         self.sync_osd();
+        self.sync_overlay();
+    }
+
+    fn panel_data(&self) -> PanelData {
+        let now = clock::now();
+        PanelData {
+            time: now.strftime("%H:%M").to_string(),
+            date: now.strftime("%A, %-d %B").to_string(),
+            network_connected: self.model.network_connected,
+            network_name: self.state.wired.network.clone(),
+            bluetooth_powered: false,
+            bluetooth_name: String::new(),
+            muted: self.state.muted(),
+            volume: self.state.volume(),
+            brightness: self.state.brightness,
+            keep_awake: self.state.keep_awake,
+        }
+    }
+
+    fn sync_overlay(&mut self) {
+        let now = self.now();
+        let data = self.panel_data();
+        self.overlay.set_data(&mut self.engine, &data, now);
+        self.overlay.anchor = self.state.panel_anchor;
+        if self.overlay.panel != self.state.panel {
+            let panel = self.state.panel.clone();
+            self.overlay.panel_changed(&mut self.engine, &panel, now);
+        }
+        self.ensure_overlay();
+        self.overlay.schedule(&mut self.platform);
+    }
+
+    fn output_by_name(&self, name: &str) -> Option<OutputId> {
+        let outputs = self.platform.outputs();
+        outputs
+            .iter()
+            .copied()
+            .find(|id| {
+                self.platform
+                    .output_desc(*id)
+                    .is_some_and(|desc| desc.name == name)
+            })
+            .or_else(|| self.focused_output())
+    }
+
+    fn ensure_overlay(&mut self) {
+        if !self.overlay.visible() {
+            self.teardown_overlay();
+            return;
+        }
+        let output = self.output_by_name(&self.state.panel_screen.clone());
+        if self.overlay.surface.is_some() && self.overlay.output != output {
+            self.teardown_overlay();
+        }
+        if self.overlay.surface.is_none()
+            && let Some(output) = output
+        {
+            let surface = self
+                .platform
+                .create_layer_surface(&overlay::layer_config(output));
+            let card = self.platform.create_subsurface(surface);
+            self.overlay.attach(surface, card, output);
+        }
+        let mode = if self.state.panel.is_empty() {
+            KeyboardMode::None
+        } else {
+            KeyboardMode::Exclusive
+        };
+        if let Some(surface) = self.overlay.surface
+            && self.overlay.keyboard != mode
+        {
+            self.platform.set_keyboard_mode(surface, mode);
+            self.overlay.keyboard = mode;
+        }
+    }
+
+    fn teardown_overlay(&mut self) {
+        if let Some(surface) = self.overlay.surface {
+            self.tooltips.drop_parent(&mut self.platform, surface);
+        }
+        let (card, surface) = self.overlay.detach();
+        if let Some(card) = card {
+            self.platform.destroy_surface(card);
+        }
+        if let Some(surface) = surface {
+            self.platform.destroy_surface(surface);
+        }
+    }
+
+    fn panel_action(&mut self, action: PanelAction) {
+        match action {
+            PanelAction::Toggle(name) => {
+                self.state.toggle(name, false);
+                self.sync();
+            }
+            PanelAction::Run(name) => run(name),
+            PanelAction::Suspend => {
+                self.state.panel.clear();
+                self.sync();
+                run("suspend");
+            }
+            PanelAction::ToggleMute => self.toggle_mute(false),
+            PanelAction::SetVolume(value) => {
+                let sink = self
+                    .state
+                    .audio
+                    .sink()
+                    .filter(|sink| sink.has_audio)
+                    .map(|sink| sink.id);
+                if let (Some(node), Some(audio)) = (sink, &self.audio) {
+                    audio.send(audio::Command::SetVolume {
+                        node,
+                        volume: (value / 100.0).clamp(0.0, 1.0) as f32,
+                    });
+                }
+            }
+            PanelAction::SetBrightness(value) => {
+                self.set_brightness(value);
+                self.sync();
+            }
+            PanelAction::ToggleKeepAwake => {
+                self.set_keep_awake(!self.state.keep_awake);
+                self.sync();
+            }
+            PanelAction::BluetoothPower => log::debug!("bluetooth power is not available yet"),
+            PanelAction::Close => {
+                self.state.panel.clear();
+                self.sync();
+            }
+        }
+    }
+
+    fn overlay_pointer(&mut self, event: PointerEvent) {
+        let now = self.now();
+        let actions = self.overlay.pointer(event.kind, event.x, event.y);
+        let cursor = self.overlay.cursor();
+        let tooltip = self.overlay.tooltip();
+        self.platform.set_cursor(cursor);
+        self.overlay.schedule(&mut self.platform);
+        self.tooltips
+            .update(&mut self.platform, event.surface, tooltip, now);
+        for action in actions {
+            self.panel_action(action);
+        }
+    }
+
+    fn key(&mut self, event: KeyEvent) {
+        if event.surface.is_some()
+            && event.surface == self.overlay.surface
+            && let Some(action) = self.overlay.key(&event)
+        {
+            self.panel_action(action);
+        }
     }
 
     fn sync_osd(&mut self) {
@@ -653,8 +811,23 @@ impl App {
         }
     }
 
-    fn action(&mut self, action: BarAction) {
+    fn action(&mut self, action: BarAction, surface: SurfaceId) {
+        let screen = self
+            .bars
+            .iter()
+            .find(|(_, bar)| bar.surface == surface)
+            .and_then(|(output, _)| self.platform.output_desc(*output))
+            .map(|desc| desc.name)
+            .unwrap_or_default();
         let result = match action {
+            BarAction::Open { panel, anchor } => {
+                match anchor {
+                    Some(x) => self.state.open_module(panel, x, &screen),
+                    None => self.state.open_at(panel, &screen),
+                }
+                self.sync();
+                Ok(())
+            }
             BarAction::Workspace(id) => hyprland::focus_workspace(id),
             BarAction::KeyboardNext => hyprland::next_layout(),
             BarAction::Volume(delta) => {
@@ -668,10 +841,6 @@ impl App {
             BarAction::ToggleDnd => {
                 self.state.dnd = !self.state.dnd;
                 self.sync();
-                Ok(())
-            }
-            other => {
-                log::debug!("bar action {other:?}");
                 Ok(())
             }
         };
@@ -709,6 +878,10 @@ impl App {
     }
 
     fn pointer(&mut self, event: PointerEvent) {
+        if self.overlay.owns(event.surface) {
+            self.overlay_pointer(event);
+            return;
+        }
         let now = self.now();
         let Some(entry) = self
             .bars
@@ -738,10 +911,10 @@ impl App {
         let actions = bar.handle(&events, now);
         let cursor = bar.input.cursor();
         let tooltip = bar.tooltip();
-        for action in actions {
-            self.action(action);
-        }
         self.platform.set_cursor(cursor);
+        for action in actions {
+            self.action(action, event.surface);
+        }
         self.platform.schedule_frame(event.surface);
         self.tooltips
             .update(&mut self.platform, event.surface, tooltip, now);
@@ -788,6 +961,11 @@ impl App {
                     );
                     return;
                 }
+                if self.overlay.owns(surface) {
+                    self.overlay.configure(width, height);
+                    self.overlay.draw(&mut self.platform, &mut self.engine, now);
+                    return;
+                }
                 if self.osd.surface == Some(surface) {
                     self.osd.configure(width, height);
                     self.osd.draw(&mut self.platform, &mut self.engine, now);
@@ -814,6 +992,11 @@ impl App {
             }
             Event::Closed(surface) => {
                 self.tooltips.closed(surface);
+                if self.overlay.owns(surface) {
+                    self.teardown_overlay();
+                    self.state.panel.clear();
+                    self.overlay.panel.clear();
+                }
                 if self.osd.surface == Some(surface) {
                     self.osd.detach();
                 }
@@ -824,6 +1007,11 @@ impl App {
                 if self.tooltips.owns(surface) {
                     self.tooltips
                         .frame(&mut self.platform, &mut self.engine, surface, now);
+                } else if self.overlay.owns(surface) {
+                    self.overlay.draw(&mut self.platform, &mut self.engine, now);
+                    if self.overlay.finished() {
+                        self.teardown_overlay();
+                    }
                 } else if self.osd.surface == Some(surface) {
                     self.osd.draw(&mut self.platform, &mut self.engine, now);
                     if self.osd.finished()
@@ -836,6 +1024,8 @@ impl App {
                 }
             }
             Event::Pointer(event) => self.pointer(event),
+            Event::Key(event) => self.key(event),
+            Event::KeyboardFocus(_) => {}
         }
     }
 
@@ -859,12 +1049,23 @@ impl App {
     }
 
     pub fn timeout(&self) -> Option<Duration> {
-        let deadline = [self.tooltips.next_deadline(), self.osd.next_deadline()]
-            .into_iter()
-            .flatten()
-            .reduce(f64::min)?;
+        let deadline = [
+            self.tooltips.next_deadline(),
+            self.osd.next_deadline(),
+            self.overlay.next_deadline(),
+        ]
+        .into_iter()
+        .flatten()
+        .reduce(f64::min)?;
         let wait = (deadline - self.now()).max(0.0);
         Some(Duration::from_secs_f64(wait / 1000.0))
+    }
+}
+
+fn run(action: &str) {
+    match Command::new(chuhshell()).arg(action).spawn() {
+        Ok(child) => reap(child),
+        Err(err) => log::warn!("{action}: {err}"),
     }
 }
 

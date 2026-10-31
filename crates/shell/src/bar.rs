@@ -25,22 +25,17 @@ const CHIP_STYLE: ChipStyle = ChipStyle {
 const SLOT: f32 = 25.0;
 const GAP: f32 = 3.0;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum BarAction {
-    Launcher,
+    Open {
+        panel: &'static str,
+        anchor: Option<f64>,
+    },
     Workspace(i32),
-    Calendar,
-    System,
     KeyboardNext,
-    Wifi,
-    Bluetooth,
-    Audio,
     ToggleMute,
     Volume(i32),
-    Battery,
-    Notifications,
     ToggleDnd,
-    Control,
 }
 
 pub struct TooltipTarget {
@@ -968,10 +963,28 @@ impl Bar {
         actions
     }
 
+    fn anchor_x(&self, area: AreaId) -> Option<f64> {
+        let node = self.input.node(area)?;
+        let width = self.tree.get(node)?.width;
+        let mut point = ui::tiny_skia::Point::from_xy(width / 2.0, 0.0);
+        self.tree.device_transform(node).map_point(&mut point);
+        Some(point.x as f64 + (10.0 * UI_SCALE).round() as f64)
+    }
+
+    fn open(&self, panel: &'static str, area: AreaId) -> Option<BarAction> {
+        Some(BarAction::Open {
+            panel,
+            anchor: self.anchor_x(area),
+        })
+    }
+
     fn click_action(&self, area: AreaId, button: MouseButton) -> Option<BarAction> {
         let right = button == MouseButton::Right;
         if area == self.launcher.area && !right {
-            return Some(BarAction::Launcher);
+            return Some(BarAction::Open {
+                panel: "launcher",
+                anchor: None,
+            });
         }
         if let Some(entry) = self
             .workspaces
@@ -982,39 +995,42 @@ impl Bar {
             return (!right).then_some(BarAction::Workspace(entry.id));
         }
         if area == self.clock.area && !right {
-            return Some(BarAction::Calendar);
+            return self.open("calendar", area);
         }
         if area == self.resources.rect.area {
-            return Some(BarAction::System);
+            return self.open("system", area);
         }
         if area == self.keyboard.rect.area {
             return Some(BarAction::KeyboardNext);
         }
         if area == self.network.area && !right {
-            return Some(BarAction::Wifi);
+            return self.open("wifi", area);
         }
         if area == self.bluetooth.area && !right {
-            return Some(BarAction::Bluetooth);
+            return self.open("bluetooth", area);
         }
         if area == self.audio.area {
-            return Some(if right {
-                BarAction::ToggleMute
+            return if right {
+                Some(BarAction::ToggleMute)
             } else {
-                BarAction::Audio
-            });
+                self.open("audio", area)
+            };
         }
         if area == self.battery.area && !right {
-            return Some(BarAction::Battery);
+            return self.open("battery", area);
         }
         if area == self.bell.area {
-            return Some(if right {
-                BarAction::ToggleDnd
+            return if right {
+                Some(BarAction::ToggleDnd)
             } else {
-                BarAction::Notifications
-            });
+                self.open("notifications", area)
+            };
         }
         if area == self.control.area && !right {
-            return Some(BarAction::Control);
+            return Some(BarAction::Open {
+                panel: "control",
+                anchor: None,
+            });
         }
         None
     }

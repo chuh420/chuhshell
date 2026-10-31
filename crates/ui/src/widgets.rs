@@ -31,6 +31,7 @@ pub struct Chip {
     metrics: TextMetrics,
     width: f32,
     height: f32,
+    implicit_height: f32,
     ink: Tween<Color>,
     color: Tween<Color>,
     scale: Tween<f32>,
@@ -98,6 +99,7 @@ impl Chip {
             metrics,
             width: 0.0,
             height,
+            implicit_height: height,
             ink: Tween::new(ink, NORMAL, Easing::Linear),
             color: Tween::new(Color::TRANSPARENT, 140.0, Easing::Linear),
             scale: Tween::new(1.0, 110.0, Easing::OutCubic),
@@ -116,6 +118,10 @@ impl Chip {
     }
 
     pub fn implicit_height(&self) -> f32 {
+        self.implicit_height
+    }
+
+    pub fn height(&self) -> f32 {
         self.height
     }
 
@@ -138,6 +144,21 @@ impl Chip {
         self.label = label.to_string();
         self.font_size = font_size;
         self.metrics = engine.measure(&self.spec(), 1.0);
+    }
+
+    pub fn set_font_size(&mut self, engine: &mut TextEngine, font_size: f32, icon_size: f32) {
+        if self.font_size == font_size && self.icon_size == icon_size {
+            return;
+        }
+        self.font_size = font_size;
+        self.icon_size = icon_size;
+        self.metrics = engine.measure(&self.spec(), 1.0);
+        self.width = self.implicit_width();
+    }
+
+    pub fn place_sized(&mut self, tree: &mut Tree, x: f32, y: f32, width: f32, height: f32) {
+        self.height = height;
+        self.place(tree, x, y, width);
     }
 
     pub fn set_ink(&mut self, now: Millis, ink: Color) {
@@ -199,6 +220,347 @@ impl Chip {
         tree.set_transforms(self.root, &self.extra);
         tree.set_text(self.text, self.spec());
         running
+    }
+}
+
+pub struct Label {
+    pub node: NodeId,
+    spec: TextSpec,
+    metrics: TextMetrics,
+    width: f32,
+}
+
+impl Label {
+    pub fn new(tree: &mut Tree, engine: &mut TextEngine, parent: NodeId, spec: TextSpec) -> Self {
+        let metrics = engine.measure(&spec, 1.0);
+        let node = tree.add(
+            parent,
+            Node::new(0.0, 0.0, metrics.width, metrics.height)
+                .with_paint(Paint::Text(TextPaint::new(spec.clone()))),
+        );
+        Self {
+            node,
+            spec,
+            metrics,
+            width: metrics.width,
+        }
+    }
+
+    pub fn implicit_width(&self) -> f32 {
+        self.metrics.width
+    }
+
+    pub fn implicit_height(&self) -> f32 {
+        self.metrics.height
+    }
+
+    pub fn text(&self) -> String {
+        self.spec
+            .spans
+            .iter()
+            .map(|span| span.text.as_str())
+            .collect()
+    }
+
+    pub fn set_text(&mut self, engine: &mut TextEngine, text: &str) {
+        if self.spec.spans.len() == 1 && self.spec.spans[0].text == text {
+            return;
+        }
+        if let Some(span) = self.spec.spans.first_mut() {
+            span.text = text.to_string();
+        }
+        self.spec.spans.truncate(1);
+        self.metrics = engine.measure(&self.spec, 1.0);
+    }
+
+    pub fn set_color(&mut self, color: Color) {
+        self.spec.color = color;
+    }
+
+    pub fn place(&mut self, tree: &mut Tree, x: f32, y: f32, width: f32, height: f32) {
+        self.width = width;
+        self.spec.elide_width = (width + 0.01 < self.metrics.width).then_some(width);
+        tree.set_pos(self.node, x, y);
+        tree.set_size(self.node, width.min(self.metrics.width), height);
+        tree.set_text(self.node, self.spec.clone());
+    }
+
+    pub fn sync(&self, tree: &mut Tree) {
+        tree.set_text(self.node, self.spec.clone());
+    }
+}
+
+pub struct SliderStyle {
+    pub track: Color,
+    pub handle: Color,
+}
+
+pub struct Slider {
+    pub root: NodeId,
+    track: NodeId,
+    fill: NodeId,
+    handle: NodeId,
+    pub area: AreaId,
+    pub from: f64,
+    pub to: f64,
+    value: f64,
+    width: f32,
+    height: f32,
+    handle_color: Color,
+    accent: Color,
+    fill_width: Tween<f32>,
+    fill_color: Tween<Color>,
+    handle_x: Tween<f32>,
+    size: Tween<f32>,
+    knob_color: Tween<Color>,
+    press_x: Option<f32>,
+    dragging: bool,
+    pub shortcut: String,
+}
+
+const SLIDER_PADDING: f32 = 7.0;
+
+impl Slider {
+    pub fn new(
+        tree: &mut Tree,
+        input: &mut Input,
+        parent: NodeId,
+        style: &SliderStyle,
+        accent: Color,
+        from: f64,
+        to: f64,
+    ) -> Self {
+        let root = tree.add(parent, Node::new(0.0, 0.0, 200.0, 32.0));
+        let track = tree.add(
+            root,
+            Node::rect(
+                0.0,
+                0.0,
+                0.0,
+                6.0,
+                RectPaint {
+                    color: style.track,
+                    radius: 3.0,
+                    ..RectPaint::default()
+                },
+            ),
+        );
+        let fill = tree.add(
+            track,
+            Node::rect(
+                0.0,
+                0.0,
+                0.0,
+                6.0,
+                RectPaint {
+                    color: accent,
+                    radius: 3.0,
+                    ..RectPaint::default()
+                },
+            ),
+        );
+        let handle = tree.add(
+            root,
+            Node::rect(
+                0.0,
+                0.0,
+                14.0,
+                14.0,
+                RectPaint {
+                    color: style.handle,
+                    radius: 14.0 / 2.3,
+                    ..RectPaint::default()
+                },
+            ),
+        );
+        let mut area = MouseArea::new(root);
+        area.cursor = platform::CursorShape::Default;
+        let area = input.add(area);
+        Self {
+            root,
+            track,
+            fill,
+            handle,
+            area,
+            from,
+            to,
+            value: from,
+            width: 200.0,
+            height: 32.0,
+            handle_color: style.handle,
+            accent,
+            fill_width: Tween::new(0.0, NORMAL, Easing::OutCubic),
+            fill_color: Tween::new(accent, NORMAL, Easing::Linear),
+            handle_x: Tween::new(SLIDER_PADDING, NORMAL, Easing::OutCubic),
+            size: Tween::new(14.0, FAST, Easing::OutCubic),
+            knob_color: Tween::new(style.handle, FAST, Easing::Linear),
+            press_x: None,
+            dragging: false,
+            shortcut: String::new(),
+        }
+    }
+
+    pub fn place(&mut self, tree: &mut Tree, x: f32, y: f32, width: f32, height: f32) {
+        self.width = width;
+        self.height = height;
+        tree.set_pos(self.root, x, y);
+        tree.set_size(self.root, width, height);
+    }
+
+    pub fn value(&self) -> f64 {
+        self.value
+    }
+
+    pub fn width(&self) -> f32 {
+        self.width
+    }
+
+    pub fn height(&self) -> f32 {
+        self.height
+    }
+
+    pub fn set_value(&mut self, value: f64) {
+        if self.press_x.is_none() {
+            self.value = value.clamp(self.from.min(self.to), self.from.max(self.to));
+        }
+    }
+
+    pub fn set_accent(&mut self, accent: Color) {
+        self.accent = accent;
+    }
+
+    fn available(&self) -> f32 {
+        self.width - SLIDER_PADDING * 2.0
+    }
+
+    fn position(&self) -> f32 {
+        let range = self.to - self.from;
+        if range == 0.0 {
+            return 0.0;
+        }
+        ((self.value - self.from) / range).clamp(0.0, 1.0) as f32
+    }
+
+    fn position_at(&self, x: f32) -> f64 {
+        let handle = self.size.value();
+        let available = self.available() - handle;
+        if available <= 0.0 {
+            return 0.0;
+        }
+        ((x - SLIDER_PADDING - handle / 2.0) / available).clamp(0.0, 1.0) as f64
+    }
+
+    fn local_x(&self, tree: &Tree, x: f32, y: f32) -> Option<f32> {
+        let inverse = tree.device_transform(self.root).invert()?;
+        let mut point = tiny_skia::Point::from_xy(x, y);
+        inverse.map_point(&mut point);
+        Some(point.x)
+    }
+
+    fn move_to(&mut self, local: f32) -> Option<f64> {
+        let old = self.position();
+        let pos = self.position_at(local);
+        self.value = self.from + (self.to - self.from) * pos;
+        ((self.position() - old).abs() > f32::EPSILON).then_some(self.value)
+    }
+
+    pub fn press(&mut self, tree: &Tree, x: f32, y: f32) {
+        self.press_x = self.local_x(tree, x, y);
+        self.dragging = false;
+    }
+
+    pub fn motion(&mut self, tree: &Tree, x: f32, y: f32) -> Option<f64> {
+        let start = self.press_x?;
+        let local = self.local_x(tree, x, y)?;
+        if !self.dragging {
+            self.dragging = (local - start).abs() > 10.0;
+        }
+        if self.dragging {
+            self.move_to(local)
+        } else {
+            None
+        }
+    }
+
+    pub fn release(&mut self, tree: &Tree, x: f32, y: f32) -> Option<f64> {
+        self.press_x?;
+        let local = self.local_x(tree, x, y);
+        let moved = local.and_then(|local| self.move_to(local));
+        self.press_x = None;
+        self.dragging = false;
+        moved
+    }
+
+    pub fn tick(&mut self, tree: &mut Tree, input: &Input, now: Millis) -> bool {
+        let pressed = input.pressed(self.area);
+        let hovered = input.contains_mouse(self.area);
+        let size = if pressed {
+            18.0
+        } else if hovered {
+            16.0
+        } else {
+            14.0
+        };
+        self.size.set_target(now, size);
+        self.fill_color.set_target(now, self.accent);
+        self.knob_color.set_target(
+            now,
+            if pressed {
+                self.accent
+            } else {
+                self.handle_color
+            },
+        );
+        let mut running = self.size.tick(now);
+        running |= self.fill_color.tick(now);
+        running |= self.knob_color.tick(now);
+        let available = self.available();
+        let position = self.position();
+        let size = self.size.value();
+        let fill_target = available * position;
+        let x_target = SLIDER_PADDING + position * (available - 14.0) - (size - 14.0) / 2.0;
+        if pressed {
+            self.fill_width.jump(fill_target);
+            self.handle_x.jump(x_target);
+        } else {
+            self.fill_width.set_target(now, fill_target);
+            self.handle_x.set_target(now, x_target);
+        }
+        running |= self.fill_width.tick(now);
+        running |= self.handle_x.tick(now);
+        tree.set_pos(self.track, SLIDER_PADDING, (self.height - 6.0) / 2.0);
+        tree.set_size(self.track, available, 6.0);
+        tree.set_size(self.fill, self.fill_width.value(), 6.0);
+        tree.set_fill(self.fill, self.fill_color.value());
+        tree.set_pos(
+            self.handle,
+            self.handle_x.value(),
+            (self.height - size) / 2.0,
+        );
+        tree.set_size(self.handle, size, size);
+        tree.set_fill(self.handle, self.knob_color.value());
+        if let Some(node) = tree.get(self.handle)
+            && let Paint::Rect(rect) = &node.paint
+            && rect.radius != size / 2.3
+            && let Some(node) = tree.get_mut(self.handle)
+            && let Paint::Rect(rect) = &mut node.paint
+        {
+            rect.radius = size / 2.3;
+        }
+        running
+    }
+
+    pub fn jump(&mut self, tree: &mut Tree, input: &Input) {
+        self.tick(tree, input, 0.0);
+        let available = self.available();
+        let position = self.position();
+        let size = self.size.target();
+        self.size.jump(size);
+        self.fill_width.jump(available * position);
+        self.handle_x
+            .jump(SLIDER_PADDING + position * (available - 14.0) - (size - 14.0) / 2.0);
+        self.fill_color.jump(self.accent);
+        self.tick(tree, input, 0.0);
     }
 }
 

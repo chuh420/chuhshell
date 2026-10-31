@@ -11,9 +11,10 @@ use smithay_client_toolkit::{
     },
 };
 use wayland_client::{
-    QueueHandle,
-    protocol::{wl_shm, wl_surface},
+    Proxy, QueueHandle,
+    protocol::{wl_shm, wl_subsurface, wl_surface},
 };
+use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 
 use crate::{Damage, OutputId, Platform, Rect};
 
@@ -78,6 +79,16 @@ pub enum KeyboardMode {
     OnDemand,
 }
 
+impl From<KeyboardMode> for KeyboardInteractivity {
+    fn from(mode: KeyboardMode) -> Self {
+        match mode {
+            KeyboardMode::None => KeyboardInteractivity::None,
+            KeyboardMode::Exclusive => KeyboardInteractivity::Exclusive,
+            KeyboardMode::OnDemand => KeyboardInteractivity::OnDemand,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum InputRegion {
     #[default]
@@ -112,6 +123,7 @@ struct Slot {
 pub(crate) enum Role {
     Layer(LayerSurface),
     Popup(Popup),
+    Subsurface(wl_subsurface::WlSubsurface),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -134,6 +146,8 @@ pub(crate) struct Surface {
     slot_size: (i32, i32),
     full_damage: bool,
     frame_pending: bool,
+    has_content: bool,
+    pub(crate) viewport: Option<WpViewport>,
 }
 
 impl Surface {
@@ -175,6 +189,8 @@ impl Surface {
             slot_size: (0, 0),
             full_damage: true,
             frame_pending: false,
+            has_content: false,
+            viewport: None,
         }
     }
 
@@ -189,7 +205,52 @@ impl Surface {
             slot_size: (0, 0),
             full_damage: true,
             frame_pending: false,
+            has_content: false,
+            viewport: None,
         }
+    }
+
+    pub(crate) fn new_subsurface(
+        subsurface: wl_subsurface::WlSubsurface,
+        wl: wl_surface::WlSurface,
+    ) -> Self {
+        Self {
+            wl,
+            role: Role::Subsurface(subsurface),
+            requested: (0, 0),
+            size: None,
+            pool: None,
+            slots: Vec::new(),
+            slot_size: (0, 0),
+            full_damage: true,
+            frame_pending: false,
+            has_content: false,
+            viewport: None,
+        }
+    }
+
+    pub(crate) fn set_size(&mut self, width: u32, height: u32) {
+        if self.size != Some((width, height)) {
+            self.full_damage = true;
+        }
+        self.size = Some((width, height));
+    }
+
+    pub(crate) fn mark_content(&mut self) {
+        self.has_content = true;
+    }
+
+    pub(crate) fn frame_pending(&self) -> bool {
+        self.frame_pending
+    }
+
+    pub(crate) fn request_frame(&mut self, qh: &QueueHandle<Platform>) {
+        if self.frame_pending {
+            return;
+        }
+        let wl = &self.wl;
+        wl.frame(qh, FrameCallbackData(wl.clone()));
+        self.frame_pending = true;
     }
 
     pub(crate) fn role(&self) -> &Role {
@@ -227,7 +288,7 @@ impl Surface {
     }
 
     pub(crate) fn schedule_frame(&mut self, qh: &QueueHandle<Platform>) {
-        if self.frame_pending || self.slots.is_empty() {
+        if self.frame_pending || !self.has_content {
             return;
         }
         let wl = &self.wl;
@@ -329,7 +390,22 @@ impl Surface {
             return false;
         }
         wl.commit();
+        self.has_content = true;
         true
+    }
+}
+
+impl Drop for Surface {
+    fn drop(&mut self) {
+        if let Some(viewport) = self.viewport.take() {
+            viewport.destroy();
+        }
+        if let Role::Subsurface(subsurface) = &self.role {
+            subsurface.destroy();
+            if self.wl.is_alive() {
+                self.wl.destroy();
+            }
+        }
     }
 }
 

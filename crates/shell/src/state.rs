@@ -10,6 +10,7 @@ pub struct KeyboardLayout {
 pub struct ShellState {
     pub panel: String,
     pub panel_screen: String,
+    pub panel_anchor: f64,
     pub keep_awake: bool,
     pub dnd: bool,
     pub hotkeys_paused: bool,
@@ -32,6 +33,7 @@ impl Default for ShellState {
         Self {
             panel: String::new(),
             panel_screen: String::new(),
+            panel_anchor: 0.0,
             keep_awake: false,
             dnd: false,
             hotkeys_paused: false,
@@ -109,9 +111,22 @@ impl ShellState {
             .map_or(0.0, |battery| battery.energy_rate.abs())
     }
 
+    pub fn open_at(&mut self, which: &str, screen: &str) {
+        self.panel_screen = screen.to_string();
+        self.panel_anchor = 0.0;
+        self.toggle(which, true);
+    }
+
+    pub fn open_module(&mut self, which: &str, x: f64, screen: &str) {
+        self.panel_screen = screen.to_string();
+        self.panel_anchor = x;
+        self.toggle(which, true);
+    }
+
     pub fn toggle(&mut self, which: &str, preserve_screen: bool) {
         if !preserve_screen {
             self.panel_screen = self.focused_monitor.clone().unwrap_or_default();
+            self.panel_anchor = 0.0;
         }
         self.panel = if self.panel == which {
             String::new()

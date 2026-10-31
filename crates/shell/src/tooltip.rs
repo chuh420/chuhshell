@@ -208,6 +208,18 @@ impl Tooltips {
         }
     }
 
+    pub fn drop_parent(&mut self, platform: &mut Platform, parent: SurfaceId) {
+        self.tips.retain(|tip| {
+            if tip.parent != parent {
+                return true;
+            }
+            if let Phase::Open { surface, .. } = tip.phase {
+                platform.destroy_surface(surface);
+            }
+            false
+        });
+    }
+
     pub fn closed(&mut self, surface: SurfaceId) {
         self.tips
             .retain(|tip| !matches!(tip.phase, Phase::Open { surface: own, .. } if own == surface));
