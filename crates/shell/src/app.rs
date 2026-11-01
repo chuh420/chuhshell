@@ -54,6 +54,8 @@ pub enum ServiceEvent {
     BrightnessDone,
     Apps(Vec<services::apps::AppEntry>),
     AppIcon(String, crate::panels::AppIcon),
+    ClipList(u64, Vec<services::clipboard::ClipEntry>),
+    ClipThumb(u64, String, Option<std::sync::Arc<ui::tiny_skia::Pixmap>>),
 }
 
 struct BarSurface {
@@ -74,6 +76,7 @@ pub struct App {
     pub(crate) tray: crate::trayctl::Tray,
     pub(crate) net: crate::netctl::Net,
     pub(crate) apps: crate::appsctl::Apps,
+    pub(crate) clip: crate::clipctl::Clip,
     repeat: Option<(KeyEvent, Millis)>,
     resources: ResourceMonitor,
     audio: Option<AudioHandle>,
@@ -141,6 +144,7 @@ impl App {
             tray: crate::trayctl::Tray::default(),
             net: crate::netctl::Net::default(),
             apps: crate::appsctl::Apps::default(),
+            clip: crate::clipctl::Clip::default(),
             repeat: None,
             resources: ResourceMonitor::default(),
             audio: None,
@@ -279,6 +283,10 @@ impl App {
             ServiceEvent::Power(power) => self.power(power),
             ServiceEvent::Apps(catalog) => self.apps_loaded(catalog),
             ServiceEvent::AppIcon(id, icon) => self.app_icon_loaded(id, icon),
+            ServiceEvent::ClipList(generation, entries) => self.clip_listed(generation, entries),
+            ServiceEvent::ClipThumb(generation, id, pixmap) => {
+                self.clip_thumb_loaded(generation, id, pixmap)
+            }
             ServiceEvent::BrightnessDone => {
                 self.brightness_running = false;
                 if self.brightness_throttle {
@@ -704,6 +712,7 @@ impl App {
             bluetooth_error: self.net.bluetooth_error.clone(),
             apps: self.apps.results.clone(),
             hidden: self.apps.hidden.clone(),
+            clipboard: self.clip.entries.clone(),
         }
     }
 
@@ -718,11 +727,13 @@ impl App {
             self.panel_opened(&panel);
             self.network_panel_changed(&panel);
             self.apps_panel_changed(&panel);
+            self.clip_panel_changed(&panel);
             self.model.unread_notifications = self.notes.unread();
             self.refresh_bars();
         }
         self.overlay.set_icons(&self.notes.icons);
         self.overlay.set_app_icons(&self.apps.icons);
+        self.overlay.set_clip_thumbs(&self.clip.thumbs);
         self.ensure_overlay();
         self.overlay.schedule(&mut self.platform);
     }
@@ -827,6 +838,9 @@ impl App {
             PanelAction::Launch(id) => self.launch_application(&id),
             PanelAction::ToggleHidden(id) => self.toggle_application_hidden(&id),
             PanelAction::Search(query) => self.search_applications(&query),
+            PanelAction::ClipCopy(id) => self.clip_copy(&id),
+            PanelAction::ClipDelete(id) => self.clip_delete(&id),
+            PanelAction::ClipWipe => self.clip_wipe(),
             PanelAction::Close => {
                 self.state.panel.clear();
                 self.sync();
@@ -859,6 +873,7 @@ impl App {
             self.panel_action(action);
         }
         self.request_app_icons();
+        self.request_clip_thumbs();
     }
 
     fn overlay_pointer(&mut self, event: PointerEvent) {

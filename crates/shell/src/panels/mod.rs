@@ -1,8 +1,10 @@
 pub mod bluetooth;
+pub mod clipboard;
 pub mod control;
 pub mod kit;
 pub mod launcher;
 pub mod notifications;
+pub mod picker;
 pub mod tray;
 pub mod wifi;
 
@@ -37,6 +39,9 @@ pub enum PanelAction {
     Launch(String),
     ToggleHidden(String),
     Search(String),
+    ClipCopy(String),
+    ClipDelete(String),
+    ClipWipe,
 }
 
 #[derive(Clone, Debug)]
@@ -106,4 +111,5 @@ pub struct PanelData {
     pub bluetooth_error: String,
     pub apps: Arc<Vec<services::apps::AppEntry>>,
     pub hidden: Vec<String>,
+    pub clipboard: Option<Arc<Vec<services::clipboard::ClipEntry>>>,
 }

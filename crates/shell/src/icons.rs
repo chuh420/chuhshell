@@ -130,11 +130,15 @@ pub fn source(notification: &Notification) -> Option<IconSource> {
 }
 
 fn cover(source: &Pixmap, size: u32) -> Option<Pixmap> {
-    let mut out = Pixmap::new(size, size)?;
+    cover_rect(source, size, size)
+}
+
+fn cover_rect(source: &Pixmap, width: u32, height: u32) -> Option<Pixmap> {
+    let mut out = Pixmap::new(width, height)?;
     let (w, h) = (source.width() as f32, source.height() as f32);
-    let scale = (size as f32 / w).max(size as f32 / h);
-    let dx = (size as f32 - w * scale) / 2.0;
-    let dy = (size as f32 - h * scale) / 2.0;
+    let scale = (width as f32 / w).max(height as f32 / h);
+    let dx = (width as f32 - w * scale) / 2.0;
+    let dy = (height as f32 - h * scale) / 2.0;
     out.draw_pixmap(
         0,
         0,
@@ -147,6 +151,18 @@ fn cover(source: &Pixmap, size: u32) -> Option<Pixmap> {
         None,
     );
     Some(out)
+}
+
+pub fn load_cover(path: &Path, width: u32, height: u32) -> Option<Pixmap> {
+    let image = match image::open(path) {
+        Ok(image) => image.into_rgba8(),
+        Err(err) => {
+            log::warn!("image {}: {err}", path.display());
+            return None;
+        }
+    };
+    let pixmap = from_rgba(image.width(), image.height(), image.as_raw())?;
+    cover_rect(&pixmap, width, height)
 }
 
 fn from_rgba(width: u32, height: u32, rgba: &[u8]) -> Option<Pixmap> {

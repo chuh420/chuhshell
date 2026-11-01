@@ -11,9 +11,9 @@ use ui::{
 use crate::{
     bar::TooltipTarget,
     panels::{
-        PanelAction, PanelData, bluetooth::BluetoothPanel, control::ControlPanel,
-        launcher::LauncherPanel, notifications::NotificationsPanel, tray::TrayPanel,
-        wifi::WifiPanel,
+        PanelAction, PanelData, bluetooth::BluetoothPanel, clipboard::ClipboardPanel,
+        control::ControlPanel, launcher::LauncherPanel, notifications::NotificationsPanel,
+        tray::TrayPanel, wifi::WifiPanel,
     },
     theme::{BG, LINE, NORMAL, SLOW, UI_SCALE},
 };
@@ -152,6 +152,7 @@ enum View {
     Wifi(Box<WifiPanel>),
     Bluetooth(Box<BluetoothPanel>),
     Launcher(Box<LauncherPanel>),
+    Clipboard(Box<ClipboardPanel>),
 }
 
 pub struct Overlay {
@@ -365,6 +366,7 @@ impl Overlay {
             View::Wifi(panel) => (panel.areas(), Some(panel.root)),
             View::Bluetooth(panel) => (panel.areas(), Some(panel.root)),
             View::Launcher(panel) => (panel.areas(), Some(panel.root)),
+            View::Clipboard(panel) => (panel.areas(), Some(panel.root)),
             View::None => (Vec::new(), None),
         };
         for area in areas {
@@ -404,6 +406,16 @@ impl Overlay {
                 now,
             );
             self.view = View::Bluetooth(Box::new(panel));
+        } else if name == "clipboard" {
+            let panel = ClipboardPanel::new(
+                &mut self.tree,
+                &mut self.input,
+                engine,
+                self.content,
+                &self.data,
+                now,
+            );
+            self.view = View::Clipboard(Box::new(panel));
         } else if name == "launcher" {
             let panel = LauncherPanel::new(
                 &mut self.tree,
@@ -457,6 +469,9 @@ impl Overlay {
                 panel.sync(&mut self.tree, &mut self.input, engine, data, now)
             }
             View::Launcher(panel) => panel.sync(&mut self.tree, &mut self.input, engine, data, now),
+            View::Clipboard(panel) => {
+                panel.sync(&mut self.tree, &mut self.input, engine, data, now)
+            }
             View::None => {}
         }
     }
@@ -467,6 +482,23 @@ impl Overlay {
     ) {
         if let View::Launcher(panel) = &mut self.view {
             panel.set_icons(&mut self.tree, icons);
+        }
+    }
+
+    pub fn set_clip_thumbs(
+        &mut self,
+        thumbs: &std::collections::HashMap<String, Option<std::sync::Arc<ui::tiny_skia::Pixmap>>>,
+    ) {
+        let now = self.last_now;
+        if let View::Clipboard(panel) = &mut self.view {
+            panel.set_thumbs(&mut self.tree, thumbs, now);
+        }
+    }
+
+    pub fn clip_thumb_requests(&self) -> Vec<(String, String)> {
+        match &self.view {
+            View::Clipboard(panel) => panel.thumb_requests(),
+            _ => Vec::new(),
         }
     }
 
@@ -503,6 +535,7 @@ impl Overlay {
             View::Wifi(panel) => panel.next_deadline(self.last_now),
             View::Bluetooth(panel) => panel.next_deadline(self.last_now),
             View::Launcher(panel) => panel.next_deadline(self.last_now),
+            View::Clipboard(panel) => panel.next_deadline(self.last_now),
             _ => None,
         };
         [self.morph_arm, blink]
@@ -710,6 +743,7 @@ impl Overlay {
             View::Wifi(panel) => panel.layout(tree, engine, cw, ch),
             View::Bluetooth(panel) => panel.layout(tree, engine, cw, ch),
             View::Launcher(panel) => panel.layout(tree, engine, cw, ch),
+            View::Clipboard(panel) => panel.layout(tree, engine, cw, ch),
             View::None => {}
         }
         running
@@ -784,6 +818,7 @@ impl Overlay {
             View::Wifi(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
             View::Bluetooth(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
             View::Launcher(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
+            View::Clipboard(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
             View::None => {}
         }
         let events = self.input.refresh(&self.tree);
@@ -884,6 +919,9 @@ impl Overlay {
             View::Launcher(panel) => {
                 actions.extend(panel.handle(&mut self.tree, engine, events, pointer, now))
             }
+            View::Clipboard(panel) => {
+                actions.extend(panel.handle(&mut self.tree, engine, events, pointer, now))
+            }
             View::None => {}
         }
         actions
@@ -930,6 +968,7 @@ impl Overlay {
                 View::Wifi(panel) => panel.motion(&mut self.tree, engine, &self.input, lx, ly),
                 View::Bluetooth(panel) => panel.motion(&mut self.tree, engine, &self.input, lx, ly),
                 View::Launcher(panel) => panel.motion(&mut self.tree, engine, &self.input, lx, ly),
+                View::Clipboard(panel) => panel.motion(&mut self.tree, engine, &self.input, lx, ly),
                 View::Tray(_) | View::None => {}
             }
         }
@@ -948,6 +987,9 @@ impl Overlay {
                 panel.key(&mut self.tree, &mut self.input, engine, event, now)
             }
             View::Launcher(panel) => panel.key(&mut self.tree, &mut self.input, engine, event, now),
+            View::Clipboard(panel) => {
+                panel.key(&mut self.tree, &mut self.input, engine, event, now)
+            }
             _ => (false, Vec::new()),
         };
         if consumed {
@@ -972,7 +1014,7 @@ impl Overlay {
             View::Notifications(panel) => panel.tooltip(&self.input)?,
             View::Wifi(panel) => panel.tooltip(&self.input)?,
             View::Bluetooth(panel) => panel.tooltip(&self.input)?,
-            View::Tray(_) | View::Launcher(_) | View::None => return None,
+            View::Tray(_) | View::Launcher(_) | View::Clipboard(_) | View::None => return None,
         };
         let transform = self.tree.device_transform(spot.node);
         let mut origin = ui::tiny_skia::Point::from_xy(0.0, 0.0);
