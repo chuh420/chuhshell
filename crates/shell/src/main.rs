@@ -15,6 +15,7 @@ mod osd;
 mod overlay;
 mod panels;
 mod popups;
+mod powerctl;
 mod state;
 #[allow(dead_code)]
 mod theme;

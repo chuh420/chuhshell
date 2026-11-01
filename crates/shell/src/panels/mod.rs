@@ -1,10 +1,14 @@
+pub mod audio;
+pub mod battery;
 pub mod bluetooth;
+pub mod calendar;
 pub mod clipboard;
 pub mod control;
 pub mod kit;
 pub mod launcher;
 pub mod notifications;
 pub mod picker;
+pub mod power;
 pub mod tray;
 pub mod wallpapers;
 pub mod wifi;
@@ -46,6 +50,11 @@ pub enum PanelAction {
     WallPreviews(Vec<crate::wallctl::PreviewKey>),
     WallApply(String, f32, f32),
     WallRefresh,
+    SetProfile(&'static str),
+    SetMicVolume(f64),
+    SetDefaultNode(u32),
+    ToggleMic,
+    Session(&'static str),
 }
 
 #[derive(Clone, Debug)]
@@ -118,4 +127,10 @@ pub struct PanelData {
     pub clipboard: Option<Arc<Vec<services::clipboard::ClipEntry>>>,
     pub wall: Arc<crate::wallctl::WallData>,
     pub previews: Arc<HashMap<crate::wallctl::PreviewKey, String>>,
+    pub power: services::upower::PowerState,
+    pub battery_plugged: bool,
+    pub battery_stats: Option<services::system::BatteryStats>,
+    pub profiles: services::upower::Profiles,
+    pub battery_history: Vec<crate::history::Point>,
+    pub audio: services::audio::AudioState,
 }

@@ -11,9 +11,10 @@ use ui::{
 use crate::{
     bar::TooltipTarget,
     panels::{
-        PanelAction, PanelData, bluetooth::BluetoothPanel, clipboard::ClipboardPanel,
+        PanelAction, PanelData, audio::AudioPanel, battery::BatteryPanel,
+        bluetooth::BluetoothPanel, calendar::CalendarPanel, clipboard::ClipboardPanel,
         control::ControlPanel, launcher::LauncherPanel, notifications::NotificationsPanel,
-        tray::TrayPanel, wallpapers::WallpapersPanel, wifi::WifiPanel,
+        power::PowerPanel, tray::TrayPanel, wallpapers::WallpapersPanel, wifi::WifiPanel,
     },
     theme::{BG, LINE, NORMAL, SLOW, UI_SCALE},
 };
@@ -154,6 +155,10 @@ enum View {
     Launcher(Box<LauncherPanel>),
     Clipboard(Box<ClipboardPanel>),
     Wallpapers(Box<WallpapersPanel>),
+    Battery(Box<BatteryPanel>),
+    Audio(Box<AudioPanel>),
+    Power(Box<PowerPanel>),
+    Calendar(Box<CalendarPanel>),
 }
 
 pub struct Overlay {
@@ -369,6 +374,10 @@ impl Overlay {
             View::Launcher(panel) => (panel.areas(), Some(panel.root)),
             View::Clipboard(panel) => (panel.areas(), Some(panel.root)),
             View::Wallpapers(panel) => (panel.areas(), Some(panel.root)),
+            View::Battery(panel) => (panel.areas(), Some(panel.root)),
+            View::Audio(panel) => (panel.areas(), Some(panel.root)),
+            View::Power(panel) => (panel.areas(), Some(panel.root)),
+            View::Calendar(panel) => (panel.areas(), Some(panel.root)),
             View::None => (Vec::new(), None),
         };
         for area in areas {
@@ -408,6 +417,38 @@ impl Overlay {
                 now,
             );
             self.view = View::Bluetooth(Box::new(panel));
+        } else if name == "battery" {
+            let panel = BatteryPanel::new(
+                &mut self.tree,
+                &mut self.input,
+                engine,
+                self.content,
+                &self.data,
+                now,
+            );
+            self.view = View::Battery(Box::new(panel));
+        } else if name == "audio" {
+            let panel = AudioPanel::new(
+                &mut self.tree,
+                &mut self.input,
+                engine,
+                self.content,
+                &self.data,
+                now,
+            );
+            self.view = View::Audio(Box::new(panel));
+        } else if name == "power" {
+            let panel = PowerPanel::new(&mut self.tree, &mut self.input, engine, self.content);
+            self.view = View::Power(Box::new(panel));
+        } else if name == "calendar" {
+            let panel = CalendarPanel::new(
+                &mut self.tree,
+                &mut self.input,
+                engine,
+                self.content,
+                &self.data,
+            );
+            self.view = View::Calendar(Box::new(panel));
         } else if name == "wallpapers" {
             let panel = WallpapersPanel::new(
                 &mut self.tree,
@@ -484,6 +525,10 @@ impl Overlay {
                 panel.sync(&mut self.tree, &mut self.input, engine, data, now)
             }
             View::Wallpapers(panel) => panel.sync(&mut self.tree, &mut self.input, engine, data),
+            View::Battery(panel) => panel.sync(engine, data, now),
+            View::Audio(panel) => panel.sync(&mut self.tree, &mut self.input, engine, data, now),
+            View::Calendar(panel) => panel.sync(engine, data),
+            View::Power(_) => {}
             View::None => {}
         }
     }
@@ -778,6 +823,10 @@ impl Overlay {
             View::Launcher(panel) => panel.layout(tree, engine, cw, ch),
             View::Clipboard(panel) => panel.layout(tree, engine, cw, ch),
             View::Wallpapers(panel) => panel.layout(tree, engine, cw, ch),
+            View::Battery(panel) => panel.layout(tree, cw, ch),
+            View::Audio(panel) => panel.layout(tree, cw, ch),
+            View::Power(panel) => panel.layout(tree, cw, ch),
+            View::Calendar(panel) => panel.layout(tree, engine, cw, ch),
             View::None => {}
         }
         running
@@ -857,6 +906,16 @@ impl Overlay {
                 let (busy, more) = panel.tick(&mut self.tree, &mut self.input, engine, now);
                 running |= busy;
                 actions.extend(more);
+            }
+            View::Battery(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
+            View::Audio(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
+            View::Power(panel) => {
+                let (busy, more) = panel.tick(&mut self.tree, &self.input, engine, now);
+                running |= busy;
+                actions.extend(more);
+            }
+            View::Calendar(panel) => {
+                running |= panel.tick(&mut self.tree, &self.input, engine, now)
             }
             View::None => {}
         }
@@ -964,6 +1023,10 @@ impl Overlay {
             View::Wallpapers(panel) => {
                 actions.extend(panel.handle(&self.tree, events, pointer, now))
             }
+            View::Battery(panel) => actions.extend(panel.handle(&self.tree, events, pointer)),
+            View::Audio(panel) => actions.extend(panel.handle(&self.tree, events, pointer)),
+            View::Power(panel) => actions.extend(panel.handle(events, now)),
+            View::Calendar(panel) => panel.handle(events, pointer, &self.tree, now),
             View::None => {}
         }
         actions
@@ -1011,7 +1074,12 @@ impl Overlay {
                 View::Bluetooth(panel) => panel.motion(&mut self.tree, engine, &self.input, lx, ly),
                 View::Launcher(panel) => panel.motion(&mut self.tree, engine, &self.input, lx, ly),
                 View::Clipboard(panel) => panel.motion(&mut self.tree, engine, &self.input, lx, ly),
-                View::Tray(_) | View::Wallpapers(_) | View::None => {}
+                View::Battery(panel) => {
+                    actions.extend(panel.motion(&self.tree, &self.input, lx, ly))
+                }
+                View::Audio(panel) => actions.extend(panel.motion(&self.tree, &self.input, lx, ly)),
+                View::Calendar(panel) => panel.motion(&self.tree, &self.input, lx, ly),
+                View::Tray(_) | View::Wallpapers(_) | View::Power(_) | View::None => {}
             }
         }
         actions.extend(self.handle_events(engine, &events, now));
@@ -1033,6 +1101,8 @@ impl Overlay {
                 panel.key(&mut self.tree, &mut self.input, engine, event, now)
             }
             View::Wallpapers(panel) => panel.key(&self.tree, event),
+            View::Power(panel) => panel.key(event, now),
+            View::Calendar(panel) => panel.key(event, now),
             _ => (false, Vec::new()),
         };
         if consumed {
@@ -1057,7 +1127,11 @@ impl Overlay {
             View::Notifications(panel) => panel.tooltip(&self.input)?,
             View::Wifi(panel) => panel.tooltip(&self.input)?,
             View::Bluetooth(panel) => panel.tooltip(&self.input)?,
+            View::Battery(panel) => panel.tooltip(&self.input)?,
+            View::Audio(panel) => panel.tooltip(&self.input)?,
             View::Tray(_)
+            | View::Power(_)
+            | View::Calendar(_)
             | View::Launcher(_)
             | View::Clipboard(_)
             | View::Wallpapers(_)

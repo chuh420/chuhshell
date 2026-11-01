@@ -192,3 +192,51 @@ pub async fn apply_profile(plugged: bool) -> zbus::Result<()> {
     }
     Ok(())
 }
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Profiles {
+    pub active: String,
+    pub has_performance: bool,
+}
+
+async fn read_profiles(proxy: &PowerProfilesProxy<'_>) -> zbus::Result<Profiles> {
+    let profiles = proxy.profiles().await?;
+    Ok(Profiles {
+        active: proxy.active_profile().await?,
+        has_performance: profiles.iter().any(|profile| {
+            profile
+                .get("Profile")
+                .and_then(|value| <&str>::try_from(value).ok())
+                .is_some_and(|name| name == "performance")
+        }),
+    })
+}
+
+pub async fn watch_profiles(callback: impl Fn(Profiles)) -> zbus::Result<()> {
+    let connection = Connection::system().await?;
+    let proxy = PowerProfilesProxy::new(&connection).await?;
+    let mut changes = PropertiesProxy::builder(&connection)
+        .destination("net.hadess.PowerProfiles")
+        .path("/net/hadess/PowerProfiles")
+        .build()
+        .await?
+        .receive_properties_changed()
+        .await?;
+    let mut last = None;
+    loop {
+        let profiles = read_profiles(&proxy).await?;
+        if last.as_ref() != Some(&profiles) {
+            last = Some(profiles.clone());
+            callback(profiles);
+        }
+        if changes.next().await.is_none() {
+            return Err(zbus::Error::Failure("power profiles stream ended".into()));
+        }
+    }
+}
+
+pub async fn set_profile(profile: String) -> zbus::Result<()> {
+    let connection = Connection::system().await?;
+    let proxy = PowerProfilesProxy::new(&connection).await?;
+    proxy.set_active_profile(&profile).await
+}

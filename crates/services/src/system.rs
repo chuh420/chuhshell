@@ -180,3 +180,62 @@ mod tests {
         assert_eq!(memory["MemTotal"], 16000000);
     }
 }
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BatteryStats {
+    pub health: i64,
+    pub full: f64,
+    pub design: f64,
+    pub cycles: i64,
+}
+
+fn number(path: &std::path::Path) -> f64 {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| text.trim().parse::<f64>().ok())
+        .unwrap_or(0.0)
+}
+
+fn round_to(value: f64, digits: i32) -> f64 {
+    let factor = 10f64.powi(digits);
+    round_half_even(value * factor) / factor
+}
+
+pub fn battery_stats_from(dir: &std::path::Path) -> BatteryStats {
+    let read = |name: &str| number(&dir.join(name));
+    let voltage = read("voltage_now");
+    let pick = |energy: &str, charge: &str| {
+        let value = read(energy);
+        if value != 0.0 {
+            value
+        } else {
+            read(charge) * voltage / 1_000_000.0
+        }
+    };
+    let full = pick("energy_full", "charge_full");
+    let design = pick("energy_full_design", "charge_full_design");
+    BatteryStats {
+        health: if design != 0.0 {
+            round_half_even(full / design * 100.0) as i64
+        } else {
+            0
+        },
+        full: round_to(full / 1_000_000.0, 1),
+        design: round_to(design / 1_000_000.0, 1),
+        cycles: read("cycle_count") as i64,
+    }
+}
+
+pub fn battery_stats() -> Option<BatteryStats> {
+    let mut batteries: Vec<std::path::PathBuf> = std::fs::read_dir("/sys/class/power_supply")
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("BAT"))
+        })
+        .collect();
+    batteries.sort();
+    batteries.first().map(|dir| battery_stats_from(dir))
+}

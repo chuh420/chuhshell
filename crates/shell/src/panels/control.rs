@@ -17,7 +17,7 @@ const CHIP_STYLE: ChipStyle = ChipStyle {
     hover: ELEVATED,
 };
 
-const SLIDER_STYLE: SliderStyle = SliderStyle {
+pub(crate) const SLIDER_STYLE: SliderStyle = SliderStyle {
     track: ELEVATED,
     handle: TEXT,
 };

@@ -57,6 +57,7 @@ pub enum ServiceEvent {
     ClipList(u64, Vec<services::clipboard::ClipEntry>),
     ClipThumb(u64, String, Option<std::sync::Arc<ui::tiny_skia::Pixmap>>),
     WallList(services::wallpapers::Listing),
+    Profiles(services::upower::Profiles),
     WallApplied(Result<(), String>),
     Preview(String, String, String),
     PreviewPixmap(String, Option<std::sync::Arc<ui::tiny_skia::Pixmap>>),
@@ -89,10 +90,12 @@ pub struct App {
     pub(crate) apps: crate::appsctl::Apps,
     pub(crate) clip: crate::clipctl::Clip,
     pub(crate) walls: crate::wallctl::Walls,
+    pub(crate) profiles: services::upower::Profiles,
+    pub(crate) battery_stats: Option<services::system::BatteryStats>,
     pub(crate) wall_views: HashMap<OutputId, crate::wallpaper::WallSurface>,
     repeat: Option<(KeyEvent, Millis)>,
     resources: ResourceMonitor,
-    audio: Option<AudioHandle>,
+    pub(crate) audio: Option<AudioHandle>,
     history: History,
     pub(crate) handle: LoopHandle<'static, App>,
     pub(crate) scheduler: Scheduler<()>,
@@ -159,6 +162,8 @@ impl App {
             apps: crate::appsctl::Apps::default(),
             clip: crate::clipctl::Clip::default(),
             walls: crate::wallctl::Walls::default(),
+            profiles: services::upower::Profiles::default(),
+            battery_stats: None,
             wall_views: HashMap::new(),
             repeat: None,
             resources: ResourceMonitor::default(),
@@ -183,6 +188,7 @@ impl App {
         self.start_network();
         self.start_apps();
         self.start_wallpapers();
+        self.start_power_panels();
         let sender = self.events.clone();
         if let Err(err) = hyprland::spawn(move |event| {
             let _ = sender.send(ServiceEvent::Hyprland(event));
@@ -304,6 +310,7 @@ impl App {
                 self.clip_thumb_loaded(generation, id, pixmap)
             }
             ServiceEvent::WallList(listing) => self.wallpapers_listed(listing),
+            ServiceEvent::Profiles(profiles) => self.profiles_changed(profiles),
             ServiceEvent::WallApplied(result) => self.wallpaper_applied(result),
             ServiceEvent::Preview(path, revision, picture) => {
                 self.preview_ready(path, revision, picture)
@@ -742,6 +749,12 @@ impl App {
             clipboard: self.clip.entries.clone(),
             wall: self.walls.data.clone(),
             previews: self.walls.previews.clone(),
+            power: self.state.power.clone(),
+            battery_plugged: self.state.battery_plugged(),
+            battery_stats: self.battery_stats,
+            profiles: self.profiles.clone(),
+            battery_history: self.history.points.clone(),
+            audio: self.state.audio.clone(),
         }
     }
 
@@ -758,6 +771,7 @@ impl App {
             self.apps_panel_changed(&panel);
             self.clip_panel_changed(&panel);
             self.walls_panel_changed(&panel);
+            self.power_panel_changed(&panel);
             self.model.unread_notifications = self.notes.unread();
             self.refresh_bars();
         }
@@ -875,6 +889,11 @@ impl App {
             PanelAction::ClipWipe => self.clip_wipe(),
             PanelAction::WallPreviews(items) => self.request_previews(items),
             PanelAction::WallRefresh => self.refresh_wallpapers(),
+            PanelAction::SetProfile(profile) => self.set_profile(profile),
+            PanelAction::SetMicVolume(value) => self.set_mic_volume(value),
+            PanelAction::SetDefaultNode(id) => self.set_default_node(id),
+            PanelAction::ToggleMic => self.toggle_mic(),
+            PanelAction::Session(action) => self.session_action(action),
             PanelAction::WallApply(path, x, y) => {
                 let (ox, oy) = self.overlay.canvas_origin();
                 let screen = self
@@ -1323,7 +1342,7 @@ impl App {
     }
 }
 
-fn run(action: &str) {
+pub(crate) fn run(action: &str) {
     match Command::new(chuhshell()).arg(action).spawn() {
         Ok(child) => reap(child),
         Err(err) => log::warn!("{action}: {err}"),
