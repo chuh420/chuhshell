@@ -7,6 +7,7 @@ mod history;
 mod icons;
 mod ipc;
 mod logger;
+mod memory;
 mod model;
 mod netctl;
 mod notify;
@@ -19,6 +20,8 @@ mod state;
 mod theme;
 mod tooltip;
 mod trayctl;
+mod wallctl;
+mod wallpaper;
 
 use calloop::{
     EventLoop,
@@ -32,6 +35,7 @@ use crate::app::{App, ServiceEvent};
 pub const APP_NAME: &str = "idk-yet";
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
+    memory::configure();
     if ipc::instance_running() {
         log::info!("another instance is running");
         return Ok(());

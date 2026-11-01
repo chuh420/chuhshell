@@ -56,6 +56,17 @@ pub enum ServiceEvent {
     AppIcon(String, crate::panels::AppIcon),
     ClipList(u64, Vec<services::clipboard::ClipEntry>),
     ClipThumb(u64, String, Option<std::sync::Arc<ui::tiny_skia::Pixmap>>),
+    WallList(services::wallpapers::Listing),
+    WallApplied(Result<(), String>),
+    Preview(String, String, String),
+    PreviewPixmap(String, Option<std::sync::Arc<ui::tiny_skia::Pixmap>>),
+    WallDecoded(
+        OutputId,
+        u64,
+        crate::wallpaper::DecodeKind,
+        Option<std::sync::Arc<ui::tiny_skia::Pixmap>>,
+        Option<std::sync::Arc<ui::tiny_skia::Pixmap>>,
+    ),
 }
 
 struct BarSurface {
@@ -77,6 +88,8 @@ pub struct App {
     pub(crate) net: crate::netctl::Net,
     pub(crate) apps: crate::appsctl::Apps,
     pub(crate) clip: crate::clipctl::Clip,
+    pub(crate) walls: crate::wallctl::Walls,
+    pub(crate) wall_views: HashMap<OutputId, crate::wallpaper::WallSurface>,
     repeat: Option<(KeyEvent, Millis)>,
     resources: ResourceMonitor,
     audio: Option<AudioHandle>,
@@ -145,6 +158,8 @@ impl App {
             net: crate::netctl::Net::default(),
             apps: crate::appsctl::Apps::default(),
             clip: crate::clipctl::Clip::default(),
+            walls: crate::wallctl::Walls::default(),
+            wall_views: HashMap::new(),
             repeat: None,
             resources: ResourceMonitor::default(),
             audio: None,
@@ -167,6 +182,7 @@ impl App {
         self.start_tray();
         self.start_network();
         self.start_apps();
+        self.start_wallpapers();
         let sender = self.events.clone();
         if let Err(err) = hyprland::spawn(move |event| {
             let _ = sender.send(ServiceEvent::Hyprland(event));
@@ -286,6 +302,17 @@ impl App {
             ServiceEvent::ClipList(generation, entries) => self.clip_listed(generation, entries),
             ServiceEvent::ClipThumb(generation, id, pixmap) => {
                 self.clip_thumb_loaded(generation, id, pixmap)
+            }
+            ServiceEvent::WallList(listing) => self.wallpapers_listed(listing),
+            ServiceEvent::WallApplied(result) => self.wallpaper_applied(result),
+            ServiceEvent::Preview(path, revision, picture) => {
+                self.preview_ready(path, revision, picture)
+            }
+            ServiceEvent::PreviewPixmap(picture, pixmap) => {
+                self.preview_pixmap_loaded(picture, pixmap)
+            }
+            ServiceEvent::WallDecoded(output, generation, kind, front, incoming) => {
+                self.wallpaper_decoded(output, generation, kind, front, incoming)
             }
             ServiceEvent::BrightnessDone => {
                 self.brightness_running = false;
@@ -621,9 +648,9 @@ impl App {
             "hidden": self.apps.hidden,
                         "wifi": self.net.wifi.state,
             "bluetooth": self.net.bluetooth.powered,
-            "wallpapers": 0,
-            "wallpaper": "",
-            "previews": 0,
+            "wallpapers": self.walls.data.items.len(),
+            "wallpaper": self.walls.data.current,
+            "previews": self.walls.previews.len(),
             "keepAwake": self.state.keep_awake,
             "screen": self.state.panel_screen,
             "battery": {
@@ -713,6 +740,8 @@ impl App {
             apps: self.apps.results.clone(),
             hidden: self.apps.hidden.clone(),
             clipboard: self.clip.entries.clone(),
+            wall: self.walls.data.clone(),
+            previews: self.walls.previews.clone(),
         }
     }
 
@@ -728,12 +757,14 @@ impl App {
             self.network_panel_changed(&panel);
             self.apps_panel_changed(&panel);
             self.clip_panel_changed(&panel);
+            self.walls_panel_changed(&panel);
             self.model.unread_notifications = self.notes.unread();
             self.refresh_bars();
         }
         self.overlay.set_icons(&self.notes.icons);
         self.overlay.set_app_icons(&self.apps.icons);
         self.overlay.set_clip_thumbs(&self.clip.thumbs);
+        self.overlay.set_wall_pixmaps(&self.walls.pixmaps);
         self.ensure_overlay();
         self.overlay.schedule(&mut self.platform);
     }
@@ -793,6 +824,7 @@ impl App {
         if let Some(surface) = surface {
             self.platform.destroy_surface(surface);
         }
+        crate::memory::trim();
     }
 
     fn panel_action(&mut self, action: PanelAction) {
@@ -841,6 +873,23 @@ impl App {
             PanelAction::ClipCopy(id) => self.clip_copy(&id),
             PanelAction::ClipDelete(id) => self.clip_delete(&id),
             PanelAction::ClipWipe => self.clip_wipe(),
+            PanelAction::WallPreviews(items) => self.request_previews(items),
+            PanelAction::WallRefresh => self.refresh_wallpapers(),
+            PanelAction::WallApply(path, x, y) => {
+                let (ox, oy) = self.overlay.canvas_origin();
+                let screen = self
+                    .overlay
+                    .output
+                    .and_then(|output| self.platform.output_desc(output))
+                    .map(|desc| desc.name)
+                    .unwrap_or_default();
+                let origin = crate::wallctl::Origin {
+                    x: x + ox as f32,
+                    y: y + oy as f32,
+                    screen,
+                };
+                self.apply_wallpaper(&path, origin);
+            }
             PanelAction::Close => {
                 self.state.panel.clear();
                 self.sync();
@@ -874,6 +923,7 @@ impl App {
         }
         self.request_app_icons();
         self.request_clip_thumbs();
+        self.request_preview_pixmaps();
     }
 
     fn overlay_pointer(&mut self, event: PointerEvent) {
@@ -1097,6 +1147,7 @@ impl App {
     pub fn handle(&mut self, event: Event) {
         match event {
             Event::OutputAdded(output) => {
+                self.add_wallpaper(output);
                 if !self.bars.contains_key(&output) {
                     let surface = self.platform.create_layer_surface(&bar_config(output));
                     self.bars.insert(
@@ -1109,6 +1160,7 @@ impl App {
                 }
             }
             Event::OutputRemoved(output) => {
+                self.remove_wallpaper(output);
                 if let Some(bar) = self.bars.remove(&output) {
                     self.platform.destroy_surface(bar.surface);
                 }
@@ -1133,6 +1185,9 @@ impl App {
                         height,
                         now,
                     );
+                    return;
+                }
+                if self.wallpaper_configure(surface, width, height) {
                     return;
                 }
                 if self.overlay.owns(surface) {
@@ -1169,6 +1224,7 @@ impl App {
                 self.draw_bar(surface, resized);
             }
             Event::Closed(surface) => {
+                self.wallpaper_closed(surface);
                 self.tooltips.closed(surface);
                 self.popups_closed(surface);
                 if self.overlay.owns(surface) {
@@ -1183,6 +1239,9 @@ impl App {
             }
             Event::Frame(surface) => {
                 let now = self.now();
+                if self.wallpaper_frame(surface) {
+                    return;
+                }
                 if self.tooltips.owns(surface) {
                     self.tooltips
                         .frame(&mut self.platform, &mut self.engine, surface, now);

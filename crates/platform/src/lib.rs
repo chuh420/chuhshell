@@ -489,6 +489,17 @@ impl Platform {
         surface.present(&self.shm, &self.qh, pixels, damage, request_frame)
     }
 
+    pub fn read_back(&mut self, id: SurfaceId) -> Option<Vec<u8>> {
+        self.surfaces.get_mut(&id)?.read_back()
+    }
+
+    pub fn present_static(&mut self, id: SurfaceId, pixels: &[u8]) -> bool {
+        let Some(surface) = self.surfaces.get_mut(&id) else {
+            return false;
+        };
+        surface.present_static(&self.shm, pixels)
+    }
+
     pub fn schedule_frame(&mut self, id: SurfaceId) {
         if let Some(surface) = self.surfaces.get_mut(&id) {
             surface.schedule_frame(&self.qh);

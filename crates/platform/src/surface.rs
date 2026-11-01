@@ -395,6 +395,82 @@ impl Surface {
     }
 }
 
+impl Surface {
+    pub(crate) fn read_back(&mut self) -> Option<Vec<u8>> {
+        let (width, height) = self.size?;
+        let len = width as usize * height as usize * 4;
+        let pool = self.pool.as_mut()?;
+        let slot = self.slots.last()?.buffer.slot();
+        let raw = pool.raw_data_mut(&slot);
+        if raw.len() < len {
+            return None;
+        }
+        let mut out = vec![0u8; len];
+        for (s, d) in raw[..len]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(out.as_chunks_mut::<4>().0.iter_mut())
+        {
+            d[0] = s[2];
+            d[1] = s[1];
+            d[2] = s[0];
+            d[3] = s[3];
+        }
+        Some(out)
+    }
+
+    pub(crate) fn present_static(&mut self, shm: &Shm, pixels: &[u8]) -> bool {
+        let Some((width, height)) = self.size else {
+            return false;
+        };
+        let (width, height) = (width as i32, height as i32);
+        let stride = width * 4;
+        let len = (stride * height) as usize;
+        if width <= 0 || height <= 0 || pixels.len() < len {
+            return false;
+        }
+        let mut pool = match SlotPool::new(len, shm) {
+            Ok(pool) => pool,
+            Err(err) => {
+                log::error!("shm pool: {err}");
+                return false;
+            }
+        };
+        let (buffer, canvas) =
+            match pool.create_buffer(width, height, stride, wl_shm::Format::Argb8888) {
+                Ok(created) => created,
+                Err(err) => {
+                    log::error!("shm buffer: {err}");
+                    return false;
+                }
+            };
+        copy_swizzled(
+            pixels,
+            canvas,
+            stride as usize,
+            &Rect::new(0, 0, width, height),
+        );
+        let wl = &self.wl;
+        wl.damage_buffer(0, 0, width, height);
+        if let Err(err) = buffer.attach_to(wl) {
+            log::error!("attach: {err}");
+            return false;
+        }
+        wl.commit();
+        self.slots.clear();
+        self.slots.push(Slot {
+            buffer,
+            pending: Damage::default(),
+        });
+        self.pool = Some(pool);
+        self.slot_size = (width, height);
+        self.full_damage = false;
+        self.has_content = true;
+        true
+    }
+}
+
 impl Drop for Surface {
     fn drop(&mut self) {
         if let Some(viewport) = self.viewport.take() {

@@ -9,3 +9,4 @@ pub mod oneshot;
 pub mod system;
 pub mod tray;
 pub mod upower;
+pub mod wallpapers;

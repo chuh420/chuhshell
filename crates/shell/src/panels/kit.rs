@@ -198,6 +198,14 @@ impl Scroller {
         (self.content_height - self.height).max(0.0)
     }
 
+    pub fn value(&self) -> f32 {
+        self.scroll.value()
+    }
+
+    pub fn jump(&mut self, pos: f32) {
+        self.scroll.jump(pos.clamp(0.0, self.max()));
+    }
+
     pub fn wheel(&mut self, delta: i32, now: Millis) {
         let target =
             (self.scroll.target() - delta as f32 / 120.0 * SCROLL_STEP).clamp(0.0, self.max());

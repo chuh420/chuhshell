@@ -6,6 +6,7 @@ pub mod launcher;
 pub mod notifications;
 pub mod picker;
 pub mod tray;
+pub mod wallpapers;
 pub mod wifi;
 
 use std::{collections::HashMap, sync::Arc};
@@ -42,6 +43,9 @@ pub enum PanelAction {
     ClipCopy(String),
     ClipDelete(String),
     ClipWipe,
+    WallPreviews(Vec<crate::wallctl::PreviewKey>),
+    WallApply(String, f32, f32),
+    WallRefresh,
 }
 
 #[derive(Clone, Debug)]
@@ -112,4 +116,6 @@ pub struct PanelData {
     pub apps: Arc<Vec<services::apps::AppEntry>>,
     pub hidden: Vec<String>,
     pub clipboard: Option<Arc<Vec<services::clipboard::ClipEntry>>>,
+    pub wall: Arc<crate::wallctl::WallData>,
+    pub previews: Arc<HashMap<crate::wallctl::PreviewKey, String>>,
 }

@@ -13,6 +13,7 @@ pipewire.workspace = true
 zbus.workspace = true
 futures-util.workspace = true
 inotify.workspace = true
+sha2.workspace = true
 
 [lints]
 workspace = true
