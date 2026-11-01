@@ -208,7 +208,7 @@ impl Node {
         matrix
     }
 
-    fn overflow(&self) -> f32 {
+    pub(crate) fn overflow(&self) -> f32 {
         match &self.paint {
             Paint::Text(text) => text.overflow(),
             _ => 0.0,

@@ -10,6 +10,8 @@ use crate::{
     tree::{NodeId, Paint, Tree},
 };
 
+const MARGIN: i32 = 40;
+
 pub struct Canvas {
     pixmap: Pixmap,
 }
@@ -39,20 +41,47 @@ impl Canvas {
         if clip.is_empty() {
             return;
         }
-        if let Some(rect) = to_skia_rect(clip) {
-            let clear = SkPaint {
-                blend_mode: BlendMode::Clear,
-                ..SkPaint::default()
+        if clip == full {
+            self.pixmap.fill(tiny_skia::Color::TRANSPARENT);
+            let mut ctx = Context {
+                pixmap: &mut self.pixmap,
+                engine,
+                full,
+                masks: Vec::new(),
             };
-            self.pixmap
-                .fill_rect(rect, &clear, Transform::identity(), None);
+            ctx.node(tree, tree.root(), Transform::identity(), 1.0, full);
+            return;
         }
-        let mut ctx = Context {
-            pixmap: &mut self.pixmap,
-            engine,
-            full,
+        let area = Rect::new(
+            clip.x - MARGIN,
+            clip.y - MARGIN,
+            clip.width + MARGIN * 2,
+            clip.height + MARGIN * 2,
+        )
+        .intersect(&full);
+        let Some(mut scratch) = Pixmap::new(area.width as u32, area.height as u32) else {
+            return;
         };
-        ctx.node(tree, tree.root(), Transform::identity(), 1.0, clip);
+        let local = Rect::new(0, 0, area.width, area.height);
+        let mut ctx = Context {
+            pixmap: &mut scratch,
+            engine,
+            full: local,
+            masks: Vec::new(),
+        };
+        let origin = Transform::from_translate(-area.x as f32, -area.y as f32);
+        ctx.node(tree, tree.root(), origin, 1.0, local);
+        let stride = self.pixmap.width() as usize * 4;
+        let source_stride = area.width as usize * 4;
+        let row = clip.width as usize * 4;
+        let (dx, dy) = ((clip.x - area.x) as usize, (clip.y - area.y) as usize);
+        let source = scratch.data();
+        let target = self.pixmap.data_mut();
+        for y in 0..clip.height as usize {
+            let at = (clip.y as usize + y) * stride + clip.x as usize * 4;
+            let from = (dy + y) * source_stride + dx * 4;
+            target[at..at + row].copy_from_slice(&source[from..from + row]);
+        }
     }
 }
 
@@ -60,6 +89,7 @@ struct Context<'a> {
     pixmap: &'a mut Pixmap,
     engine: &'a mut TextEngine,
     full: Rect,
+    masks: Vec<(Rect, Mask)>,
 }
 
 fn to_skia_rect(rect: Rect) -> Option<tiny_skia::Rect> {
@@ -72,14 +102,22 @@ fn to_skia_rect(rect: Rect) -> Option<tiny_skia::Rect> {
 }
 
 impl Context<'_> {
-    fn mask(&self, clip: Rect) -> Option<Mask> {
+    fn prepare_mask(&mut self, clip: Rect) -> bool {
         if clip == self.full {
-            return None;
+            return false;
         }
-        let mut mask = Mask::new(self.pixmap.width(), self.pixmap.height())?;
-        let path = PathBuilder::from_rect(to_skia_rect(clip)?);
+        if self.masks.iter().any(|(rect, _)| *rect == clip) {
+            return true;
+        }
+        let Some(mut mask) = Mask::new(self.pixmap.width(), self.pixmap.height()) else {
+            return false;
+        };
+        let Some(path) = to_skia_rect(clip).map(PathBuilder::from_rect) else {
+            return false;
+        };
         mask.fill_path(&path, FillRule::Winding, false, Transform::identity());
-        Some(mask)
+        self.masks.push((clip, mask));
+        true
     }
 
     fn node(&mut self, tree: &mut Tree, id: NodeId, parent: Transform, opacity: f32, clip: Rect) {
@@ -109,19 +147,41 @@ impl Context<'_> {
         }
         let (width, height) = (node.width, node.height);
         let children = node.children().to_vec();
-        let mask = self.mask(clip);
-        if let Some(node) = tree.get_mut_clean(id) {
+        let extent = if matches!(node.paint, Paint::None) {
+            None
+        } else {
+            let pad = if matches!(node.paint, Paint::Path(_)) {
+                0
+            } else {
+                1
+            };
+            crate::tree::device_bounds(transform, width, height, node.overflow()).map(|rect| {
+                Rect::new(
+                    rect.x + pad,
+                    rect.y + pad,
+                    rect.width - pad * 2,
+                    rect.height - pad * 2,
+                )
+            })
+        };
+        let paints = extent.is_some_and(|extent| !extent.intersect(&clip).is_empty());
+        let masked = paints
+            && extent.is_some_and(|extent| extent.intersect(&clip) != extent)
+            && self.prepare_mask(clip);
+        let mask = if masked {
+            self.masks
+                .iter()
+                .find(|(rect, _)| *rect == clip)
+                .map(|(_, mask)| mask)
+        } else {
+            None
+        };
+        if paints && let Some(node) = tree.get_mut_clean(id) {
             match &mut node.paint {
                 Paint::None => {}
-                Paint::Rect(paint) => draw_rect(
-                    self.pixmap,
-                    paint,
-                    width,
-                    height,
-                    transform,
-                    opacity,
-                    mask.as_ref(),
-                ),
+                Paint::Rect(paint) => {
+                    draw_rect(self.pixmap, paint, width, height, transform, opacity, mask)
+                }
                 Paint::Text(text) => {
                     let scale = transform_scale(transform);
                     let stale = text
@@ -142,14 +202,8 @@ impl Context<'_> {
                             blend_mode: BlendMode::SourceOver,
                             quality,
                         };
-                        self.pixmap.draw_pixmap(
-                            0,
-                            0,
-                            raster.pixmap.as_ref(),
-                            &paint,
-                            matrix,
-                            mask.as_ref(),
-                        );
+                        self.pixmap
+                            .draw_pixmap(0, 0, raster.pixmap.as_ref(), &paint, matrix, mask);
                     }
                 }
                 Paint::Svg(svg) => {
@@ -170,29 +224,31 @@ impl Context<'_> {
                             blend_mode: BlendMode::SourceOver,
                             quality,
                         };
-                        self.pixmap.draw_pixmap(
-                            0,
-                            0,
-                            raster.as_ref(),
-                            &paint,
-                            matrix,
-                            mask.as_ref(),
-                        );
+                        self.pixmap
+                            .draw_pixmap(0, 0, raster.as_ref(), &paint, matrix, mask);
                     }
                 }
-                Paint::Path(path) => {
-                    draw_path(self.pixmap, path, transform, opacity, mask.as_ref())
-                }
+                Paint::Path(path) => draw_path(self.pixmap, path, transform, opacity, mask),
                 Paint::Image(image) => {
                     if image.width() > 0 && image.height() > 0 {
-                        let matrix = transform.pre_scale(
-                            width / image.width() as f32,
-                            height / image.height() as f32,
-                        );
+                        let (iw, ih) = (image.width() as f32, image.height() as f32);
+                        let matrix = transform.pre_scale(width / iw, height / ih);
+                        let fits = matrix.kx == 0.0
+                            && matrix.ky == 0.0
+                            && (matrix.sx * iw - iw).abs() < 1.0
+                            && (matrix.sy * ih - ih).abs() < 1.0;
+                        let (matrix, quality) = if fits {
+                            (
+                                Transform::from_translate(matrix.tx.round(), matrix.ty.round()),
+                                FilterQuality::Nearest,
+                            )
+                        } else {
+                            (matrix, FilterQuality::Bilinear)
+                        };
                         let paint = PixmapPaint {
                             opacity,
                             blend_mode: BlendMode::SourceOver,
-                            quality: FilterQuality::Bilinear,
+                            quality,
                         };
                         self.pixmap.draw_pixmap(
                             0,
@@ -200,7 +256,7 @@ impl Context<'_> {
                             image.as_ref().as_ref(),
                             &paint,
                             matrix,
-                            mask.as_ref(),
+                            mask,
                         );
                     }
                 }
@@ -383,6 +439,85 @@ fn draw_rect(
                 FillRule::EvenOdd,
                 transform,
                 mask,
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Color, Node, tree::NodeId};
+
+    fn solid(r: f32, g: f32, b: f32, a: f32, radius: f32) -> RectPaint {
+        RectPaint {
+            color: Color { r, g, b, a },
+            radius,
+            border_color: Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 0.5,
+            },
+            border_width: 1.0,
+        }
+    }
+
+    fn scene() -> (Tree, NodeId) {
+        let mut tree = Tree::new();
+        let root = tree.root();
+        let card = tree.add(
+            root,
+            Node::rect(100.5, 80.5, 199.0, 159.0, solid(0.1, 0.1, 0.1, 1.0, 22.0)),
+        );
+        let mut list = Node::new(10.3, 20.7, 170.0, 100.0);
+        list.clip = true;
+        let list = tree.add(card, list);
+        let content = tree.add(list, Node::new(0.0, 0.0, 170.0, 1000.0));
+        for i in 0..40 {
+            tree.add(
+                content,
+                Node::rect(
+                    2.0,
+                    i as f32 * 25.0,
+                    180.0,
+                    22.0,
+                    solid(0.3, 0.2 + i as f32 / 100.0, 0.4, 0.8, 8.0),
+                ),
+            );
+        }
+        (tree, content)
+    }
+
+    #[test]
+    fn partial_render_matches_full_render() {
+        let mut engine = TextEngine::new(&[]);
+        let (mut tree, content) = scene();
+        let mut partial = Canvas::new(500, 400).unwrap_or_else(|| unreachable!());
+        partial.render(&mut tree, &mut engine, &Damage::full(500, 400));
+        tree.collect_damage();
+        for step in 1..8 {
+            tree.set_pos(content, 0.0, -(step as f32) * 13.4);
+            let damage = tree.collect_damage();
+            assert!(!damage.is_empty());
+            partial.render(&mut tree, &mut engine, &damage);
+            let mut full = Canvas::new(500, 400).unwrap_or_else(|| unreachable!());
+            full.render(&mut tree, &mut engine, &Damage::full(500, 400));
+            let diffs: Vec<(usize, i32)> = partial
+                .data()
+                .iter()
+                .zip(full.data())
+                .enumerate()
+                .filter(|(_, (a, b))| a != b)
+                .map(|(i, (a, b))| (i, *a as i32 - *b as i32))
+                .collect();
+            let max = diffs.iter().map(|(_, d)| d.abs()).max().unwrap_or(0);
+            let first = diffs.first().map(|(i, _)| ((i / 4) % 500, (i / 4) / 500));
+            assert!(
+                diffs.is_empty(),
+                "step {step} count {} max {max} first {first:?} damage {:?}",
+                diffs.len(),
+                damage.bounds()
             );
         }
     }
