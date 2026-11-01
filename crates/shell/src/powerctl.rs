@@ -48,7 +48,11 @@ impl App {
     }
 
     pub fn profiles_changed(&mut self, profiles: upower::Profiles) {
+        let performance_changed = profiles.has_performance != self.profiles.has_performance;
         self.profiles = profiles;
+        if performance_changed {
+            self.apply_profile();
+        }
         self.sync();
     }
 

@@ -571,3 +571,160 @@ mod tests {
         assert!(!ring.is_running());
     }
 }
+
+const WHEEL_DECELERATION: f64 = 15000.0;
+const MAX_VELOCITY: f64 = 2500.0;
+const WHEEL_DISTANCE: f64 = 3.0 * 24.0;
+const VELOCITY_SAMPLES: usize = 3;
+
+#[derive(Clone, Debug, Default)]
+pub struct Flick {
+    value: f32,
+    from: f32,
+    target: f32,
+    direction: f32,
+    speed: f64,
+    accel: f64,
+    start: Millis,
+    running: bool,
+    samples: Vec<f64>,
+    velocity: f64,
+    last_wheel: Option<Millis>,
+}
+
+impl Flick {
+    pub fn new(value: f32) -> Self {
+        Self {
+            value,
+            from: value,
+            target: value,
+            ..Self::default()
+        }
+    }
+
+    pub fn value(&self) -> f32 {
+        self.value
+    }
+
+    pub fn target(&self) -> f32 {
+        self.target
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.running
+    }
+
+    pub fn jump(&mut self, value: f32) {
+        self.value = value;
+        self.from = value;
+        self.target = value;
+        self.running = false;
+    }
+
+    pub fn stop(&mut self) {
+        let value = self.value;
+        self.jump(value);
+    }
+
+    pub fn wheel(&mut self, now: Millis, delta: i32, min: f32, max: f32) {
+        if delta == 0 {
+            return;
+        }
+        self.tick(now);
+        let elapsed = self.last_wheel.map(|last| (now - last) / 1000.0);
+        self.last_wheel = Some(now);
+        if elapsed.is_some_and(|elapsed| elapsed <= 0.0) {
+            return;
+        }
+        let elapsed = match elapsed {
+            Some(elapsed) if self.running => elapsed,
+            _ => {
+                self.samples.clear();
+                120.0 / (WHEEL_DECELERATION * 2.0 * WHEEL_DISTANCE).sqrt()
+            }
+        };
+        let instant = delta as f64 / elapsed;
+        if (instant < 0.0 && self.velocity > 0.0) || (instant > 0.0 && self.velocity < 0.0) {
+            self.samples.clear();
+        }
+        self.samples
+            .push(instant.clamp(-MAX_VELOCITY, MAX_VELOCITY));
+        if self.samples.len() > VELOCITY_SAMPLES {
+            self.samples.remove(0);
+        }
+        self.velocity = self.samples.iter().sum::<f64>() / self.samples.len() as f64;
+        let velocity = self.velocity.clamp(-MAX_VELOCITY, MAX_VELOCITY);
+        let distance = velocity * velocity / (WHEEL_DECELERATION * 2.0);
+        let direction = if velocity > 0.0 { -1.0 } else { 1.0 };
+        let unclamped = (self.value as f64 + direction * distance).round();
+        if (unclamped - self.value as f64).abs() < 0.5 {
+            return;
+        }
+        let accel = velocity * velocity / (2.0 * (unclamped - self.value as f64).abs());
+        let target = (unclamped as f32).clamp(min, max.max(min));
+        if (target - self.value).abs() < 0.01 {
+            self.running = false;
+            return;
+        }
+        self.from = self.value;
+        self.target = target;
+        self.direction = direction as f32;
+        self.speed = velocity.abs();
+        self.accel = accel;
+        self.start = now;
+        self.running = true;
+    }
+
+    pub fn tick(&mut self, now: Millis) -> bool {
+        if !self.running {
+            return false;
+        }
+        let t = ((now - self.start) / 1000.0).max(0.0);
+        let stop = self.speed / self.accel;
+        let travelled = if t >= stop {
+            self.speed * stop - self.accel * stop * stop / 2.0
+        } else {
+            self.speed * t - self.accel * t * t / 2.0
+        };
+        let value = self.from + self.direction * travelled as f32;
+        let reached = (value - self.target) * self.direction >= 0.0;
+        if t >= stop || reached {
+            self.value = self.target;
+            self.running = false;
+        } else {
+            self.value = value;
+        }
+        true
+    }
+}
+
+#[cfg(test)]
+mod flick_tests {
+    use super::*;
+
+    #[test]
+    fn single_notch_moves_three_lines() {
+        let mut flick = Flick::new(0.0);
+        flick.wheel(0.0, -120, 0.0, 1000.0);
+        assert!(flick.is_running());
+        let mut now = 0.0;
+        while flick.is_running() {
+            now += 8.0;
+            flick.tick(now);
+        }
+        assert_eq!(flick.value(), 72.0);
+        assert!(now < 120.0);
+    }
+
+    #[test]
+    fn stops_at_bounds() {
+        let mut flick = Flick::new(0.0);
+        flick.wheel(0.0, 120, 0.0, 100.0);
+        assert!(!flick.is_running());
+        flick.wheel(500.0, -120, 0.0, 30.0);
+        while flick.is_running() {
+            flick.tick(1000.0);
+        }
+        assert_eq!(flick.value(), 30.0);
+    }
+}

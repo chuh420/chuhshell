@@ -222,7 +222,29 @@ pub fn preview_command(source: &Path, temporary: &Path) -> Command {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    bind_to_parent(&mut command);
     command
+}
+
+unsafe extern "C" {
+    fn prctl(option: std::ffi::c_int, arg: std::ffi::c_ulong, ...) -> std::ffi::c_int;
+    fn getppid() -> std::ffi::c_int;
+}
+
+fn bind_to_parent(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    let parent = std::process::id() as std::ffi::c_int;
+    unsafe {
+        command.pre_exec(move || {
+            if prctl(1, 15) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if getppid() != parent {
+                return Err(io::Error::other("preview converter lost its parent"));
+            }
+            Ok(())
+        });
+    }
 }
 
 pub fn apply_command(path: &str) -> Command {

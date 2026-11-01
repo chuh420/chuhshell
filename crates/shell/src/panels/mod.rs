@@ -9,6 +9,7 @@ pub mod launcher;
 pub mod notifications;
 pub mod picker;
 pub mod power;
+pub mod system;
 pub mod tray;
 pub mod wallpapers;
 pub mod wifi;
@@ -55,6 +56,7 @@ pub enum PanelAction {
     SetDefaultNode(u32),
     ToggleMic,
     Session(&'static str),
+    Kill(i32, bool),
 }
 
 #[derive(Clone, Debug)]
@@ -133,4 +135,8 @@ pub struct PanelData {
     pub profiles: services::upower::Profiles,
     pub battery_history: Vec<crate::history::Point>,
     pub audio: services::audio::AudioState,
+    pub resources: services::system::Resources,
+    pub cpu_history: Vec<f64>,
+    pub ram_history: Vec<f64>,
+    pub system_detail: Option<services::system::Detail>,
 }

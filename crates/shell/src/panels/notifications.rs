@@ -4,7 +4,7 @@ use platform::MouseButton;
 use services::notifications::Notification;
 use ui::{
     Color, Node, NodeId, RectPaint, TextEngine, TextSpec, Tree,
-    anim::{Easing, Millis, Tween},
+    anim::{Easing, Flick, Millis, Tween},
     input::{AreaId, Input, InputEvent, MouseArea},
     layout::{Cell, center, linear},
     tiny_skia::Pixmap,
@@ -21,7 +21,6 @@ const CHIP_STYLE: ChipStyle = ChipStyle {
     family: ICONS,
     hover: ELEVATED,
 };
-const SCROLL_STEP: f32 = 70.0;
 const SCROLLBAR: Color = Color::rgb(0xb8b8b8);
 
 pub struct NotificationsPanel {
@@ -44,7 +43,7 @@ pub struct NotificationsPanel {
     bar_area: AreaId,
     bar_opacity: Tween<f32>,
     bar_hide_at: Option<Millis>,
-    scroll: Tween<f32>,
+    scroll: Flick,
     list_height: f32,
     content_height: f32,
     width: f32,
@@ -152,7 +151,7 @@ impl NotificationsPanel {
             bar_area,
             bar_opacity: Tween::new(0.0, 200.0, Easing::Linear),
             bar_hide_at: None,
-            scroll: Tween::new(0.0, 110.0, Easing::OutCubic),
+            scroll: Flick::new(0.0),
             list_height: 0.0,
             content_height: 0.0,
             width: 0.0,
@@ -448,12 +447,7 @@ impl NotificationsPanel {
                 }
                 InputEvent::Wheel(area, delta) if area == self.list_area => {
                     let max = self.max_scroll();
-                    let target =
-                        (self.scroll.target() - delta as f32 / 120.0 * SCROLL_STEP).clamp(0.0, max);
-                    if target != self.scroll.target() {
-                        let from = self.scroll.value();
-                        self.scroll.start(now, from, target);
-                    }
+                    self.scroll.wheel(now, delta, 0.0, max);
                 }
                 _ => {}
             }

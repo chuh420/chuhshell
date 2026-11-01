@@ -593,8 +593,21 @@ pub fn scope_command(plan: &LaunchPlan) -> std::process::Command {
         "--slice=app.slice",
         "--collect",
         "--quiet",
+        "--expand-environment=no",
         "--",
     ]);
+    if plan
+        .env
+        .iter()
+        .any(|(key, _)| key == "GIO_LAUNCHED_DESKTOP_FILE")
+    {
+        command.args([
+            "sh",
+            "-c",
+            "export GIO_LAUNCHED_DESKTOP_FILE_PID=$$; exec \"$@\"",
+            "sh",
+        ]);
+    }
     command.args(&plan.argv);
     if let Some(cwd) = &plan.cwd {
         command.current_dir(cwd);

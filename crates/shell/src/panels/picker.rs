@@ -1,6 +1,6 @@
 use ui::{
     Color, Node, NodeId, RectPaint, TextEngine, TextSpec, TransformOp, Tree,
-    anim::{Easing, Millis, Tween},
+    anim::{Easing, Flick, Millis, Tween},
     input::{AreaId, Input, MouseArea},
     textfield::TextField,
     widgets::Label,
@@ -11,7 +11,6 @@ use crate::theme::{ELEVATED, FAST, FONT, GREEN, LINE, MUTED, NORMAL, SLOW, SURFA
 
 pub const SEARCH_HEIGHT: f32 = 52.0;
 const SPACING: f32 = 5.0;
-const SCROLL_STEP: f32 = 70.0;
 const INTRO: Millis = 420.0;
 const MOVE: Millis = 170.0;
 const SCROLLBAR: Color = Color::rgb(0xb8b8b8);
@@ -151,7 +150,7 @@ pub struct PickList {
     current: i32,
     highlight_y: Tween<f32>,
     highlight_h: Tween<f32>,
-    scroll: Tween<f32>,
+    scroll: Flick,
     tracking: bool,
     moving: bool,
     opened: Millis,
@@ -224,7 +223,7 @@ impl PickList {
             current: -1,
             highlight_y: Tween::new(0.0, MOVE, Easing::InOutQuad),
             highlight_h: Tween::new(0.0, style.resize.max(1.0), Easing::InOutQuad),
-            scroll: Tween::new(0.0, 110.0, Easing::OutCubic),
+            scroll: Flick::new(0.0),
             tracking: false,
             moving: false,
             opened: now,
@@ -370,13 +369,9 @@ impl PickList {
 
     pub fn wheel(&mut self, delta: i32, now: Millis) {
         self.tracking = false;
-        let target = (self.scroll.target() - delta as f32 / 120.0 * SCROLL_STEP)
-            .clamp(0.0, self.max_scroll());
-        if target != self.scroll.target() {
-            let from = self.scroll.value();
-            self.scroll.start(now, from, target);
-            self.moving = true;
-        }
+        let max = self.max_scroll();
+        self.scroll.wheel(now, delta, 0.0, max);
+        self.moving = self.scroll.is_running();
     }
 
     pub fn layout(&mut self, tree: &mut Tree, y: f32, width: f32, height: f32) {

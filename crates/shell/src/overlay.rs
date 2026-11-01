@@ -14,7 +14,8 @@ use crate::{
         PanelAction, PanelData, audio::AudioPanel, battery::BatteryPanel,
         bluetooth::BluetoothPanel, calendar::CalendarPanel, clipboard::ClipboardPanel,
         control::ControlPanel, launcher::LauncherPanel, notifications::NotificationsPanel,
-        power::PowerPanel, tray::TrayPanel, wallpapers::WallpapersPanel, wifi::WifiPanel,
+        power::PowerPanel, system::SystemPanel, tray::TrayPanel, wallpapers::WallpapersPanel,
+        wifi::WifiPanel,
     },
     theme::{BG, LINE, NORMAL, SLOW, UI_SCALE},
 };
@@ -159,6 +160,7 @@ enum View {
     Audio(Box<AudioPanel>),
     Power(Box<PowerPanel>),
     Calendar(Box<CalendarPanel>),
+    System(Box<SystemPanel>),
 }
 
 pub struct Overlay {
@@ -378,6 +380,7 @@ impl Overlay {
             View::Audio(panel) => (panel.areas(), Some(panel.root)),
             View::Power(panel) => (panel.areas(), Some(panel.root)),
             View::Calendar(panel) => (panel.areas(), Some(panel.root)),
+            View::System(panel) => (panel.areas(), Some(panel.root)),
             View::None => (Vec::new(), None),
         };
         for area in areas {
@@ -417,6 +420,16 @@ impl Overlay {
                 now,
             );
             self.view = View::Bluetooth(Box::new(panel));
+        } else if name == "system" {
+            let panel = SystemPanel::new(
+                &mut self.tree,
+                &mut self.input,
+                engine,
+                self.content,
+                &self.data,
+                now,
+            );
+            self.view = View::System(Box::new(panel));
         } else if name == "battery" {
             let panel = BatteryPanel::new(
                 &mut self.tree,
@@ -528,6 +541,7 @@ impl Overlay {
             View::Battery(panel) => panel.sync(engine, data, now),
             View::Audio(panel) => panel.sync(&mut self.tree, &mut self.input, engine, data, now),
             View::Calendar(panel) => panel.sync(engine, data),
+            View::System(panel) => panel.sync(&mut self.tree, &mut self.input, engine, data, now),
             View::Power(_) => {}
             View::None => {}
         }
@@ -827,6 +841,7 @@ impl Overlay {
             View::Audio(panel) => panel.layout(tree, cw, ch),
             View::Power(panel) => panel.layout(tree, cw, ch),
             View::Calendar(panel) => panel.layout(tree, engine, cw, ch),
+            View::System(panel) => panel.layout(tree, cw, ch),
             View::None => {}
         }
         running
@@ -917,6 +932,7 @@ impl Overlay {
             View::Calendar(panel) => {
                 running |= panel.tick(&mut self.tree, &self.input, engine, now)
             }
+            View::System(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
             View::None => {}
         }
         let events = self.input.refresh(&self.tree);
@@ -1027,6 +1043,9 @@ impl Overlay {
             View::Audio(panel) => actions.extend(panel.handle(&self.tree, events, pointer)),
             View::Power(panel) => actions.extend(panel.handle(events, now)),
             View::Calendar(panel) => panel.handle(events, pointer, &self.tree, now),
+            View::System(panel) => {
+                actions.extend(panel.handle(&mut self.tree, &mut self.input, engine, events, now))
+            }
             View::None => {}
         }
         actions
@@ -1079,7 +1098,11 @@ impl Overlay {
                 }
                 View::Audio(panel) => actions.extend(panel.motion(&self.tree, &self.input, lx, ly)),
                 View::Calendar(panel) => panel.motion(&self.tree, &self.input, lx, ly),
-                View::Tray(_) | View::Wallpapers(_) | View::Power(_) | View::None => {}
+                View::Tray(_)
+                | View::Wallpapers(_)
+                | View::Power(_)
+                | View::System(_)
+                | View::None => {}
             }
         }
         actions.extend(self.handle_events(engine, &events, now));
@@ -1129,6 +1152,7 @@ impl Overlay {
             View::Bluetooth(panel) => panel.tooltip(&self.input)?,
             View::Battery(panel) => panel.tooltip(&self.input)?,
             View::Audio(panel) => panel.tooltip(&self.input)?,
+            View::System(panel) => panel.tooltip(&self.input)?,
             View::Tray(_)
             | View::Power(_)
             | View::Calendar(_)

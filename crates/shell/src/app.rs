@@ -91,6 +91,9 @@ pub struct App {
     pub(crate) clip: crate::clipctl::Clip,
     pub(crate) walls: crate::wallctl::Walls,
     pub(crate) profiles: services::upower::Profiles,
+    cpu_history: Vec<f64>,
+    ram_history: Vec<f64>,
+    system_detail: Option<system::Detail>,
     pub(crate) battery_stats: Option<services::system::BatteryStats>,
     pub(crate) wall_views: HashMap<OutputId, crate::wallpaper::WallSurface>,
     repeat: Option<(KeyEvent, Millis)>,
@@ -163,6 +166,9 @@ impl App {
             clip: crate::clipctl::Clip::default(),
             walls: crate::wallctl::Walls::default(),
             profiles: services::upower::Profiles::default(),
+            cpu_history: Vec::new(),
+            ram_history: Vec::new(),
+            system_detail: None,
             battery_stats: None,
             wall_views: HashMap::new(),
             repeat: None,
@@ -412,7 +418,7 @@ impl App {
         }
     }
 
-    fn apply_profile(&self) {
+    pub(crate) fn apply_profile(&self) {
         if !self.state.battery_present() {
             return;
         }
@@ -460,6 +466,48 @@ impl App {
             self.model.ram_used = sample.ram_used;
             self.model.ram_total = sample.ram_total;
             self.refresh_bars();
+        }
+        let mut panel_changed = changed;
+        if let Some(cpu) = sample.cpu {
+            self.cpu_history.push(cpu as f64);
+            self.ram_history.push(sample.ram_used);
+            for history in [&mut self.cpu_history, &mut self.ram_history] {
+                if history.len() > 60 {
+                    history.drain(..history.len() - 60);
+                }
+            }
+            panel_changed = true;
+        }
+        if let Some(detail) = self.resources.take_detail() {
+            self.system_detail = Some(detail);
+            panel_changed = true;
+        }
+        if panel_changed && self.state.panel == "system" {
+            self.sync_overlay();
+        }
+    }
+
+    pub(crate) fn system_panel_changed(&mut self, panel: &str) {
+        let enabled = panel == "system";
+        if !enabled {
+            self.system_detail = None;
+        }
+        if self.resources.set_detail(enabled) {
+            self.add_timer(Duration::from_millis(600), |app| {
+                app.sample_resources();
+                None
+            });
+        }
+    }
+
+    pub(crate) fn kill_process(&self, pid: i32, force: bool) {
+        let signal = if force { "-KILL" } else { "-TERM" };
+        match Command::new("kill")
+            .args([signal, &pid.to_string()])
+            .spawn()
+        {
+            Ok(child) => reap(child),
+            Err(err) => log::warn!("kill {pid}: {err}"),
         }
     }
 
@@ -755,6 +803,14 @@ impl App {
             profiles: self.profiles.clone(),
             battery_history: self.history.points.clone(),
             audio: self.state.audio.clone(),
+            resources: system::Resources {
+                cpu: self.model.cpu,
+                ram_used: self.model.ram_used,
+                ram_total: self.model.ram_total,
+            },
+            cpu_history: self.cpu_history.clone(),
+            ram_history: self.ram_history.clone(),
+            system_detail: self.system_detail.clone(),
         }
     }
 
@@ -772,6 +828,7 @@ impl App {
             self.clip_panel_changed(&panel);
             self.walls_panel_changed(&panel);
             self.power_panel_changed(&panel);
+            self.system_panel_changed(&panel);
             self.model.unread_notifications = self.notes.unread();
             self.refresh_bars();
         }
@@ -894,6 +951,7 @@ impl App {
             PanelAction::SetDefaultNode(id) => self.set_default_node(id),
             PanelAction::ToggleMic => self.toggle_mic(),
             PanelAction::Session(action) => self.session_action(action),
+            PanelAction::Kill(pid, force) => self.kill_process(pid, force),
             PanelAction::WallApply(path, x, y) => {
                 let (ox, oy) = self.overlay.canvas_origin();
                 let screen = self

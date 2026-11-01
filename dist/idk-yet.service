@@ -1,0 +1,14 @@
+[Unit]
+Description=idk-yet desktop shell
+PartOf=graphical-session.target
+After=graphical-session.target
+Conflicts=rice-quickshell.service swaync.service rice-osd.service
+StartLimitIntervalSec=30
+StartLimitBurst=3
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/idk-yet
+Restart=on-failure
+RestartMode=direct
+RestartSec=2

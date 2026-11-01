@@ -1,6 +1,6 @@
 use ui::{
     Color, Node, NodeId, RectPaint, TextEngine, TextSpec, Tree,
-    anim::{Easing, Millis, Tween},
+    anim::{Easing, Flick, Millis, Tween},
     input::{AreaId, Input, MouseArea},
     layout::{Slot, center},
     widgets::{Chip, ChipStyle, Label},
@@ -13,7 +13,6 @@ pub const CHIP_STYLE: ChipStyle = ChipStyle {
     hover: ELEVATED,
 };
 
-const SCROLL_STEP: f32 = 70.0;
 const SCROLLBAR: Color = Color::rgb(0xb8b8b8);
 
 pub fn label(
@@ -124,7 +123,7 @@ pub struct Scroller {
     pub area: AreaId,
     bar: NodeId,
     bar_area: AreaId,
-    scroll: Tween<f32>,
+    scroll: Flick,
     bar_opacity: Tween<f32>,
     hide_at: Option<Millis>,
     has_bar: bool,
@@ -163,7 +162,7 @@ impl Scroller {
             area,
             bar,
             bar_area,
-            scroll: Tween::new(0.0, 110.0, Easing::OutCubic),
+            scroll: Flick::new(0.0),
             bar_opacity: Tween::new(0.0, 200.0, Easing::Linear),
             hide_at: None,
             has_bar,
@@ -207,12 +206,8 @@ impl Scroller {
     }
 
     pub fn wheel(&mut self, delta: i32, now: Millis) {
-        let target =
-            (self.scroll.target() - delta as f32 / 120.0 * SCROLL_STEP).clamp(0.0, self.max());
-        if target != self.scroll.target() {
-            let from = self.scroll.value();
-            self.scroll.start(now, from, target);
-        }
+        let max = self.max();
+        self.scroll.wheel(now, delta, 0.0, max);
     }
 
     pub fn tick(&mut self, tree: &mut Tree, input: &Input, now: Millis) -> bool {
