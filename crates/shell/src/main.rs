@@ -1,4 +1,5 @@
 mod app;
+mod appsctl;
 mod bar;
 mod card;
 mod history;

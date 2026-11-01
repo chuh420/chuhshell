@@ -52,6 +52,8 @@ pub enum ServiceEvent {
     Audio(AudioState),
     Power(PowerState),
     BrightnessDone,
+    Apps(Vec<services::apps::AppEntry>),
+    AppIcon(String, crate::panels::AppIcon),
 }
 
 struct BarSurface {
@@ -71,11 +73,12 @@ pub struct App {
     pub(crate) notes: crate::notify::Notifications,
     pub(crate) tray: crate::trayctl::Tray,
     pub(crate) net: crate::netctl::Net,
+    pub(crate) apps: crate::appsctl::Apps,
     repeat: Option<(KeyEvent, Millis)>,
     resources: ResourceMonitor,
     audio: Option<AudioHandle>,
     history: History,
-    handle: LoopHandle<'static, App>,
+    pub(crate) handle: LoopHandle<'static, App>,
     pub(crate) scheduler: Scheduler<()>,
     pub(crate) events: Sender<ServiceEvent>,
     brightness_throttle: bool,
@@ -137,6 +140,7 @@ impl App {
             notes: crate::notify::Notifications::default(),
             tray: crate::trayctl::Tray::default(),
             net: crate::netctl::Net::default(),
+            apps: crate::appsctl::Apps::default(),
             repeat: None,
             resources: ResourceMonitor::default(),
             audio: None,
@@ -158,6 +162,7 @@ impl App {
         self.start_notifications();
         self.start_tray();
         self.start_network();
+        self.start_apps();
         let sender = self.events.clone();
         if let Err(err) = hyprland::spawn(move |event| {
             let _ = sender.send(ServiceEvent::Hyprland(event));
@@ -272,6 +277,8 @@ impl App {
                 self.sync();
             }
             ServiceEvent::Power(power) => self.power(power),
+            ServiceEvent::Apps(catalog) => self.apps_loaded(catalog),
+            ServiceEvent::AppIcon(id, icon) => self.app_icon_loaded(id, icon),
             ServiceEvent::BrightnessDone => {
                 self.brightness_running = false;
                 if self.brightness_throttle {
@@ -602,8 +609,8 @@ impl App {
         let battery = &self.state.power.battery;
         serde_json::json!({
             "panel": self.state.panel,
-            "applications": 0,
-            "hidden": [],
+            "applications": self.apps.results.len(),
+            "hidden": self.apps.hidden,
                         "wifi": self.net.wifi.state,
             "bluetooth": self.net.bluetooth.powered,
             "wallpapers": 0,
@@ -695,6 +702,8 @@ impl App {
             bluetooth_profiles: self.net.profiles.clone(),
             bluetooth_prompt: self.net.bluetooth_prompt.clone(),
             bluetooth_error: self.net.bluetooth_error.clone(),
+            apps: self.apps.results.clone(),
+            hidden: self.apps.hidden.clone(),
         }
     }
 
@@ -708,10 +717,12 @@ impl App {
             self.overlay.panel_changed(&mut self.engine, &panel, now);
             self.panel_opened(&panel);
             self.network_panel_changed(&panel);
+            self.apps_panel_changed(&panel);
             self.model.unread_notifications = self.notes.unread();
             self.refresh_bars();
         }
         self.overlay.set_icons(&self.notes.icons);
+        self.overlay.set_app_icons(&self.apps.icons);
         self.ensure_overlay();
         self.overlay.schedule(&mut self.platform);
     }
@@ -813,6 +824,9 @@ impl App {
                 self.net_action(crate::panels::NetAction::BtPower(!powered));
             }
             PanelAction::Net(action) => self.net_action(action),
+            PanelAction::Launch(id) => self.launch_application(&id),
+            PanelAction::ToggleHidden(id) => self.toggle_application_hidden(&id),
+            PanelAction::Search(query) => self.search_applications(&query),
             PanelAction::Close => {
                 self.state.panel.clear();
                 self.sync();
@@ -844,6 +858,7 @@ impl App {
         for action in actions {
             self.panel_action(action);
         }
+        self.request_app_icons();
     }
 
     fn overlay_pointer(&mut self, event: PointerEvent) {
@@ -1204,7 +1219,10 @@ impl App {
                 .key_repeat()
                 .map_or(40.0, |repeat| 1000.0 / repeat.rate.max(1) as f64);
             self.repeat = Some((event.clone(), at + interval));
-            self.dispatch_key(event);
+            self.dispatch_key(KeyEvent {
+                repeat: true,
+                ..event
+            });
         }
         if self
             .osd

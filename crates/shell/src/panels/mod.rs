@@ -1,11 +1,12 @@
 pub mod bluetooth;
 pub mod control;
 pub mod kit;
+pub mod launcher;
 pub mod notifications;
 pub mod tray;
 pub mod wifi;
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use services::notifications::Notification;
 
@@ -33,6 +34,15 @@ pub enum PanelAction {
     TrayQuit,
     TrayEvent(i32, &'static str),
     Net(NetAction),
+    Launch(String),
+    ToggleHidden(String),
+    Search(String),
+}
+
+#[derive(Clone, Debug)]
+pub enum AppIcon {
+    Letter,
+    Image(Option<Arc<ui::tiny_skia::Pixmap>>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -94,4 +104,6 @@ pub struct PanelData {
     pub bluetooth_profiles: HashMap<String, services::network::DeviceProfiles>,
     pub bluetooth_prompt: services::network::BluetoothPrompt,
     pub bluetooth_error: String,
+    pub apps: Arc<Vec<services::apps::AppEntry>>,
+    pub hidden: Vec<String>,
 }

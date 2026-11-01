@@ -12,6 +12,7 @@ serde_json.workspace = true
 pipewire.workspace = true
 zbus.workspace = true
 futures-util.workspace = true
+inotify.workspace = true
 
 [lints]
 workspace = true

@@ -96,6 +96,13 @@ pub fn tray_source(item: &services::tray::TrayItem) -> Option<IconSource> {
     })
 }
 
+pub fn app_source(icon: &str) -> Option<IconSource> {
+    if icon.starts_with('/') {
+        return Some(IconSource::File(PathBuf::from(icon)));
+    }
+    theme_icon(icon).map(IconSource::File)
+}
+
 pub fn source(notification: &Notification) -> Option<IconSource> {
     match &notification.image {
         Some(Image::Pixels {

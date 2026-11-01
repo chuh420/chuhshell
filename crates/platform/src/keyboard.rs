@@ -22,6 +22,9 @@ pub mod keys {
     pub const DOWN: u32 = 0xff54;
     pub const HOME: u32 = 0xff50;
     pub const END: u32 = 0xff57;
+    pub const PAGE_UP: u32 = 0xff55;
+    pub const PAGE_DOWN: u32 = 0xff56;
+    pub const ISO_LEFT_TAB: u32 = 0xfe20;
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -39,6 +42,7 @@ pub struct KeyEvent {
     pub utf8: Option<String>,
     pub pressed: bool,
     pub modifiers: Modifiers,
+    pub repeat: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -56,6 +60,7 @@ impl Platform {
             utf8: event.utf8,
             pressed,
             modifiers: self.modifiers,
+            repeat: false,
         }));
     }
 
