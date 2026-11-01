@@ -127,13 +127,14 @@ pub struct Scroller {
     scroll: Tween<f32>,
     bar_opacity: Tween<f32>,
     hide_at: Option<Millis>,
+    has_bar: bool,
     height: f32,
     width: f32,
     content_height: f32,
 }
 
 impl Scroller {
-    pub fn new(tree: &mut Tree, input: &mut Input, parent: NodeId) -> Self {
+    pub fn new(tree: &mut Tree, input: &mut Input, parent: NodeId, has_bar: bool) -> Self {
         let mut view_node = Node::new(0.0, 0.0, 0.0, 0.0);
         view_node.clip = true;
         let view = tree.add(parent, view_node);
@@ -165,6 +166,7 @@ impl Scroller {
             scroll: Tween::new(0.0, 110.0, Easing::OutCubic),
             bar_opacity: Tween::new(0.0, 200.0, Easing::Linear),
             hide_at: None,
+            has_bar,
             height: 0.0,
             width: 0.0,
             content_height: 0.0,
@@ -213,7 +215,7 @@ impl Scroller {
         }
         let mut running = self.scroll.tick(now);
         tree.set_pos(self.content, 0.0, -self.scroll.value().round());
-        let scrollable = self.content_height > self.height;
+        let scrollable = self.has_bar && self.content_height > self.height;
         if scrollable && (self.scroll.is_running() || input.contains_mouse(self.bar_area)) {
             self.bar_opacity.jump(0.75);
             self.hide_at = Some(now + 450.0);

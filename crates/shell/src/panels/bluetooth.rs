@@ -184,7 +184,7 @@ impl BluetoothPanel {
         let power = chip(tree, input, engine, root, "off", MUTED, false, None);
         let name = label(tree, engine, root, "", 12.0, MUTED);
         let scan = chip(tree, input, engine, root, "scan", GREEN, false, None);
-        let flick = Scroller::new(tree, input, root);
+        let flick = Scroller::new(tree, input, root, true);
         let headers = [
             label(tree, engine, flick.content, "paired", 10.0, MUTED),
             label(tree, engine, flick.content, "available", 10.0, MUTED),

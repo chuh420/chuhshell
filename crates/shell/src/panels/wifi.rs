@@ -217,7 +217,7 @@ impl WifiPanel {
         );
         let hidden_cancel = chip(tree, input, engine, root, "cancel", TEXT, false, None);
         let hidden_connect = chip(tree, input, engine, root, "connect", GREEN, false, None);
-        let list = Scroller::new(tree, input, root);
+        let list = Scroller::new(tree, input, root, false);
         let empty = label(tree, engine, list.view, "", 12.0, MUTED);
         let prompt_label = label(tree, engine, root, "", 12.0, TEXT);
         let prompt_box = input_box(tree, input, engine, root, true, None);

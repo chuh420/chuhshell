@@ -3,13 +3,14 @@ use std::process::Command;
 use platform::{CursorShape, KeyEvent, keys};
 
 use crate::{
-    Color, Node, NodeId, Paint, RectPaint, TextEngine, TextPaint, TextSpec, Tree,
+    Color, Node, NodeId, Paint, RectPaint, Span, TextEngine, TextPaint, TextSpec, Tree,
     anim::Millis,
     input::{AreaId, Input, MouseArea},
 };
 
 const BLINK: Millis = 500.0;
-const HIGHLIGHT: Color = Color::rgb(0x308cc6);
+const HIGHLIGHT: Color = Color::rgb(0x000080);
+const HIGHLIGHTED_TEXT: Color = Color::rgb(0xffffff);
 const PASSWORD: char = '●';
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,8 +92,10 @@ impl TextField {
                 },
             ),
         );
+        let height = engine
+            .measure(&TextSpec::plain("Ag", family, size, color), 1.0)
+            .height;
         let spec = TextSpec::plain("", family, size, color);
-        let height = engine.measure(&spec, 1.0).height;
         let text_node = tree.add(
             root,
             Node::new(0.0, 0.0, 0.0, height).with_paint(Paint::Text(TextPaint::new(spec))),
@@ -168,6 +171,33 @@ impl TextField {
         self.refresh(tree, engine);
     }
 
+    pub fn set_selection_color(&mut self, tree: &mut Tree, color: Color) {
+        tree.set_fill(self.selection, color);
+    }
+
+    fn styled(&self, shown: String) -> TextSpec {
+        let (start, end) = self.range();
+        if start == end {
+            return TextSpec::plain(shown, self.family, self.size, self.color);
+        }
+        let (start, end) = (self.shown_index(start), self.shown_index(end));
+        let mut spec = TextSpec::plain("", self.family, self.size, self.color);
+        spec.spans = [
+            (&shown[..start], None),
+            (&shown[start..end], Some(HIGHLIGHTED_TEXT)),
+            (&shown[end..], None),
+        ]
+        .into_iter()
+        .filter(|(text, _)| !text.is_empty())
+        .map(|(text, color)| {
+            let mut span = Span::new(text, self.family, self.size);
+            span.color = color;
+            span
+        })
+        .collect();
+        spec
+    }
+
     fn shown(&self) -> String {
         if self.password {
             std::iter::repeat_n(PASSWORD, self.text.chars().count()).collect()
@@ -214,7 +244,7 @@ impl TextField {
     }
 
     fn refresh(&mut self, tree: &mut Tree, engine: &mut TextEngine) {
-        let spec = TextSpec::plain(self.shown(), self.family, self.size, self.color);
+        let spec = self.styled(self.shown());
         self.carets = engine.carets(&spec);
         let width = engine.measure(&spec, 1.0).width;
         tree.set_text(self.text_node, spec);
@@ -464,5 +494,51 @@ mod tests {
         assert_eq!(word_left("hello big ", 10), 6);
         assert_eq!(word_right("hello big world", 0), 5);
         assert_eq!(word_right("hello big world", 5), 9);
+    }
+
+    #[test]
+    fn empty_field_has_line_height() {
+        let mut tree = Tree::new();
+        let mut input = Input::new();
+        let mut engine = TextEngine::new(&["Adwaita Sans"]);
+        let root = tree.root();
+        let field = TextField::new(
+            &mut tree,
+            &mut input,
+            &mut engine,
+            root,
+            "Adwaita Sans",
+            12.0,
+            Color::rgb(0xffffff),
+            false,
+        );
+        assert!(field.implicit_height() >= 12.0);
+    }
+
+    #[test]
+    fn selection_splits_spans() {
+        let mut tree = Tree::new();
+        let mut input = Input::new();
+        let mut engine = TextEngine::new(&["Adwaita Sans"]);
+        let root = tree.root();
+        let mut field = TextField::new(
+            &mut tree,
+            &mut input,
+            &mut engine,
+            root,
+            "Adwaita Sans",
+            12.0,
+            Color::rgb(0xffffff),
+            false,
+        );
+        field.set_text(&mut tree, &mut engine, "testnet");
+        field.anchor = 4;
+        let spec = field.styled(field.shown());
+        let parts: Vec<_> = spec
+            .spans
+            .iter()
+            .map(|span| (span.text.as_str(), span.color))
+            .collect();
+        assert_eq!(parts, vec![("test", None), ("net", Some(HIGHLIGHTED_TEXT))]);
     }
 }
