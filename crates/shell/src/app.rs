@@ -885,6 +885,7 @@ impl App {
     }
 
     fn teardown_overlay(&mut self) {
+        self.repeat = None;
         if let Some(surface) = self.overlay.surface {
             self.tooltips.drop_parent(&mut self.platform, surface);
         }
@@ -1342,7 +1343,11 @@ impl App {
             }
             Event::Pointer(event) => self.pointer(event),
             Event::Key(event) => self.key(event),
-            Event::KeyboardFocus(_) => {}
+            Event::KeyboardFocus(focus) => {
+                if focus.is_none() || focus != self.overlay.surface {
+                    self.repeat = None;
+                }
+            }
         }
     }
 
@@ -1361,6 +1366,13 @@ impl App {
             .is_some_and(|deadline| deadline <= now)
         {
             self.overlay.schedule(&mut self.platform);
+        }
+        if self
+            .repeat
+            .as_ref()
+            .is_some_and(|(event, _)| event.surface != self.overlay.surface)
+        {
+            self.repeat = None;
         }
         if let Some((event, at)) = self.repeat.clone()
             && at <= now
