@@ -231,7 +231,7 @@ unsafe extern "C" {
     fn getppid() -> std::ffi::c_int;
 }
 
-fn bind_to_parent(command: &mut Command) {
+pub(crate) fn bind_to_parent(command: &mut Command) {
     use std::os::unix::process::CommandExt;
     let parent = std::process::id() as std::ffi::c_int;
     unsafe {

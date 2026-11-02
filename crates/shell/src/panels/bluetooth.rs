@@ -13,7 +13,7 @@ use super::{
     NetAction, PanelAction, PanelData, TooltipSpot,
     kit::{Scroller, chip, fit, icon_label, label, place_chip, place_label, rect, set_border},
 };
-use crate::theme::{BG, ELEVATED, FONT, GREEN, LINE, MUTED, RED, SURFACE, TEXT};
+use crate::theme::{self, FONT};
 
 pub fn device_icon(name: &str) -> &'static str {
     if name.starts_with("audio-head") {
@@ -180,25 +180,77 @@ impl BluetoothPanel {
         now: Millis,
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
-        let title = label(tree, engine, root, "Bluetooth", 18.0, TEXT);
-        let power = chip(tree, input, engine, root, "off", MUTED, false, None);
-        let name = label(tree, engine, root, "", 12.0, MUTED);
-        let scan = chip(tree, input, engine, root, "scan", GREEN, false, None);
+        let title = label(tree, engine, root, "Bluetooth", 18.0, theme::text());
+        let power = chip(
+            tree,
+            input,
+            engine,
+            root,
+            "off",
+            theme::muted(),
+            false,
+            None,
+        );
+        let name = label(tree, engine, root, "", 12.0, theme::muted());
+        let scan = chip(
+            tree,
+            input,
+            engine,
+            root,
+            "scan",
+            theme::green(),
+            false,
+            None,
+        );
         let flick = Scroller::new(tree, input, root, true);
         let headers = [
-            label(tree, engine, flick.content, "paired", 10.0, MUTED),
-            label(tree, engine, flick.content, "available", 10.0, MUTED),
+            label(tree, engine, flick.content, "paired", 10.0, theme::muted()),
+            label(
+                tree,
+                engine,
+                flick.content,
+                "available",
+                10.0,
+                theme::muted(),
+            ),
         ];
-        let empty = label(tree, engine, flick.view, "", 12.0, MUTED);
-        let prompt_title = label(tree, engine, root, "", 12.0, TEXT);
-        let prompt_mode = label(tree, engine, root, "", 12.0, GREEN);
-        let pin_frame = rect(tree, root, SURFACE, 8.0);
-        set_border(tree, pin_frame, LINE, 1.0);
-        let pin_placeholder = label(tree, engine, pin_frame, "PIN", 12.0, MUTED);
-        let pin = TextField::new(tree, input, engine, pin_frame, FONT, 12.0, TEXT, false);
-        let cancel = chip(tree, input, engine, root, "cancel", TEXT, false, None);
-        let confirm = chip(tree, input, engine, root, "confirm", GREEN, false, None);
-        let error = label(tree, engine, root, "", 12.0, RED);
+        let empty = label(tree, engine, flick.view, "", 12.0, theme::muted());
+        let prompt_title = label(tree, engine, root, "", 12.0, theme::text());
+        let prompt_mode = label(tree, engine, root, "", 12.0, theme::green());
+        let pin_frame = rect(tree, root, theme::surface(), 8.0);
+        set_border(tree, pin_frame, theme::line(), 1.0);
+        let pin_placeholder = label(tree, engine, pin_frame, "PIN", 12.0, theme::muted());
+        let pin = TextField::new(
+            tree,
+            input,
+            engine,
+            pin_frame,
+            FONT,
+            12.0,
+            theme::text(),
+            false,
+        );
+        let cancel = chip(
+            tree,
+            input,
+            engine,
+            root,
+            "cancel",
+            theme::text(),
+            false,
+            None,
+        );
+        let confirm = chip(
+            tree,
+            input,
+            engine,
+            root,
+            "confirm",
+            theme::green(),
+            false,
+            None,
+        );
+        let error = label(tree, engine, root, "", 12.0, theme::red());
         let mut panel = Self {
             root,
             title,
@@ -289,7 +341,11 @@ impl BluetoothPanel {
             let root = rect(
                 tree,
                 self.flick.content,
-                if device.connected { ELEVATED } else { SURFACE },
+                if device.connected {
+                    theme::elevated()
+                } else {
+                    theme::surface()
+                },
                 10.0,
             );
             let icon = icon_label(
@@ -298,30 +354,69 @@ impl BluetoothPanel {
                 root,
                 device_icon(&device.icon),
                 20.0,
-                if device.connected { GREEN } else { MUTED },
+                if device.connected {
+                    theme::green()
+                } else {
+                    theme::muted()
+                },
             );
-            let name = label(tree, engine, root, &device.name, 12.0, TEXT);
-            let editor = rect(tree, root, BG, 5.0);
-            set_border(tree, editor, GREEN, 1.0);
-            let mut alias = TextField::new(tree, input, engine, editor, FONT, 12.0, TEXT, false);
+            let name = label(tree, engine, root, &device.name, 12.0, theme::text());
+            let editor = rect(tree, root, theme::bg(), 5.0);
+            set_border(tree, editor, theme::green(), 1.0);
+            let mut alias = TextField::new(
+                tree,
+                input,
+                engine,
+                editor,
+                FONT,
+                12.0,
+                theme::text(),
+                false,
+            );
             let status_label = label(
                 tree,
                 engine,
                 root,
                 &status(device),
                 10.0,
-                if device.connected { GREEN } else { MUTED },
+                if device.connected {
+                    theme::green()
+                } else {
+                    theme::muted()
+                },
             );
-            let mut rename = chip(tree, input, engine, root, "󰏫", TEXT, true, Some(14.0));
+            let mut rename = chip(
+                tree,
+                input,
+                engine,
+                root,
+                "󰏫",
+                theme::text(),
+                true,
+                Some(14.0),
+            );
             rename.shortcut = "rename".into();
-            let save = chip(tree, input, engine, root, "save", GREEN, true, None);
+            let save = chip(
+                tree,
+                input,
+                engine,
+                root,
+                "save",
+                theme::green(),
+                true,
+                None,
+            );
             let mut trust = chip(
                 tree,
                 input,
                 engine,
                 root,
                 if device.trusted { "󰒘" } else { "󰦞" },
-                if device.trusted { GREEN } else { MUTED },
+                if device.trusted {
+                    theme::green()
+                } else {
+                    theme::muted()
+                },
                 true,
                 Some(14.0),
             );
@@ -340,8 +435,26 @@ impl BluetoothPanel {
             } else {
                 "pair"
             };
-            let action = chip(tree, input, engine, root, action_text, TEXT, false, None);
-            let mut forget = chip(tree, input, engine, root, "󰆴", RED, true, Some(14.0));
+            let action = chip(
+                tree,
+                input,
+                engine,
+                root,
+                action_text,
+                theme::text(),
+                false,
+                None,
+            );
+            let mut forget = chip(
+                tree,
+                input,
+                engine,
+                root,
+                "󰆴",
+                theme::red(),
+                true,
+                Some(14.0),
+            );
             forget.shortcut = "forget".into();
             let mut profiles = Vec::new();
             if let Some(audio) = &key.profiles {
@@ -353,7 +466,11 @@ impl BluetoothPanel {
                         engine,
                         root,
                         &profile_label(profile),
-                        if selected { GREEN } else { TEXT },
+                        if selected {
+                            theme::green()
+                        } else {
+                            theme::text()
+                        },
                         true,
                         None,
                     );
@@ -401,8 +518,14 @@ impl BluetoothPanel {
         let bluetooth = &data.bluetooth;
         self.power
             .set_label(engine, if bluetooth.powered { "on" } else { "off" }, 12.0);
-        self.power
-            .set_ink(now, if bluetooth.powered { GREEN } else { MUTED });
+        self.power.set_ink(
+            now,
+            if bluetooth.powered {
+                theme::green()
+            } else {
+                theme::muted()
+            },
+        );
         let name = if bluetooth.name.is_empty() {
             "no adapter found"
         } else {

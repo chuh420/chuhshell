@@ -13,7 +13,7 @@ use super::{
     NetAction, PanelAction, PanelData, TooltipSpot,
     kit::{Scroller, chip, fit, icon_label, label, place_chip, place_label, rect, set_border},
 };
-use crate::theme::{BLUE, ELEVATED, FONT, GREEN, LINE, MUTED, RED, SURFACE, TEXT, YELLOW};
+use crate::theme::{self, FONT};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
@@ -146,10 +146,20 @@ fn input_box(
     password: bool,
     placeholder: Option<&str>,
 ) -> InputBox {
-    let frame = rect(tree, parent, SURFACE, 8.0);
-    set_border(tree, frame, GREEN, 1.0);
-    let placeholder = placeholder.map(|text| label(tree, engine, frame, text, 12.0, MUTED));
-    let field = TextField::new(tree, input, engine, frame, FONT, 12.0, TEXT, password);
+    let frame = rect(tree, parent, theme::surface(), 8.0);
+    set_border(tree, frame, theme::green(), 1.0);
+    let placeholder =
+        placeholder.map(|text| label(tree, engine, frame, text, 12.0, theme::muted()));
+    let field = TextField::new(
+        tree,
+        input,
+        engine,
+        frame,
+        FONT,
+        12.0,
+        theme::text(),
+        password,
+    );
     InputBox {
         frame,
         field,
@@ -189,24 +199,60 @@ impl WifiPanel {
         now: Millis,
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
-        let title = label(tree, engine, root, "Wi-Fi", 18.0, TEXT);
-        let mut airplane = chip(tree, input, engine, root, "󰀝", MUTED, false, None);
+        let title = label(tree, engine, root, "Wi-Fi", 18.0, theme::text());
+        let mut airplane = chip(tree, input, engine, root, "󰀝", theme::muted(), false, None);
         airplane.set_font_size(engine, 15.0, 15.0);
-        let power = chip(tree, input, engine, root, "off", MUTED, false, None);
-        let status = label(tree, engine, root, "", 12.0, MUTED);
-        let card = rect(tree, root, SURFACE, 14.0);
-        let card_icon = icon_label(tree, engine, card, "󰤨", 16.0, GREEN);
-        let band = label(tree, engine, card, "", 12.0, TEXT);
-        let rssi = label(tree, engine, card, "", 11.0, GREEN);
-        let ip = label(tree, engine, card, "", 10.0, MUTED);
-        let link = label(tree, engine, card, "", 10.0, MUTED);
-        let spark = Sparkline::new(tree, card, GREEN, BLUE, LINE);
-        let down = icon_label(tree, engine, card, "", 10.0, GREEN);
-        let up = icon_label(tree, engine, card, "", 10.0, BLUE);
-        let available = chip(tree, input, engine, root, "available", TEXT, false, None);
-        let saved = chip(tree, input, engine, root, "saved", TEXT, false, None);
-        let hidden = chip(tree, input, engine, root, "+ hidden", TEXT, false, None);
-        let scan = chip(tree, input, engine, root, "󰑐", GREEN, false, None);
+        let power = chip(
+            tree,
+            input,
+            engine,
+            root,
+            "off",
+            theme::muted(),
+            false,
+            None,
+        );
+        let status = label(tree, engine, root, "", 12.0, theme::muted());
+        let card = rect(tree, root, theme::surface(), 14.0);
+        let card_icon = icon_label(tree, engine, card, "󰤨", 16.0, theme::green());
+        let band = label(tree, engine, card, "", 12.0, theme::text());
+        let rssi = label(tree, engine, card, "", 11.0, theme::green());
+        let ip = label(tree, engine, card, "", 10.0, theme::muted());
+        let link = label(tree, engine, card, "", 10.0, theme::muted());
+        let spark = Sparkline::new(tree, card, theme::green(), theme::blue(), theme::line());
+        let down = icon_label(tree, engine, card, "", 10.0, theme::green());
+        let up = icon_label(tree, engine, card, "", 10.0, theme::blue());
+        let available = chip(
+            tree,
+            input,
+            engine,
+            root,
+            "available",
+            theme::text(),
+            false,
+            None,
+        );
+        let saved = chip(
+            tree,
+            input,
+            engine,
+            root,
+            "saved",
+            theme::text(),
+            false,
+            None,
+        );
+        let hidden = chip(
+            tree,
+            input,
+            engine,
+            root,
+            "+ hidden",
+            theme::text(),
+            false,
+            None,
+        );
+        let scan = chip(tree, input, engine, root, "󰑐", theme::green(), false, None);
         let hidden_box = input_box(
             tree,
             input,
@@ -215,16 +261,52 @@ impl WifiPanel {
             false,
             Some("hidden network name (SSID)"),
         );
-        let hidden_cancel = chip(tree, input, engine, root, "cancel", TEXT, false, None);
-        let hidden_connect = chip(tree, input, engine, root, "connect", GREEN, false, None);
+        let hidden_cancel = chip(
+            tree,
+            input,
+            engine,
+            root,
+            "cancel",
+            theme::text(),
+            false,
+            None,
+        );
+        let hidden_connect = chip(
+            tree,
+            input,
+            engine,
+            root,
+            "connect",
+            theme::green(),
+            false,
+            None,
+        );
         let list = Scroller::new(tree, input, root, false);
-        let empty = label(tree, engine, list.view, "", 12.0, MUTED);
-        let prompt_label = label(tree, engine, root, "", 12.0, TEXT);
+        let empty = label(tree, engine, list.view, "", 12.0, theme::muted());
+        let prompt_label = label(tree, engine, root, "", 12.0, theme::text());
         let prompt_box = input_box(tree, input, engine, root, true, None);
-        let prompt_cancel = chip(tree, input, engine, root, "cancel", TEXT, false, None);
-        let prompt_connect = chip(tree, input, engine, root, "connect", GREEN, false, None);
-        let mut message = label(tree, engine, root, "", 11.0, RED);
-        message.set_color(RED);
+        let prompt_cancel = chip(
+            tree,
+            input,
+            engine,
+            root,
+            "cancel",
+            theme::text(),
+            false,
+            None,
+        );
+        let prompt_connect = chip(
+            tree,
+            input,
+            engine,
+            root,
+            "connect",
+            theme::green(),
+            false,
+            None,
+        );
+        let mut message = label(tree, engine, root, "", 11.0, theme::red());
+        message.set_color(theme::red());
         let mut panel = Self {
             root,
             title,
@@ -337,10 +419,21 @@ impl WifiPanel {
                 root,
                 network_icon(&network),
                 18.0,
-                if network.connected { GREEN } else { MUTED },
+                if network.connected {
+                    theme::green()
+                } else {
+                    theme::muted()
+                },
             );
-            let name = label(tree, engine, root, &network.name, 12.0, TEXT);
-            let sub = label(tree, engine, root, &network_sub(&network), 10.0, MUTED);
+            let name = label(tree, engine, root, &network.name, 12.0, theme::text());
+            let sub = label(
+                tree,
+                engine,
+                root,
+                &network_sub(&network),
+                10.0,
+                theme::muted(),
+            );
             let mut auto = chip(
                 tree,
                 input,
@@ -351,7 +444,11 @@ impl WifiPanel {
                 } else {
                     "manual"
                 },
-                if network.autoconnect { GREEN } else { MUTED },
+                if network.autoconnect {
+                    theme::green()
+                } else {
+                    theme::muted()
+                },
                 false,
                 None,
             );
@@ -361,7 +458,7 @@ impl WifiPanel {
                 "connect only by hand · click to enable autoconnect"
             }
             .into();
-            let forget = chip(tree, input, engine, root, "󰆴", RED, false, None);
+            let forget = chip(tree, input, engine, root, "󰆴", theme::red(), false, None);
             self.rows.push(Row {
                 data: network,
                 root,
@@ -395,8 +492,14 @@ impl WifiPanel {
                 self.set_focus(None, now);
             }
         }
-        self.airplane
-            .set_ink(now, if wifi.airplane { YELLOW } else { MUTED });
+        self.airplane.set_ink(
+            now,
+            if wifi.airplane {
+                theme::yellow()
+            } else {
+                theme::muted()
+            },
+        );
         self.airplane.selected = wifi.airplane;
         self.airplane.shortcut = if wifi.airplane {
             "airplane mode on · click to turn off"
@@ -406,8 +509,14 @@ impl WifiPanel {
         .into();
         self.power
             .set_label(engine, if wifi.powered { "on" } else { "off" }, 12.0);
-        self.power
-            .set_ink(now, if wifi.powered { GREEN } else { MUTED });
+        self.power.set_ink(
+            now,
+            if wifi.powered {
+                theme::green()
+            } else {
+                theme::muted()
+            },
+        );
         let status = if wifi.airplane {
             "airplane mode is on".to_string()
         } else if wifi.state == "connected" {
@@ -432,8 +541,11 @@ impl WifiPanel {
                 engine,
                 &format!("{} dBm · {}", details.rssi, quality(details.rssi)),
             );
-            self.rssi
-                .set_color(if details.rssi < -75 { YELLOW } else { GREEN });
+            self.rssi.set_color(if details.rssi < -75 {
+                theme::yellow()
+            } else {
+                theme::green()
+            });
             let ip = if details.ip.is_empty() {
                 "no address".to_string()
             } else {
@@ -846,9 +958,9 @@ impl WifiPanel {
         }
         for row in &self.rows {
             let color = if row.data.connected {
-                ELEVATED
+                theme::elevated()
             } else if input.contains_mouse(row.area) {
-                SURFACE
+                theme::surface()
             } else {
                 Color::TRANSPARENT
             };

@@ -7,6 +7,7 @@ pub mod network;
 pub mod notifications;
 pub mod oneshot;
 pub mod system;
+pub mod theme;
 pub mod tray;
 pub mod upower;
 pub mod wallpapers;

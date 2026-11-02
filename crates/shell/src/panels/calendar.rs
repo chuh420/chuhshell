@@ -14,7 +14,7 @@ use super::{
     PanelAction, PanelData,
     kit::{chip, fit, label, place_chip, place_label, rect},
 };
-use crate::theme::{BG, ELEVATED, FAST, FONT, GREEN, ICONS, LINE, MUTED, TEXT, YELLOW};
+use crate::theme::{self, FAST, FONT, ICONS};
 
 const BASE: i32 = 600;
 const COUNT: i32 = 1201;
@@ -100,17 +100,17 @@ impl CalendarPanel {
         data: &PanelData,
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
-        let mut eyebrow_spec = TextSpec::plain("time / calendar", ICONS, 9.0, GREEN);
+        let mut eyebrow_spec = TextSpec::plain("time / calendar", ICONS, 9.0, theme::green());
         if let Some(span) = eyebrow_spec.spans.first_mut() {
             span.letter_spacing = 1.0;
         }
         let eyebrow = Label::new(tree, engine, root, eyebrow_spec);
-        let mut time_spec = TextSpec::plain(&data.time, FONT, 40.0, TEXT);
+        let mut time_spec = TextSpec::plain(&data.time, FONT, 40.0, theme::text());
         if let Some(span) = time_spec.spans.first_mut() {
             span.weight = Weight::Light;
         }
         let time = Label::new(tree, engine, root, time_spec);
-        let date = label(tree, engine, root, &data.date, 12.0, MUTED);
+        let date = label(tree, engine, root, &data.date, 12.0, theme::muted());
         let today_date = services::clock::now().date();
         let month = SwapText::new(
             tree,
@@ -120,12 +120,21 @@ impl CalendarPanel {
             "",
             FONT,
             15.0,
-            GREEN,
+            theme::green(),
             100000.0,
         );
-        let today = chip(tree, input, engine, root, "today", YELLOW, true, None);
-        let prev = chip(tree, input, engine, root, "‹", TEXT, true, None);
-        let next = chip(tree, input, engine, root, "›", TEXT, true, None);
+        let today = chip(
+            tree,
+            input,
+            engine,
+            root,
+            "today",
+            theme::yellow(),
+            true,
+            None,
+        );
+        let prev = chip(tree, input, engine, root, "‹", theme::text(), true, None);
+        let next = chip(tree, input, engine, root, "›", theme::text(), true, None);
         let weekdays = DAYS
             .iter()
             .enumerate()
@@ -137,7 +146,11 @@ impl CalendarPanel {
                     root,
                     day,
                     10.0,
-                    if weekend { YELLOW } else { MUTED },
+                    if weekend {
+                        theme::yellow()
+                    } else {
+                        theme::muted()
+                    },
                 );
                 if weekend {
                     tree.set_opacity(label.node, 0.8);
@@ -159,7 +172,7 @@ impl CalendarPanel {
             root,
             "← →  month    ↑ ↓  year    t  today",
             9.0,
-            MUTED,
+            theme::muted(),
         );
         Self {
             root,
@@ -232,17 +245,21 @@ impl CalendarPanel {
                 let bg = rect(
                     tree,
                     root,
-                    if today { GREEN } else { Color::TRANSPARENT },
+                    if today {
+                        theme::green()
+                    } else {
+                        Color::TRANSPARENT
+                    },
                     9.0,
                 );
                 let color = if today {
-                    BG
+                    theme::bg()
                 } else if !inside {
-                    LINE
+                    theme::line()
                 } else if cell % 7 > 4 {
-                    YELLOW
+                    theme::yellow()
                 } else {
-                    TEXT
+                    theme::text()
                 };
                 let mut spec = TextSpec::plain(date.day().to_string(), FONT, 12.0, color);
                 if today && let Some(span) = spec.spans.first_mut() {
@@ -254,7 +271,11 @@ impl CalendarPanel {
                     bg,
                     label,
                     color: Tween::new(
-                        if today { GREEN } else { Color::TRANSPARENT },
+                        if today {
+                            theme::green()
+                        } else {
+                            Color::TRANSPARENT
+                        },
                         FAST,
                         Easing::Linear,
                     ),
@@ -425,9 +446,9 @@ impl CalendarPanel {
         for (index, page) in &mut self.pages {
             for (cell_index, cell) in page.cells.iter_mut().enumerate() {
                 let target = if cell.date == today {
-                    GREEN
+                    theme::green()
                 } else if hovered == Some((*index, cell_index)) {
-                    ELEVATED
+                    theme::elevated()
                 } else {
                     Color::TRANSPARENT
                 };

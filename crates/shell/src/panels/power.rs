@@ -12,14 +12,14 @@ use super::{
     kit::{chip, icon_label, label, place_chip, rect},
     picker::eyebrow,
 };
-use crate::theme::{ELEVATED, FAST, GREEN, LINE, MUTED, NORMAL, RED, SLOW, SURFACE, TEXT, YELLOW};
+use crate::theme::{self, FAST, NORMAL, SLOW};
 
 const HOLD: Millis = 1800.0;
 
 struct Action {
     label: &'static str,
     icon: &'static str,
-    ink: Color,
+    ink: fn() -> Color,
     confirm: bool,
     session: &'static str,
 }
@@ -28,28 +28,28 @@ const ACTIONS: [Action; 4] = [
     Action {
         label: "lock",
         icon: "󰌾",
-        ink: YELLOW,
+        ink: theme::yellow,
         confirm: false,
         session: "lock",
     },
     Action {
         label: "sleep",
         icon: "󰒲",
-        ink: GREEN,
+        ink: theme::green,
         confirm: false,
         session: "suspend",
     },
     Action {
         label: "restart",
         icon: "󰜉",
-        ink: YELLOW,
+        ink: theme::yellow,
         confirm: true,
         session: "reboot",
     },
     Action {
         label: "power off",
         icon: "󰐥",
-        ink: RED,
+        ink: theme::red,
         confirm: true,
         session: "poweroff",
     },
@@ -101,8 +101,8 @@ impl PowerPanel {
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
         let eyebrow = eyebrow(tree, engine, root, "session / power");
-        let title = label(tree, engine, root, "power", 22.0, TEXT);
-        let close = chip(tree, input, engine, root, "×", TEXT, false, None);
+        let title = label(tree, engine, root, "power", 22.0, theme::text());
+        let close = chip(tree, input, engine, root, "×", theme::text(), false, None);
         let tiles = ACTIONS
             .iter()
             .enumerate()
@@ -126,11 +126,18 @@ impl PowerPanel {
                     node.clip = true;
                 }
                 let area = input.add(MouseArea::new(root));
-                let progress = rect(tree, root, action.ink, 0.0);
+                let progress = rect(tree, root, (action.ink)(), 0.0);
                 tree.set_opacity(progress, 0.16);
-                let icon = icon_label(tree, engine, root, action.icon, 30.0, action.ink);
-                let name = label(tree, engine, root, action.label, 12.0, TEXT);
-                let number = icon_label(tree, engine, root, &(index + 1).to_string(), 9.0, MUTED);
+                let icon = icon_label(tree, engine, root, action.icon, 30.0, (action.ink)());
+                let name = label(tree, engine, root, action.label, 12.0, theme::text());
+                let number = icon_label(
+                    tree,
+                    engine,
+                    root,
+                    &(index + 1).to_string(),
+                    9.0,
+                    theme::muted(),
+                );
                 let active = index == 0;
                 Tile {
                     root,
@@ -140,12 +147,20 @@ impl PowerPanel {
                     name,
                     number,
                     color: Tween::new(
-                        if active { ELEVATED } else { Color::TRANSPARENT },
+                        if active {
+                            theme::elevated()
+                        } else {
+                            Color::TRANSPARENT
+                        },
                         FAST,
                         Easing::Linear,
                     ),
                     border: Tween::new(
-                        if active { LINE } else { Color::TRANSPARENT },
+                        if active {
+                            theme::line()
+                        } else {
+                            Color::TRANSPARENT
+                        },
                         NORMAL,
                         Easing::Linear,
                     ),
@@ -162,7 +177,7 @@ impl PowerPanel {
                 }
             })
             .collect();
-        let footer = label(tree, engine, root, "", 10.0, MUTED);
+        let footer = label(tree, engine, root, "", 10.0, theme::muted());
         let mut panel = Self {
             root,
             eyebrow,
@@ -300,16 +315,16 @@ impl PowerPanel {
             let hovered = input.contains_mouse(tile.area);
             let pressed = input.pressed(tile.area);
             let color = if active {
-                ELEVATED
+                theme::elevated()
             } else if hovered {
-                SURFACE
+                theme::surface()
             } else {
                 Color::TRANSPARENT
             };
             let border = if armed {
-                ACTIONS[index].ink
+                (ACTIONS[index].ink)()
             } else if active {
-                LINE
+                theme::line()
             } else {
                 Color::TRANSPARENT
             };

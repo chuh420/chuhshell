@@ -19,6 +19,7 @@ mod powerctl;
 mod state;
 #[allow(dead_code)]
 mod theme;
+mod themectl;
 mod tooltip;
 mod trayctl;
 mod wallctl;

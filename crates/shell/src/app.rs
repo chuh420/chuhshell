@@ -59,6 +59,7 @@ pub enum ServiceEvent {
     WallList(services::wallpapers::Listing),
     Profiles(services::upower::Profiles),
     WallApplied(Result<(), String>),
+    ThemeGenerated(Result<(), String>),
     Preview(String, String, String),
     PreviewPixmap(String, Option<std::sync::Arc<ui::tiny_skia::Pixmap>>),
     WallDecoded(
@@ -90,6 +91,7 @@ pub struct App {
     pub(crate) apps: crate::appsctl::Apps,
     pub(crate) clip: crate::clipctl::Clip,
     pub(crate) walls: crate::wallctl::Walls,
+    pub(crate) theme: crate::themectl::ThemeCtl,
     pub(crate) profiles: services::upower::Profiles,
     cpu_history: Vec<f64>,
     ram_history: Vec<f64>,
@@ -141,6 +143,7 @@ impl App {
         scheduler: Scheduler<()>,
         events: Sender<ServiceEvent>,
     ) -> Self {
+        let theme_mode = crate::themectl::load_initial();
         let mut engine = TextEngine::new(crate::theme::FONT_FAMILIES);
         let osd = Osd::new(&mut engine);
         let mut model = BarModel::placeholder();
@@ -165,6 +168,7 @@ impl App {
             apps: crate::appsctl::Apps::default(),
             clip: crate::clipctl::Clip::default(),
             walls: crate::wallctl::Walls::default(),
+            theme: crate::themectl::ThemeCtl::new(theme_mode),
             profiles: services::upower::Profiles::default(),
             cpu_history: Vec::new(),
             ram_history: Vec::new(),
@@ -194,6 +198,7 @@ impl App {
         self.start_network();
         self.start_apps();
         self.start_wallpapers();
+        self.start_theme();
         self.start_power_panels();
         let sender = self.events.clone();
         if let Err(err) = hyprland::spawn(move |event| {
@@ -318,6 +323,7 @@ impl App {
             ServiceEvent::WallList(listing) => self.wallpapers_listed(listing),
             ServiceEvent::Profiles(profiles) => self.profiles_changed(profiles),
             ServiceEvent::WallApplied(result) => self.wallpaper_applied(result),
+            ServiceEvent::ThemeGenerated(result) => self.theme_generated(result),
             ServiceEvent::Preview(path, revision, picture) => {
                 self.preview_ready(path, revision, picture)
             }
@@ -689,6 +695,20 @@ impl App {
                 self.state.panel.clear();
                 self.sync();
             }
+            "theme" => {
+                let mode = match args.get(1).map(String::as_str) {
+                    None => return Reply::Ok(self.theme.mode.name().to_string()),
+                    Some("toggle") => match self.theme.mode {
+                        services::theme::Mode::Auto => services::theme::Mode::Static,
+                        services::theme::Mode::Static => services::theme::Mode::Auto,
+                    },
+                    Some(value) => match services::theme::Mode::parse(value) {
+                        Some(mode) => mode,
+                        None => return Reply::Error(format!("unknown theme mode: {value}")),
+                    },
+                };
+                self.set_theme_mode(mode);
+            }
             "inspect" => return Reply::Ok(self.inspect()),
             other => return Reply::Error(format!("unknown command: {other}")),
         }
@@ -717,6 +737,7 @@ impl App {
             "brightness": self.state.brightness,            "notifications": self.notifications_json(),
             "popups": self.notes.popups.len(),
             "dnd": self.state.dnd,
+            "theme": self.theme.mode.name(),
         })
         .to_string()
     }
@@ -776,6 +797,7 @@ impl App {
             volume: self.state.volume(),
             brightness: self.state.brightness,
             keep_awake: self.state.keep_awake,
+            theme_auto: self.theme.mode == services::theme::Mode::Auto,
             dnd: self.state.dnd,
             notifications: self.notes.list.clone(),
             ages: self.notes.ages(),
@@ -929,6 +951,13 @@ impl App {
             PanelAction::SetBrightness(value) => {
                 self.set_brightness(value);
                 self.sync();
+            }
+            PanelAction::ToggleTheme => {
+                let mode = match self.theme.mode {
+                    services::theme::Mode::Auto => services::theme::Mode::Static,
+                    services::theme::Mode::Static => services::theme::Mode::Auto,
+                };
+                self.set_theme_mode(mode);
             }
             PanelAction::ToggleKeepAwake => {
                 self.set_keep_awake(!self.state.keep_awake);
@@ -1145,6 +1174,36 @@ impl App {
         if let Err(err) = result {
             log::warn!("{err}");
         }
+    }
+
+    pub(crate) fn retheme(&mut self) {
+        let now = self.now();
+        let mut surfaces = Vec::new();
+        for entry in self.bars.values_mut() {
+            if let Some((bar, canvas)) = entry.view.as_mut() {
+                *bar = Bar::new(
+                    &mut self.engine,
+                    canvas.width(),
+                    canvas.height(),
+                    &self.model,
+                    now,
+                );
+                surfaces.push(entry.surface);
+            }
+        }
+        for surface in surfaces {
+            if self.state.keep_awake {
+                self.platform.set_idle_inhibit(surface, true);
+            }
+            self.draw_bar(surface, true);
+        }
+        self.osd.retheme(&mut self.engine);
+        if let Some(surface) = self.osd.surface {
+            self.platform.schedule_frame(surface);
+        }
+        self.overlay.retheme(&mut self.engine, now);
+        self.sync();
+        crate::memory::trim();
     }
 
     fn draw_bar(&mut self, surface: SurfaceId, full: bool) {

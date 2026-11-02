@@ -6,12 +6,14 @@ use ui::{
     widgets::{Chip, ChipStyle, Label},
 };
 
-use crate::theme::{ELEVATED, FONT, ICONS};
+use crate::theme::{self, FONT, ICONS};
 
-pub const CHIP_STYLE: ChipStyle = ChipStyle {
-    family: ICONS,
-    hover: ELEVATED,
-};
+pub fn chip_style() -> ChipStyle {
+    ChipStyle {
+        family: ICONS,
+        hover: theme::elevated(),
+    }
+}
 
 const SCROLLBAR: Color = Color::rgb(0xb8b8b8);
 
@@ -63,7 +65,7 @@ pub fn chip(
         input,
         engine,
         parent,
-        &CHIP_STYLE,
+        &chip_style(),
         text,
         ink,
         compact,

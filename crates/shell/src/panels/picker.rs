@@ -7,7 +7,7 @@ use ui::{
 };
 
 use super::kit::{icon_label, label, rect, set_border};
-use crate::theme::{ELEVATED, FAST, FONT, GREEN, LINE, MUTED, NORMAL, SLOW, SURFACE, TEXT};
+use crate::theme::{self, FAST, FONT, NORMAL, SLOW};
 
 pub const SEARCH_HEIGHT: f32 = 52.0;
 const SPACING: f32 = 5.0;
@@ -16,7 +16,7 @@ const MOVE: Millis = 170.0;
 const SCROLLBAR: Color = Color::rgb(0xb8b8b8);
 
 pub fn eyebrow(tree: &mut Tree, engine: &mut TextEngine, parent: NodeId, text: &str) -> Label {
-    let mut spec = TextSpec::plain(text, FONT, 9.0, GREEN);
+    let mut spec = TextSpec::plain(text, FONT, 9.0, theme::green());
     if let Some(span) = spec.spans.first_mut() {
         span.letter_spacing = 1.0;
     }
@@ -45,22 +45,22 @@ impl SearchBox {
         animate_icon: bool,
         now: Millis,
     ) -> Self {
-        let rect = rect(tree, parent, SURFACE, 12.0);
-        set_border(tree, rect, LINE, 1.0);
-        let icon = icon_label(tree, engine, rect, glyph, 18.0, MUTED);
-        let placeholder = label(tree, engine, rect, placeholder, 16.0, MUTED);
-        let mut field = TextField::new(tree, input, engine, rect, FONT, 16.0, TEXT, false);
-        field.set_selection_color(tree, LINE);
+        let rect = rect(tree, parent, theme::surface(), 12.0);
+        set_border(tree, rect, theme::line(), 1.0);
+        let icon = icon_label(tree, engine, rect, glyph, 18.0, theme::muted());
+        let placeholder = label(tree, engine, rect, placeholder, 16.0, theme::muted());
+        let mut field = TextField::new(tree, input, engine, rect, FONT, 16.0, theme::text(), false);
+        field.set_selection_color(tree, theme::line());
         field.set_focus(true, now);
-        let mut border = Tween::new(LINE, NORMAL, Easing::Linear);
-        border.start(now, LINE, GREEN);
+        let mut border = Tween::new(theme::line(), NORMAL, Easing::Linear);
+        border.start(now, theme::line(), theme::green());
         Self {
             rect,
             icon,
             field,
             placeholder,
             border,
-            icon_color: Tween::new(MUTED, NORMAL, Easing::Linear),
+            icon_color: Tween::new(theme::muted(), NORMAL, Easing::Linear),
             animate_icon,
         }
     }
@@ -91,9 +91,9 @@ impl SearchBox {
         let mut running = self.border.tick(now);
         set_border(tree, self.rect, self.border.value(), 1.0);
         let target = if self.field.text().is_empty() {
-            MUTED
+            theme::muted()
         } else {
-            GREEN
+            theme::green()
         };
         if self.animate_icon {
             if self.icon_color.target() != target {
@@ -174,7 +174,7 @@ impl PickList {
         view_mouse.wheel = true;
         let view_area = input.add(view_mouse);
         let content = tree.add(view, Node::new(0.0, 0.0, 0.0, 0.0));
-        let highlight = rect(tree, content, ELEVATED, 11.0);
+        let highlight = rect(tree, content, theme::elevated(), 11.0);
         let accent = tree.add(
             highlight,
             Node::rect(
@@ -183,7 +183,7 @@ impl PickList {
                 3.0,
                 20.0,
                 RectPaint {
-                    color: GREEN,
+                    color: theme::green(),
                     radius: 2.0,
                     ..RectPaint::default()
                 },
@@ -256,7 +256,7 @@ impl PickList {
             .last()
             .map_or(0.0, |row| row.y + row.height + SPACING);
         let root = tree.add(self.content, Node::new(0.0, y, 0.0, height));
-        let hover_bg = rect(tree, root, SURFACE, 11.0);
+        let hover_bg = rect(tree, root, theme::surface(), 11.0);
         let content = tree.add(root, Node::new(0.0, 10.0, 0.0, height - 20.0));
         let hit = tree.add(root, Node::new(0.0, 0.0, 0.0, height));
         let area = input.add(MouseArea::new(hit));

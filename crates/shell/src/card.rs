@@ -12,15 +12,14 @@ use ui::{
     widgets::{Chip, ChipStyle, Label},
 };
 
-use crate::theme::{
-    BG, ELEVATED, FAST, FONT, GREEN, ICONS, LINE, MUTED, NORMAL, RED, SLOW, SURFACE, TEXT,
-    UI_SCALE, YELLOW,
-};
+use crate::theme::{self, FAST, FONT, ICONS, NORMAL, SLOW, UI_SCALE};
 
-const CHIP_STYLE: ChipStyle = ChipStyle {
-    family: ICONS,
-    hover: ELEVATED,
-};
+fn chip_style() -> ChipStyle {
+    ChipStyle {
+        family: ICONS,
+        hover: theme::elevated(),
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum CardAction {
@@ -149,14 +148,14 @@ impl Card {
                 0.0,
                 0.0,
                 RectPaint {
-                    color: BG,
+                    color: theme::bg(),
                     radius: 14.0,
-                    border_color: LINE,
+                    border_color: theme::line(),
                     border_width: 1.0,
                 },
             ),
         );
-        let mut icon_node = Node::rect(13.0, 13.0, 38.0, 38.0, rect(ELEVATED, 10.0));
+        let mut icon_node = Node::rect(13.0, 13.0, 38.0, 38.0, rect(theme::elevated(), 10.0));
         icon_node.clip = true;
         let icon_box = tree.add(body, icon_node);
         let icon_image = tree.add(icon_box, Node::new(0.0, 0.0, 0.0, 0.0));
@@ -164,22 +163,40 @@ impl Card {
             tree,
             engine,
             icon_box,
-            TextSpec::plain("󰂚", ICONS, 18.0, YELLOW),
+            TextSpec::plain("󰂚", ICONS, 18.0, theme::yellow()),
         );
-        let mut app_spec = TextSpec::plain("", FONT, 9.0, GREEN);
+        let mut app_spec = TextSpec::plain("", FONT, 9.0, theme::green());
         if let Some(span) = app_spec.spans.first_mut() {
             span.letter_spacing = 0.6;
         }
         let app = Label::new(tree, engine, body, app_spec);
-        let age = Label::new(tree, engine, body, TextSpec::plain("", FONT, 9.0, MUTED));
-        let close = Label::new(tree, engine, body, TextSpec::plain("×", FONT, 13.0, MUTED));
-        let mut summary_spec = TextSpec::plain("", FONT, 13.0, TEXT);
+        let age = Label::new(
+            tree,
+            engine,
+            body,
+            TextSpec::plain("", FONT, 9.0, theme::muted()),
+        );
+        let close = Label::new(
+            tree,
+            engine,
+            body,
+            TextSpec::plain("×", FONT, 13.0, theme::muted()),
+        );
+        let mut summary_spec = TextSpec::plain("", FONT, 13.0, theme::text());
         if let Some(span) = summary_spec.spans.first_mut() {
             span.weight = Weight::Medium;
         }
         let summary = Label::new(tree, engine, body, summary_spec);
-        let text = Label::new(tree, engine, body, TextSpec::plain("", FONT, 11.0, MUTED));
-        let bar = tree.add(body, Node::rect(14.0, 0.0, 0.0, 2.0, rect(GREEN, 1.0)));
+        let text = Label::new(
+            tree,
+            engine,
+            body,
+            TextSpec::plain("", FONT, 11.0, theme::muted()),
+        );
+        let bar = tree.add(
+            body,
+            Node::rect(14.0, 0.0, 0.0, 2.0, rect(theme::green(), 1.0)),
+        );
         let mut body_mouse = MouseArea::new(body);
         body_mouse.buttons = Buttons {
             left: true,
@@ -218,8 +235,8 @@ impl Card {
             leaving: false,
             drag: None,
             suppress_click: false,
-            color: Tween::new(BG, FAST, Easing::Linear),
-            close_color: Tween::new(MUTED, 0.0, Easing::Linear),
+            color: Tween::new(theme::bg(), FAST, Easing::Linear),
+            close_color: Tween::new(theme::muted(), 0.0, Easing::Linear),
             icon: None,
             opacity: Tween::new(1.0, NORMAL, Easing::Linear),
         };
@@ -264,8 +281,8 @@ impl Card {
         self.summary.set_text(engine, &notification.summary);
         let body = strip_images(&notification.body);
         let spec = TextSpec {
-            spans: styled_spans(&body, FONT, 11.0, GREEN),
-            color: MUTED,
+            spans: styled_spans(&body, FONT, 11.0, theme::green()),
+            color: theme::muted(),
             elide_width: None,
             wrap_width: None,
             max_lines: None,
@@ -274,8 +291,11 @@ impl Card {
         let critical = self.critical();
         self.icon_glyph
             .set_text(engine, if critical { "󰀦" } else { "󰂚" });
-        self.icon_glyph
-            .set_color(if critical { RED } else { YELLOW });
+        self.icon_glyph.set_color(if critical {
+            theme::red()
+        } else {
+            theme::yellow()
+        });
         let wanted: Vec<(String, String)> = notification
             .actions
             .iter()
@@ -299,24 +319,35 @@ impl Card {
                     input,
                     engine,
                     self.body,
-                    &CHIP_STYLE,
+                    &chip_style(),
                     &label,
-                    TEXT,
+                    theme::text(),
                     true,
                     None,
                 );
-                chip.color_override = Some(ELEVATED);
+                chip.color_override = Some(theme::elevated());
                 chip.jump_color(input);
                 self.chips.push((chip, identifier));
             }
         }
-        let border = if critical { RED } else { LINE };
+        let border = if critical {
+            theme::red()
+        } else {
+            theme::line()
+        };
         if let Some(node) = tree.get_mut(self.body)
             && let Paint::Rect(rect) = &mut node.paint
         {
             rect.border_color = border;
         }
-        tree.set_fill(self.bar, if critical { RED } else { GREEN });
+        tree.set_fill(
+            self.bar,
+            if critical {
+                theme::red()
+            } else {
+                theme::green()
+            },
+        );
     }
 
     pub fn set_icon(&mut self, tree: &mut Tree, icon: Option<Arc<Pixmap>>) {
@@ -658,15 +689,21 @@ impl Card {
         let hovered = input.contains_mouse(self.body_area)
             || input.contains_mouse(self.close_area)
             || self.chips.iter().any(|(chip, _)| chip.hovered(input));
-        self.color
-            .set_target(now, if hovered { SURFACE } else { BG });
+        self.color.set_target(
+            now,
+            if hovered {
+                theme::surface()
+            } else {
+                theme::bg()
+            },
+        );
         running |= self.color.tick(now);
         self.close_color.set_target(
             now,
             if input.contains_mouse(self.close_area) {
-                TEXT
+                theme::text()
             } else {
-                MUTED
+                theme::muted()
             },
         );
         self.close_color.tick(now);

@@ -8,17 +8,19 @@ use ui::{
 
 use crate::{
     bar::TooltipTarget,
-    theme::{FONT, LINE, SURFACE, TEXT},
+    theme::{self, FONT},
 };
 
 const DELAY: Millis = 650.0;
 
-const STYLE: TooltipStyle = TooltipStyle {
-    family: FONT,
-    text: TEXT,
-    surface: SURFACE,
-    line: LINE,
-};
+fn style() -> TooltipStyle {
+    TooltipStyle {
+        family: FONT,
+        text: theme::text(),
+        surface: theme::surface(),
+        line: theme::line(),
+    }
+}
 
 enum Phase {
     Waiting(Millis),
@@ -104,7 +106,7 @@ impl Tooltips {
             if deadline > now {
                 continue;
             }
-            let mut view = TooltipView::new(engine, &tip.text, &STYLE);
+            let mut view = TooltipView::new(engine, &tip.text, &style());
             let placement = PopupPlacement {
                 width: view.width.ceil() as u32,
                 height: view.height.ceil() as u32,

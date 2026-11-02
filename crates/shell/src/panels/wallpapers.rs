@@ -16,7 +16,7 @@ use super::{
     kit::{Scroller, chip, icon_label, label, place_chip, place_label, rect, set_border},
 };
 use crate::{
-    theme::{ELEVATED, FAST, GREEN, LINE, MUTED, NORMAL, RED, SLOW, SURFACE, TEXT, UI_SCALE},
+    theme::{self, FAST, NORMAL, SLOW, UI_SCALE},
     wallctl::{PreviewKey, WallData},
 };
 
@@ -96,10 +96,19 @@ impl WallpapersPanel {
         data: &PanelData,
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
-        let title = label(tree, engine, root, "wallpapers", 26.0, TEXT);
-        let subtitle = label(tree, engine, root, "", 11.0, MUTED);
-        let refresh = chip(tree, input, engine, root, "refresh", TEXT, false, None);
-        let close = chip(tree, input, engine, root, "×", TEXT, false, None);
+        let title = label(tree, engine, root, "wallpapers", 26.0, theme::text());
+        let subtitle = label(tree, engine, root, "", 11.0, theme::muted());
+        let refresh = chip(
+            tree,
+            input,
+            engine,
+            root,
+            "refresh",
+            theme::text(),
+            false,
+            None,
+        );
+        let close = chip(tree, input, engine, root, "×", theme::text(), false, None);
         let grid = Scroller::new(tree, input, root, true);
         let empty = label(
             tree,
@@ -107,10 +116,10 @@ impl WallpapersPanel {
             grid.view,
             "Add images to Pictures/Wallpapers",
             12.0,
-            MUTED,
+            theme::muted(),
         );
-        let error = label(tree, engine, root, "", 11.0, RED);
-        let footer = label(tree, engine, root, "", 11.0, MUTED);
+        let error = label(tree, engine, root, "", 11.0, theme::red());
+        let footer = label(tree, engine, root, "", 11.0, theme::muted());
         let mut panel = Self {
             root,
             title,
@@ -258,23 +267,23 @@ impl WallpapersPanel {
         item: &WallItem,
         now: Millis,
     ) -> Tile {
-        let root = rect(tree, parent, SURFACE, 14.0);
-        set_border(tree, root, LINE, 1.0);
+        let root = rect(tree, parent, theme::surface(), 14.0);
+        set_border(tree, root, theme::line(), 1.0);
         let area = input.add(MouseArea::new(root));
-        let frame = rect(tree, root, ELEVATED, 9.0);
+        let frame = rect(tree, root, theme::elevated(), 9.0);
         if let Some(node) = tree.get_mut(frame) {
             node.clip = true;
         }
-        let placeholder = icon_label(tree, engine, frame, "󰸉", 28.0, LINE);
+        let placeholder = icon_label(tree, engine, frame, "󰸉", 28.0, theme::line());
         let image = tree.add(frame, Node::new(0.0, 0.0, 0.0, 0.0));
         let badge = item.live.then(|| {
-            let pill = rect(tree, frame, SURFACE, 0.0);
+            let pill = rect(tree, frame, theme::surface(), 0.0);
             tree.set_opacity(pill, 0.92);
-            let text = label(tree, engine, pill, "live", 10.0, GREEN);
+            let text = label(tree, engine, pill, "live", 10.0, theme::green());
             (pill, text)
         });
-        let name = label(tree, engine, root, &item.name, 12.0, TEXT);
-        let applied = label(tree, engine, root, "✓ applied", 10.0, GREEN);
+        let name = label(tree, engine, root, &item.name, 12.0, theme::text());
+        let applied = label(tree, engine, root, "✓ applied", 10.0, theme::green());
         let mut opacity = Tween::new(0.0, SLOW, Easing::Linear);
         opacity.start(now, 0.0, 1.0);
         Tile {
@@ -286,8 +295,8 @@ impl WallpapersPanel {
             image,
             name,
             applied,
-            color: Tween::new(SURFACE, FAST, Easing::Linear),
-            border: Tween::new(LINE, NORMAL, Easing::Linear),
+            color: Tween::new(theme::surface(), FAST, Easing::Linear),
+            border: Tween::new(theme::line(), NORMAL, Easing::Linear),
             scale: Tween::new(1.0, NORMAL, Easing::OutCubic),
             opacity,
             placeholder_opacity: Tween::new(1.0, NORMAL, Easing::Linear),
@@ -492,16 +501,20 @@ impl WallpapersPanel {
             }
             let hovered = input.contains_mouse(tile.area);
             let pressed = input.pressed(tile.area);
-            let color = if hovered { ELEVATED } else { SURFACE };
+            let color = if hovered {
+                theme::elevated()
+            } else {
+                theme::surface()
+            };
             if tile.color.target() != color {
                 tile.color.set_target(now, color);
             }
             let border = if selected {
-                GREEN
+                theme::green()
             } else if current {
-                MUTED
+                theme::muted()
             } else {
-                LINE
+                theme::line()
             };
             if tile.border.target() != border {
                 tile.border.set_target(now, border);

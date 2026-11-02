@@ -12,7 +12,7 @@ use super::{
     PanelAction, PanelData, TooltipSpot,
     kit::{chip, icon_label, label, place_chip, place_label, rect},
 };
-use crate::theme::{BLUE, ELEVATED, FONT, GREEN, LINE, MUTED, NORMAL, RED, SURFACE, TEXT, YELLOW};
+use crate::theme::{self, FONT, NORMAL};
 
 struct Card {
     root: NodeId,
@@ -83,11 +83,11 @@ pub fn size(gib: f64) -> String {
 
 fn heat(value: i64) -> Color {
     if value >= 90 {
-        RED
+        theme::red()
     } else if value >= 75 {
-        YELLOW
+        theme::yellow()
     } else {
-        TEXT
+        theme::text()
     }
 }
 
@@ -109,12 +109,12 @@ impl SystemPanel {
         now: Millis,
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
-        let title = label(tree, engine, root, "system", 18.0, TEXT);
-        let uptime = label(tree, engine, root, "", 12.0, GREEN);
+        let title = label(tree, engine, root, "system", 18.0, theme::text());
+        let uptime = label(tree, engine, root, "", 12.0, theme::green());
         let card = |tree: &mut Tree, engine: &mut TextEngine, cpu: bool| {
-            let root = rect(tree, root, SURFACE, 14.0);
-            let color = if cpu { GREEN } else { BLUE };
-            let mut value_spec = TextSpec::plain("", FONT, 24.0, TEXT);
+            let root = rect(tree, root, theme::surface(), 14.0);
+            let color = if cpu { theme::green() } else { theme::blue() };
+            let mut value_spec = TextSpec::plain("", FONT, 24.0, theme::text());
             if let Some(span) = value_spec.spans.first_mut() {
                 span.weight = Weight::Light;
             }
@@ -127,11 +127,11 @@ impl SystemPanel {
                     root,
                     if cpu { "cpu" } else { "memory" },
                     12.0,
-                    MUTED,
+                    theme::muted(),
                 ),
                 value: Label::new(tree, engine, root, value_spec),
-                sub: label(tree, engine, root, "", 10.0, MUTED),
-                spark: Sparkline::new(tree, root, color, YELLOW, LINE),
+                sub: label(tree, engine, root, "", 10.0, theme::muted()),
+                spark: Sparkline::new(tree, root, color, theme::yellow(), theme::line()),
             }
         };
         let cards = [card(tree, engine, true), card(tree, engine, false)];
@@ -139,20 +139,45 @@ impl SystemPanel {
             .iter()
             .map(|key| {
                 (
-                    label(tree, engine, root, key, 12.0, MUTED),
-                    label(tree, engine, root, "", 12.0, TEXT),
+                    label(tree, engine, root, key, 12.0, theme::muted()),
+                    label(tree, engine, root, "", 12.0, theme::text()),
                 )
             })
             .collect();
-        let separator = rect(tree, root, LINE, 0.0);
-        let processes = label(tree, engine, root, "processes", 12.0, MUTED);
-        let sort_cpu = chip(tree, input, engine, root, "cpu", TEXT, true, None);
-        let sort_mem = chip(tree, input, engine, root, "memory", TEXT, true, None);
+        let separator = rect(tree, root, theme::line(), 0.0);
+        let processes = label(tree, engine, root, "processes", 12.0, theme::muted());
+        let sort_cpu = chip(tree, input, engine, root, "cpu", theme::text(), true, None);
+        let sort_mem = chip(
+            tree,
+            input,
+            engine,
+            root,
+            "memory",
+            theme::text(),
+            true,
+            None,
+        );
         let mut list_node = Node::new(0.0, 0.0, 0.0, 0.0);
         list_node.clip = true;
         let list = tree.add(root, list_node);
-        let empty = label(tree, engine, list, "reading processes…", 12.0, MUTED);
-        let btop = chip(tree, input, engine, root, "btop ↗", TEXT, false, None);
+        let empty = label(
+            tree,
+            engine,
+            list,
+            "reading processes…",
+            12.0,
+            theme::muted(),
+        );
+        let btop = chip(
+            tree,
+            input,
+            engine,
+            root,
+            "btop ↗",
+            theme::text(),
+            false,
+            None,
+        );
         let mut panel = Self {
             root,
             title,
@@ -217,9 +242,9 @@ impl SystemPanel {
         self.cards[0]
             .value
             .set_color(if res.cpu.is_some_and(|cpu| cpu >= 85) {
-                YELLOW
+                theme::yellow()
             } else {
-                TEXT
+                theme::text()
             });
         let cpu_sub = match detail {
             Some(detail) => format!(
@@ -235,7 +260,7 @@ impl SystemPanel {
         self.cards[0].sub.set_color(
             detail
                 .and_then(|detail| detail.temperature)
-                .map_or(MUTED, heat),
+                .map_or(theme::muted(), heat),
         );
         self.cards[1]
             .value
@@ -284,9 +309,9 @@ impl SystemPanel {
                 tree.remove(core.label.node);
             }
             for _ in cores {
-                let track = rect(tree, self.root, ELEVATED, 3.0);
-                let fill = rect(tree, track, GREEN, 3.0);
-                let label = label(tree, engine, self.root, "", 9.0, MUTED);
+                let track = rect(tree, self.root, theme::elevated(), 3.0);
+                let fill = rect(tree, track, theme::green(), 3.0);
+                let label = label(tree, engine, self.root, "", 9.0, theme::muted());
                 self.cores.push(Core {
                     track,
                     fill,
@@ -305,7 +330,14 @@ impl SystemPanel {
             if core.width.target() != percent {
                 core.width.set_target(now, percent);
             }
-            tree.set_fill(core.fill, if percent >= 85.0 { YELLOW } else { GREEN });
+            tree.set_fill(
+                core.fill,
+                if percent >= 85.0 {
+                    theme::yellow()
+                } else {
+                    theme::green()
+                },
+            );
         }
     }
 
@@ -336,12 +368,20 @@ impl SystemPanel {
             let mut mouse = MouseArea::hover_handler(root);
             mouse.cursor = platform::CursorShape::Default;
             let area = input.add(mouse);
-            let name = label(tree, engine, root, name, 12.0, TEXT);
-            let cpu_color = if self.sort == "cpu" { TEXT } else { MUTED };
-            let mem_color = if self.sort == "mem" { TEXT } else { MUTED };
+            let name = label(tree, engine, root, name, 12.0, theme::text());
+            let cpu_color = if self.sort == "cpu" {
+                theme::text()
+            } else {
+                theme::muted()
+            };
+            let mem_color = if self.sort == "mem" {
+                theme::text()
+            } else {
+                theme::muted()
+            };
             let cpu = icon_label(tree, engine, root, cpu, 10.0, cpu_color);
             let mem = icon_label(tree, engine, root, mem, 10.0, mem_color);
-            let mut kill = chip(tree, input, engine, root, "󰅖", RED, true, None);
+            let mut kill = chip(tree, input, engine, root, "󰅖", theme::red(), true, None);
             kill.shortcut = "end process · right click to force".into();
             if let Some(area) = input.get_mut(kill.area) {
                 area.buttons = Buttons::LEFT_RIGHT;
@@ -543,7 +583,7 @@ impl SystemPanel {
         }
         for row in &self.rows {
             let color = if input.contains_mouse(row.area) {
-                SURFACE
+                theme::surface()
             } else {
                 Color::TRANSPARENT
             };

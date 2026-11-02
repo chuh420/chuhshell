@@ -16,7 +16,7 @@ use super::{
     kit::{chip, icon_label, label, place_chip, place_label, rect},
     picker::{PickList, PickStyle, SEARCH_HEIGHT, SearchBox, eyebrow},
 };
-use crate::theme::{ELEVATED, FONT, GREEN, ICON_FALLBACK, MUTED, NORMAL, TEXT};
+use crate::theme::{self, FONT, ICON_FALLBACK, NORMAL};
 
 const ROW_HEIGHT: f32 = 56.0;
 const CACHE_BUFFER: f32 = 320.0;
@@ -83,8 +83,8 @@ impl LauncherPanel {
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
         let eyebrow = eyebrow(tree, engine, root, "workspace / launch");
-        let title = label(tree, engine, root, "applications", 26.0, TEXT);
-        let close = chip(tree, input, engine, root, "×", TEXT, false, None);
+        let title = label(tree, engine, root, "applications", 26.0, theme::text());
+        let close = chip(tree, input, engine, root, "×", theme::text(), false, None);
         let search = SearchBox::new(
             tree,
             input,
@@ -102,8 +102,15 @@ impl LauncherPanel {
             hit_right_margin: 0.0,
         };
         let list = PickList::new(tree, input, root, style, now);
-        let empty = label(tree, engine, list.view, "No results found", 12.0, MUTED);
-        let footer = label(tree, engine, root, "", 10.0, MUTED);
+        let empty = label(
+            tree,
+            engine,
+            list.view,
+            "No results found",
+            12.0,
+            theme::muted(),
+        );
+        let footer = label(tree, engine, root, "", 10.0, theme::muted());
         let mut panel = Self {
             root,
             eyebrow,
@@ -150,12 +157,12 @@ impl LauncherPanel {
         content: NodeId,
         app: AppEntry,
     ) -> Row {
-        let icon_bg = rect(tree, content, ELEVATED, 7.0);
+        let icon_bg = rect(tree, content, theme::elevated(), 7.0);
         let image = tree.add(icon_bg, Node::new(0.0, 0.0, 28.0, 28.0));
         let initial: String = app.name.chars().take(1).collect();
-        let letter = label(tree, engine, icon_bg, &initial, 16.0, GREEN);
+        let letter = label(tree, engine, icon_bg, &initial, 16.0, theme::green());
         tree.set_visible(letter.node, false);
-        let name = label(tree, engine, content, &app.name, 14.0, TEXT);
+        let name = label(tree, engine, content, &app.name, 14.0, theme::text());
         let subtitle = if !app.generic.is_empty() {
             app.generic.as_str()
         } else if !app.comment.is_empty() {
@@ -163,9 +170,9 @@ impl LauncherPanel {
         } else {
             "Application"
         };
-        let sub = label(tree, engine, content, subtitle, 10.0, MUTED);
-        let eye = icon_label(tree, engine, content, "󰈈", 18.0, MUTED);
-        let arrow = label(tree, engine, content, "↵", 12.0, GREEN);
+        let sub = label(tree, engine, content, subtitle, 10.0, theme::muted());
+        let eye = icon_label(tree, engine, content, "󰈈", 18.0, theme::muted());
+        let arrow = label(tree, engine, content, "↵", 12.0, theme::green());
         let hidden = self.hidden.contains(&app.id);
         tree.set_opacity(content, if hidden { 0.55 } else { 1.0 });
         Row {
@@ -223,7 +230,7 @@ impl LauncherPanel {
             }
         );
         self.footer
-            .set_spec(engine, fallback_spec(&text, 10.0, MUTED));
+            .set_spec(engine, fallback_spec(&text, 10.0, theme::muted()));
     }
 
     pub fn sync(
@@ -523,7 +530,7 @@ mod tests {
 
     #[test]
     fn footer_icons_use_fallback_font() {
-        let spec = fallback_spec("a 󰈉 b", 10.0, MUTED);
+        let spec = fallback_spec("a 󰈉 b", 10.0, theme::muted());
         let parts: Vec<_> = spec
             .spans
             .iter()

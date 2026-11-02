@@ -17,7 +17,7 @@ use crate::{
         power::PowerPanel, system::SystemPanel, tray::TrayPanel, wallpapers::WallpapersPanel,
         wifi::WifiPanel,
     },
-    theme::{BG, LINE, NORMAL, SLOW, UI_SCALE},
+    theme::{self, NORMAL, SLOW, UI_SCALE},
 };
 
 pub const ANCHORED: [&str; 8] = [
@@ -89,6 +89,7 @@ pub fn panel_height(p: &str, available: f64, tray_tall: bool, wifi_prompt: bool)
         "calendar" => 500.0,
         "notifications" => 640.0,
         "power" => 290.0,
+        "control" => 756.0,
         _ => 704.0,
     };
     (available - 70.0).min(value)
@@ -227,9 +228,9 @@ impl Overlay {
             0.0,
             0.0,
             RectPaint {
-                color: BG,
+                color: theme::bg(),
                 radius: 22.0,
-                border_color: LINE,
+                border_color: theme::line(),
                 border_width: 1.0,
             },
         );
@@ -513,6 +514,21 @@ impl Overlay {
             panel.settle(&mut self.tree, &self.input);
             self.view = View::Control(Box::new(panel));
         }
+    }
+
+    pub fn retheme(&mut self, engine: &mut TextEngine, now: Millis) {
+        self.tree.set_fill(self.card, theme::bg());
+        if let Some(node) = self.tree.get_mut(self.card)
+            && let Paint::Rect(rect) = &mut node.paint
+        {
+            rect.border_color = theme::line();
+        }
+        if !matches!(self.view, View::None) {
+            let name = std::mem::take(&mut self.content_panel);
+            self.set_content(engine, &name, now);
+        }
+        self.tree.mark_all();
+        self.full = true;
     }
 
     pub fn set_data(&mut self, engine: &mut TextEngine, data: &PanelData, now: Millis) {
@@ -1184,10 +1200,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn control_geometry_matches_qml() {
+    fn control_geometry() {
         let w = panel_width("control", 1920.0);
         let h = panel_height("control", 1080.0, false, false);
-        assert_eq!((w, h), (520.0, 704.0));
+        assert_eq!((w, h), (520.0, 756.0));
         assert_eq!(panel_x("control", w, 1920.0, 0.0), 1386.0);
         assert_eq!(panel_y("control", h, 1080.0), 58.0);
     }

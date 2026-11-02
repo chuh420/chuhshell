@@ -14,13 +14,15 @@ use ui::{
 use super::{PanelAction, PanelData, TooltipSpot};
 use crate::{
     card::Card,
-    theme::{ELEVATED, FONT, ICONS, LINE, MUTED, RED, SLOW, TEXT, YELLOW},
+    theme::{self, FONT, ICONS, SLOW},
 };
 
-const CHIP_STYLE: ChipStyle = ChipStyle {
-    family: ICONS,
-    hover: ELEVATED,
-};
+fn chip_style() -> ChipStyle {
+    ChipStyle {
+        family: ICONS,
+        hover: theme::elevated(),
+    }
+}
 const SCROLLBAR: Color = Color::rgb(0xb8b8b8);
 
 pub struct NotificationsPanel {
@@ -64,16 +66,16 @@ impl NotificationsPanel {
             tree,
             engine,
             root,
-            TextSpec::plain("notifications", FONT, 18.0, TEXT),
+            TextSpec::plain("notifications", FONT, 18.0, theme::text()),
         );
         let mut dnd = Chip::new(
             tree,
             input,
             engine,
             root,
-            &CHIP_STYLE,
+            &chip_style(),
             "",
-            YELLOW,
+            theme::yellow(),
             false,
             None,
         );
@@ -83,13 +85,18 @@ impl NotificationsPanel {
             input,
             engine,
             root,
-            &CHIP_STYLE,
+            &chip_style(),
             "clear all",
-            RED,
+            theme::red(),
             false,
             None,
         );
-        let count = Label::new(tree, engine, root, TextSpec::plain("", FONT, 12.0, MUTED));
+        let count = Label::new(
+            tree,
+            engine,
+            root,
+            TextSpec::plain("", FONT, 12.0, theme::muted()),
+        );
         let mut list_node = Node::new(0.0, 0.0, 0.0, 0.0);
         list_node.clip = true;
         let list = tree.add(root, list_node);
@@ -98,12 +105,17 @@ impl NotificationsPanel {
         let list_area = input.add(list_mouse);
         let scroller = tree.add(list, Node::new(0.0, 0.0, 0.0, 0.0));
         let empty = tree.add(list, Node::new(0.0, 0.0, 0.0, 0.0));
-        let empty_icon = Label::new(tree, engine, empty, TextSpec::plain("󰂚", ICONS, 46.0, LINE));
+        let empty_icon = Label::new(
+            tree,
+            engine,
+            empty,
+            TextSpec::plain("󰂚", ICONS, 46.0, theme::line()),
+        );
         let empty_label = Label::new(
             tree,
             engine,
             empty,
-            TextSpec::plain("all caught up", FONT, 12.0, MUTED),
+            TextSpec::plain("all caught up", FONT, 12.0, theme::muted()),
         );
         let bar = tree.add(
             list,
@@ -128,7 +140,7 @@ impl NotificationsPanel {
                 "click to open  ·  swipe or right click to dismiss",
                 FONT,
                 10.0,
-                MUTED,
+                theme::muted(),
             ),
         );
         let mut panel = Self {
@@ -232,7 +244,14 @@ impl NotificationsPanel {
             },
             12.0,
         );
-        self.dnd.set_ink(now, if data.dnd { MUTED } else { YELLOW });
+        self.dnd.set_ink(
+            now,
+            if data.dnd {
+                theme::muted()
+            } else {
+                theme::yellow()
+            },
+        );
         self.dnd.selected = data.dnd;
         self.count.set_text(
             engine,

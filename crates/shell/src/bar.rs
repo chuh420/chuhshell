@@ -12,16 +12,15 @@ use ui::{
 
 use crate::{
     model::{BarModel, battery_icon, bluetooth_shortcut, network_icon, rice_path},
-    theme::{
-        BG, ELEVATED, FAST, FONT, GREEN, ICONS, LINE, MUTED, NORMAL, RED, SLOW, SURFACE, TEXT,
-        UI_SCALE, YELLOW,
-    },
+    theme::{self, FAST, FONT, ICONS, NORMAL, SLOW, UI_SCALE},
 };
 
-const CHIP_STYLE: ChipStyle = ChipStyle {
-    family: ICONS,
-    hover: ELEVATED,
-};
+fn chip_style() -> ChipStyle {
+    ChipStyle {
+        family: ICONS,
+        hover: theme::elevated(),
+    }
+}
 const SLOT: f32 = 25.0;
 const GAP: f32 = 3.0;
 
@@ -67,7 +66,7 @@ fn chip(
         input,
         engine,
         parent,
-        &CHIP_STYLE,
+        &chip_style(),
         label,
         ink,
         true,
@@ -86,7 +85,7 @@ fn separator(tree: &mut Tree, parent: NodeId) -> NodeId {
             1.0,
             12.0,
             RectPaint {
-                color: LINE,
+                color: theme::line(),
                 ..RectPaint::default()
             },
         ),
@@ -145,7 +144,7 @@ impl Workspaces {
                 SLOT,
                 22.0,
                 RectPaint {
-                    color: ELEVATED,
+                    color: theme::elevated(),
                     radius: 6.0,
                     ..RectPaint::default()
                 },
@@ -159,7 +158,7 @@ impl Workspaces {
                 0.0,
                 2.0 / UI_SCALE,
                 RectPaint {
-                    color: GREEN,
+                    color: theme::green(),
                     radius: 1.0,
                     ..RectPaint::default()
                 },
@@ -222,11 +221,11 @@ impl Workspaces {
             "○".to_string()
         };
         let ink = if active {
-            GREEN
+            theme::green()
         } else if occupied {
-            TEXT
+            theme::text()
         } else {
-            MUTED
+            theme::muted()
         };
         (label, if active { 11.0 } else { 13.0 }, ink)
     }
@@ -311,7 +310,7 @@ impl Workspaces {
         for entry in &mut self.chips {
             let hovered = entry.chip.hovered(input);
             entry.chip.color_override = Some(if hovered && !entry.active {
-                SURFACE
+                theme::surface()
             } else {
                 Color::TRANSPARENT
             });
@@ -406,7 +405,7 @@ impl HoverRect {
 
     fn sync(&mut self, now: Millis, input: &Input, selected: bool) {
         let color = if input.contains_mouse(self.area) || selected {
-            ELEVATED
+            theme::elevated()
         } else {
             Color::TRANSPARENT
         };
@@ -454,7 +453,7 @@ impl TrayIcon {
             rect.root,
             Node::new(center(23.0, 17.0), center(22.0, 17.0), 17.0, 17.0),
         );
-        let spec = TextSpec::plain("󰀻", ICONS, 16.0, MUTED);
+        let spec = TextSpec::plain("󰀻", ICONS, 16.0, theme::muted());
         let metrics = engine.measure(&spec, 1.0);
         let glyph = tree.add(
             rect.root,
@@ -530,8 +529,8 @@ fn resource_spec(icon: &str, value: &str, color: Color) -> TextSpec {
 
 impl Resources {
     fn new(tree: &mut Tree, input: &mut Input, engine: &mut TextEngine, parent: NodeId) -> Self {
-        let cpu_spec = resource_spec("󰻠", "…", TEXT);
-        let ram_spec = resource_spec("󰍛", "…", TEXT);
+        let cpu_spec = resource_spec("󰻠", "…", theme::text());
+        let ram_spec = resource_spec("󰍛", "…", theme::text());
         let cpu_metrics = engine.measure(&cpu_spec, 1.0);
         let ram_metrics = engine.measure(&ram_spec, 1.0);
         let layout = plain_row(
@@ -568,7 +567,7 @@ impl Resources {
             ram,
             cpu_text: "…".into(),
             ram_text: "…".into(),
-            cpu_color: Tween::new(TEXT, SLOW, Easing::Linear),
+            cpu_color: Tween::new(theme::text(), SLOW, Easing::Linear),
             width,
         }
     }
@@ -583,9 +582,9 @@ impl Resources {
             "…".to_string()
         };
         let color = if model.cpu.is_some_and(|cpu| cpu >= 85) {
-            YELLOW
+            theme::yellow()
         } else {
-            TEXT
+            theme::text()
         };
         self.cpu_color.set_target(now, color);
     }
@@ -596,7 +595,7 @@ impl Resources {
             self.cpu,
             resource_spec("󰻠", &self.cpu_text, self.cpu_color.value()),
         );
-        tree.set_text(self.ram, resource_spec("󰍛", &self.ram_text, TEXT));
+        tree.set_text(self.ram, resource_spec("󰍛", &self.ram_text, theme::text()));
         running
     }
 }
@@ -633,7 +632,17 @@ impl Keyboard {
                     .with_paint(Paint::Svg(SvgPaint::new(icon))),
             );
         }
-        let mut label = SwapText::new(tree, engine, row, label, "", ICONS, 10.0, TEXT, 100000.0);
+        let mut label = SwapText::new(
+            tree,
+            engine,
+            row,
+            label,
+            "",
+            ICONS,
+            10.0,
+            theme::text(),
+            100000.0,
+        );
         label.place(tree, 21.0, center(layout.height, 14.0), 16.0, 14.0);
         Self { rect, label }
     }
@@ -690,9 +699,9 @@ impl Bar {
             body_width,
             body_height,
             RectPaint {
-                color: BG,
+                color: theme::bg(),
                 radius: 9.0,
-                border_color: LINE,
+                border_color: theme::line(),
                 border_width: 1.0,
             },
         );
@@ -708,7 +717,7 @@ impl Bar {
             engine,
             left_row,
             "󰣇",
-            GREEN,
+            theme::green(),
             "Super + D",
         );
         let left_separator = separator(&mut tree, left_row);
@@ -723,10 +732,18 @@ impl Bar {
             "none",
             FONT,
             10.0,
-            MUTED,
+            theme::muted(),
             max_width,
         );
-        let clock = chip(&mut tree, &mut input, engine, body, &model.clock, TEXT, "");
+        let clock = chip(
+            &mut tree,
+            &mut input,
+            engine,
+            body,
+            &model.clock,
+            theme::text(),
+            "",
+        );
         let right_row = tree.add(body, Node::new(0.0, 0.0, 0.0, 22.0));
         let resources = Resources::new(&mut tree, &mut input, engine, right_row);
         let keyboard = Keyboard::new(
@@ -743,20 +760,36 @@ impl Bar {
             engine,
             right_row,
             network_icon(model),
-            GREEN,
+            theme::green(),
             "",
         );
-        let bluetooth = chip(&mut tree, &mut input, engine, right_row, "󰂯", GREEN, "");
+        let bluetooth = chip(
+            &mut tree,
+            &mut input,
+            engine,
+            right_row,
+            "󰂯",
+            theme::green(),
+            "",
+        );
         let audio = chip(
             &mut tree,
             &mut input,
             engine,
             right_row,
             "󰕾",
-            TEXT,
+            theme::text(),
             "XF86AudioRaiseVolume / XF86AudioLowerVolume / XF86AudioMute",
         );
-        let battery = chip(&mut tree, &mut input, engine, right_row, "", TEXT, "");
+        let battery = chip(
+            &mut tree,
+            &mut input,
+            engine,
+            right_row,
+            "",
+            theme::text(),
+            "",
+        );
         let right_separator = separator(&mut tree, right_row);
         let paused = chip(
             &mut tree,
@@ -764,7 +797,7 @@ impl Bar {
             engine,
             right_row,
             "󰌐",
-            YELLOW,
+            theme::yellow(),
             "hotkeys paused · Super + Escape",
         );
         let bell = chip(
@@ -773,7 +806,7 @@ impl Bar {
             engine,
             right_row,
             "󰂚",
-            YELLOW,
+            theme::yellow(),
             "Super + N",
         );
         let control = chip(
@@ -782,7 +815,7 @@ impl Bar {
             engine,
             right_row,
             "󰒓",
-            GREEN,
+            theme::green(),
             "Super + Space",
         );
         let mut enter = Tween::new(0.0, 620.0, Easing::OutCubic);
@@ -893,9 +926,9 @@ impl Bar {
             engine,
             network_icon(model),
             if model.network_connected {
-                GREEN
+                theme::green()
             } else {
-                MUTED
+                theme::muted()
             },
         );
         let bluetooth_icon = if !model.bluetooth_connected.is_empty() {
@@ -910,9 +943,9 @@ impl Bar {
             engine,
             bluetooth_icon,
             if model.bluetooth_powered {
-                GREEN
+                theme::green()
             } else {
-                MUTED
+                theme::muted()
             },
         );
         self.bluetooth.shortcut = bluetooth_shortcut(&model.bluetooth_connected);
@@ -929,7 +962,11 @@ impl Bar {
             &mut self.audio,
             engine,
             audio_icon,
-            if model.muted { MUTED } else { TEXT },
+            if model.muted {
+                theme::muted()
+            } else {
+                theme::text()
+            },
         );
         let battery_label = format!(
             "{} {}%",
@@ -937,11 +974,11 @@ impl Bar {
             model.battery_level
         );
         let battery_ink = if model.battery_plugged {
-            GREEN
+            theme::green()
         } else if model.battery_level < 20 {
-            RED
+            theme::red()
         } else {
-            TEXT
+            theme::text()
         };
         set(&mut self.battery, engine, &battery_label, battery_ink);
         self.battery_visible = model.battery_present;
@@ -964,7 +1001,11 @@ impl Bar {
             &mut self.bell,
             engine,
             bell_icon,
-            if model.dnd { MUTED } else { YELLOW },
+            if model.dnd {
+                theme::muted()
+            } else {
+                theme::yellow()
+            },
         );
         self.launcher.selected = self.panel == "launcher";
         self.clock.selected = self.panel == "calendar";

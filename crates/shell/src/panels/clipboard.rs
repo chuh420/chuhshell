@@ -17,7 +17,7 @@ use super::{
     kit::{chip, icon_label, label, place_chip, place_label, rect},
     picker::{PickList, PickStyle, SEARCH_HEIGHT, SearchBox, eyebrow},
 };
-use crate::theme::{ELEVATED, FAST, GREEN, MUTED, NORMAL, RED, SLOW, TEXT};
+use crate::theme::{self, FAST, NORMAL, SLOW};
 
 const TEXT_HEIGHT: f32 = 48.0;
 const IMAGE_HEIGHT: f32 = 84.0;
@@ -73,9 +73,18 @@ impl ClipboardPanel {
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
         let eyebrow = eyebrow(tree, engine, root, "desktop / clipboard");
-        let title = label(tree, engine, root, "clipboard", 26.0, TEXT);
-        let clear = chip(tree, input, engine, root, "clear all", RED, false, None);
-        let close = chip(tree, input, engine, root, "×", TEXT, false, None);
+        let title = label(tree, engine, root, "clipboard", 26.0, theme::text());
+        let clear = chip(
+            tree,
+            input,
+            engine,
+            root,
+            "clear all",
+            theme::red(),
+            false,
+            None,
+        );
+        let close = chip(tree, input, engine, root, "×", theme::text(), false, None);
         let search = SearchBox::new(
             tree,
             input,
@@ -93,14 +102,21 @@ impl ClipboardPanel {
             hit_right_margin: 60.0,
         };
         let list = PickList::new(tree, input, root, style, now);
-        let empty = label(tree, engine, list.view, "Clipboard is empty", 12.0, MUTED);
+        let empty = label(
+            tree,
+            engine,
+            list.view,
+            "Clipboard is empty",
+            12.0,
+            theme::muted(),
+        );
         let footer = label(
             tree,
             engine,
             root,
             "↑ ↓  select       ↵  copy       del  remove       esc  close",
             10.0,
-            MUTED,
+            theme::muted(),
         );
         let mut panel = Self {
             root,
@@ -157,7 +173,7 @@ impl ClipboardPanel {
         entry: ClipEntry,
     ) -> Row {
         let image = entry.is_image();
-        let thumb_bg = rect(tree, content, ELEVATED, 8.0);
+        let thumb_bg = rect(tree, content, theme::elevated(), 8.0);
         if let Some(node) = tree.get_mut(thumb_bg) {
             node.clip = true;
         }
@@ -168,7 +184,7 @@ impl ClipboardPanel {
         } else {
             one_line(&entry.text)
         };
-        let text = label(tree, engine, content, &text, 13.0, TEXT);
+        let text = label(tree, engine, content, &text, 13.0, theme::text());
         let meta_text = if image {
             format!(
                 "{} · {}×{} · {}",
@@ -177,13 +193,13 @@ impl ClipboardPanel {
         } else {
             String::new()
         };
-        let meta = label(tree, engine, content, &meta_text, 10.0, MUTED);
+        let meta = label(tree, engine, content, &meta_text, 10.0, theme::muted());
         tree.set_visible(meta.node, image);
-        let delete = icon_label(tree, engine, content, "󰆴", 15.0, MUTED);
+        let delete = icon_label(tree, engine, content, "󰆴", 15.0, theme::muted());
         let mut delete_mouse = MouseArea::new(delete.node);
         delete_mouse.cursor = CursorShape::Default;
         let delete_area = input.add(delete_mouse);
-        let arrow = label(tree, engine, content, "↵", 12.0, GREEN);
+        let arrow = label(tree, engine, content, "↵", 12.0, theme::green());
         Row {
             entry,
             thumb_bg,
@@ -420,9 +436,9 @@ impl ClipboardPanel {
             tree.set_opacity(row.delete.node, row.delete_opacity.value());
             tree.set_opacity(row.thumb, row.thumb_opacity.value());
             let color = if input.contains_mouse(row.delete_area) {
-                RED
+                theme::red()
             } else {
-                MUTED
+                theme::muted()
             };
             row.delete.set_color(color);
             row.delete.sync(tree);

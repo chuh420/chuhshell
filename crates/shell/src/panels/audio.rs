@@ -10,10 +10,10 @@ use ui::{
 
 use super::{
     PanelAction, PanelData, TooltipSpot,
-    control::SLIDER_STYLE,
+    control::slider_style,
     kit::{chip, fit, label, place_chip, place_label, rect},
 };
-use crate::theme::{GREEN, LINE, MUTED, RED, TEXT};
+use crate::theme::{self};
 
 struct Device {
     id: u32,
@@ -61,19 +61,44 @@ impl AudioPanel {
         now: Millis,
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
-        let title = label(tree, engine, root, "sound", 18.0, TEXT);
-        let mut mute = chip(tree, input, engine, root, "󰕾", GREEN, false, None);
+        let title = label(tree, engine, root, "sound", 18.0, theme::text());
+        let mut mute = chip(tree, input, engine, root, "󰕾", theme::green(), false, None);
         mute.shortcut = "XF86AudioMute".into();
-        let output = label(tree, engine, root, "output", 12.0, MUTED);
-        let percent = label(tree, engine, root, "", 12.0, TEXT);
-        let mut volume = Slider::new(tree, input, root, &SLIDER_STYLE, GREEN, 0.0, 100.0);
+        let output = label(tree, engine, root, "output", 12.0, theme::muted());
+        let percent = label(tree, engine, root, "", 12.0, theme::text());
+        let mut volume = Slider::new(
+            tree,
+            input,
+            root,
+            &slider_style(),
+            theme::green(),
+            0.0,
+            100.0,
+        );
         volume.shortcut = "XF86AudioRaiseVolume / XF86AudioLowerVolume".into();
-        let separator = rect(tree, root, LINE, 0.0);
-        let microphone = label(tree, engine, root, "microphone", 12.0, MUTED);
-        let mut mic = chip(tree, input, engine, root, "on", GREEN, false, None);
+        let separator = rect(tree, root, theme::line(), 0.0);
+        let microphone = label(tree, engine, root, "microphone", 12.0, theme::muted());
+        let mut mic = chip(tree, input, engine, root, "on", theme::green(), false, None);
         mic.shortcut = "XF86AudioMicMute".into();
-        let mic_volume = Slider::new(tree, input, root, &SLIDER_STYLE, GREEN, 0.0, 100.0);
-        let mixer = chip(tree, input, engine, root, "mixer ↗", TEXT, false, None);
+        let mic_volume = Slider::new(
+            tree,
+            input,
+            root,
+            &slider_style(),
+            theme::green(),
+            0.0,
+            100.0,
+        );
+        let mixer = chip(
+            tree,
+            input,
+            engine,
+            root,
+            "mixer ↗",
+            theme::text(),
+            false,
+            None,
+        );
         let mut panel = Self {
             root,
             title,
@@ -127,7 +152,8 @@ impl AudioPanel {
         let muted = data.muted;
         self.mute
             .set_label(engine, if muted { "󰖁" } else { "󰕾" }, 12.0);
-        self.mute.set_ink(now, if muted { RED } else { GREEN });
+        self.mute
+            .set_ink(now, if muted { theme::red() } else { theme::green() });
         self.percent.set_text(engine, &format!("{}%", data.volume));
         self.volume.set_value(data.volume as f64);
         let mic = audio.source().filter(|node| node.has_audio);
@@ -135,7 +161,14 @@ impl AudioPanel {
         let mic_on = mic.is_some_and(|node| !node.muted);
         self.mic
             .set_label(engine, if mic_on { "on" } else { "muted" }, 12.0);
-        self.mic.set_ink(now, if mic_muted { RED } else { GREEN });
+        self.mic.set_ink(
+            now,
+            if mic_muted {
+                theme::red()
+            } else {
+                theme::green()
+            },
+        );
         self.mic_volume
             .set_value(mic.map_or(0.0, |node| node.volume as f64 * 100.0));
         let devices: Vec<&AudioNode> = audio.nodes.iter().filter(|node| node.has_audio).collect();
@@ -169,7 +202,11 @@ impl AudioPanel {
                     engine,
                     self.root,
                     text,
-                    if selected { GREEN } else { TEXT },
+                    if selected {
+                        theme::green()
+                    } else {
+                        theme::text()
+                    },
                     false,
                     None,
                 );

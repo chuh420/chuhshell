@@ -8,19 +8,21 @@ use ui::{
 };
 
 use super::{PanelAction, PanelData, TooltipSpot};
-use crate::theme::{
-    ELEVATED, FAST, FONT, GREEN, ICONS, LINE, MUTED, NORMAL, RED, SURFACE, TEXT, YELLOW,
-};
+use crate::theme::{self, FAST, FONT, ICONS, NORMAL};
 
-const CHIP_STYLE: ChipStyle = ChipStyle {
-    family: ICONS,
-    hover: ELEVATED,
-};
+fn chip_style() -> ChipStyle {
+    ChipStyle {
+        family: ICONS,
+        hover: theme::elevated(),
+    }
+}
 
-pub(crate) const SLIDER_STYLE: SliderStyle = SliderStyle {
-    track: ELEVATED,
-    handle: TEXT,
-};
+pub(crate) fn slider_style() -> SliderStyle {
+    SliderStyle {
+        track: theme::elevated(),
+        handle: theme::text(),
+    }
+}
 
 fn text(value: &str, family: &str, size: f32, color: Color) -> TextSpec {
     TextSpec::plain(value, family, size, color)
@@ -63,7 +65,7 @@ fn chip(
         input,
         engine,
         parent,
-        &CHIP_STYLE,
+        &chip_style(),
         value,
         ink,
         false,
@@ -123,22 +125,22 @@ impl Tile {
                 0.0,
                 95.0,
                 RectPaint {
-                    color: SURFACE,
+                    color: theme::surface(),
                     radius: 16.0,
-                    border_color: LINE,
+                    border_color: theme::line(),
                     border_width: 0.7,
                 },
             ),
         );
         let (glyph, ink) = if wifi {
-            ("󰤨", GREEN)
+            ("󰤨", theme::green())
         } else {
-            ("󰂯", YELLOW)
+            ("󰂯", theme::yellow())
         };
         let icon = label(tree, engine, root, text(glyph, ICONS, 22.0, ink));
-        let state = label(tree, engine, root, text("", FONT, 12.0, MUTED));
-        let name = label(tree, engine, root, text("", FONT, 14.0, TEXT));
-        let status = label(tree, engine, root, text("", FONT, 10.0, MUTED));
+        let state = label(tree, engine, root, text("", FONT, 12.0, theme::muted()));
+        let name = label(tree, engine, root, text("", FONT, 14.0, theme::text()));
+        let status = label(tree, engine, root, text("", FONT, 10.0, theme::muted()));
         let mut area = MouseArea::new(root);
         area.buttons = Buttons::LEFT_RIGHT;
         let area = input.add(area);
@@ -151,8 +153,8 @@ impl Tile {
             status,
             wifi,
             active: false,
-            color: Tween::new(SURFACE, FAST, Easing::Linear),
-            border: Tween::new(LINE, NORMAL, Easing::Linear),
+            color: Tween::new(theme::surface(), FAST, Easing::Linear),
+            border: Tween::new(theme::line(), NORMAL, Easing::Linear),
             scale: Tween::new(1.0, 110.0, Easing::OutCubic),
             width: 0.0,
         }
@@ -187,9 +189,9 @@ impl Tile {
 
     fn border_target(&self) -> Color {
         match (self.active, self.wifi) {
-            (false, _) => LINE,
-            (true, true) => GREEN,
-            (true, false) => YELLOW,
+            (false, _) => theme::line(),
+            (true, true) => theme::green(),
+            (true, false) => theme::yellow(),
         }
     }
 
@@ -253,8 +255,14 @@ impl Tile {
 
     fn tick(&mut self, tree: &mut Tree, input: &Input, now: Millis) -> bool {
         let hovered = input.contains_mouse(self.area);
-        self.color
-            .set_target(now, if hovered { ELEVATED } else { SURFACE });
+        self.color.set_target(
+            now,
+            if hovered {
+                theme::elevated()
+            } else {
+                theme::surface()
+            },
+        );
         self.border.set_target(now, self.border_target());
         self.scale
             .set_target(now, if input.pressed(self.area) { 0.97 } else { 1.0 });
@@ -282,8 +290,126 @@ impl Tile {
 
     fn jump(&mut self, input: &Input) {
         let hovered = input.contains_mouse(self.area);
-        self.color.jump(if hovered { ELEVATED } else { SURFACE });
+        self.color.jump(if hovered {
+            theme::elevated()
+        } else {
+            theme::surface()
+        });
         self.border.jump(self.border_target());
+    }
+}
+
+struct SwitchRow {
+    row: NodeId,
+    color: Tween<Color>,
+    icon: Label,
+    label: Label,
+    chip: Chip,
+    on: bool,
+}
+
+impl SwitchRow {
+    fn new(
+        tree: &mut Tree,
+        input: &mut Input,
+        engine: &mut TextEngine,
+        parent: NodeId,
+        glyph: &str,
+        caption: &str,
+        hint: &str,
+    ) -> Self {
+        let row = card(tree, parent, theme::surface(), 13.0);
+        let icon = label(tree, engine, row, text(glyph, ICONS, 18.0, theme::muted()));
+        let label = label(tree, engine, row, text(caption, FONT, 12.0, theme::text()));
+        let chip = chip(tree, input, engine, row, "off", theme::muted(), None, hint);
+        Self {
+            row,
+            color: Tween::new(theme::surface(), NORMAL, Easing::Linear),
+            icon,
+            label,
+            chip,
+            on: false,
+        }
+    }
+
+    fn ink(&self) -> Color {
+        if self.on {
+            theme::green()
+        } else {
+            theme::muted()
+        }
+    }
+
+    fn fill(&self) -> Color {
+        if self.on {
+            theme::elevated()
+        } else {
+            theme::surface()
+        }
+    }
+
+    fn sync(&mut self, engine: &mut TextEngine, on: bool, now: Millis) {
+        self.on = on;
+        self.icon.set_color(self.ink());
+        self.chip
+            .set_label(engine, if on { "on" } else { "off" }, 12.0);
+        self.chip.set_ink(now, self.ink());
+        self.chip.selected = on;
+        self.color.set_target(now, self.fill());
+    }
+
+    fn jump(&mut self) {
+        self.color.jump(self.fill());
+        self.chip.jump_ink(self.ink());
+    }
+
+    fn place(&mut self, tree: &mut Tree, y: f32, width: f32, height: f32) {
+        tree.set_pos(self.row, 0.0, y);
+        tree.set_size(self.row, width, height);
+        let tallest = self
+            .icon
+            .implicit_height()
+            .ceil()
+            .max(self.label.implicit_height().ceil())
+            .max(self.chip.implicit_height());
+        let inner = Slot {
+            pos: 8.0,
+            size: (height - 16.0).max(tallest),
+        };
+        let columns = linear(
+            &[
+                Cell::implicit(self.icon.implicit_width()),
+                Cell::fill(self.label.implicit_width().ceil()),
+                Cell::implicit(self.chip.implicit_width()),
+            ],
+            10.0,
+            width - 16.0,
+        );
+        place_label(
+            tree,
+            &mut self.icon,
+            8.0 + columns[0].pos,
+            inner,
+            columns[0].size,
+        );
+        place_label(
+            tree,
+            &mut self.label,
+            8.0 + columns[1].pos,
+            inner,
+            columns[1].size,
+        );
+        place_chip(tree, &mut self.chip, 8.0 + columns[2].pos, inner);
+    }
+
+    fn tick(&mut self, tree: &mut Tree, input: &Input, now: Millis) -> bool {
+        self.chip.sync(now, input);
+        let mut running = self.chip.tick(tree, now);
+        running |= self.color.tick(now);
+        tree.set_fill(self.row, self.color.value());
+        self.icon.sync(tree);
+        self.label.sync(tree);
+        running
     }
 }
 
@@ -310,11 +436,8 @@ pub struct ControlPanel {
     bright_label: Label,
     bright_value: Label,
     bright_slider: Slider,
-    awake_row: NodeId,
-    awake_color: Tween<Color>,
-    awake_icon: Label,
-    awake_label: Label,
-    awake_chip: Chip,
+    awake: SwitchRow,
+    colors: SwitchRow,
     line: NodeId,
     footer: Vec<(Chip, Footer)>,
     data: PanelData,
@@ -331,12 +454,12 @@ impl ControlPanel {
         data: &PanelData,
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
-        let mut header_spec = text("desktop / control", ICONS, 9.0, GREEN);
+        let mut header_spec = text("desktop / control", ICONS, 9.0, theme::green());
         if let Some(span) = header_spec.spans.first_mut() {
             span.letter_spacing = 1.0;
         }
         let header = label(tree, engine, root, header_spec);
-        let mut time_spec = text("", FONT, 40.0, TEXT);
+        let mut time_spec = text("", FONT, 40.0, theme::text());
         if let Some(span) = time_spec.spans.first_mut() {
             span.weight = Weight::Light;
         }
@@ -347,69 +470,113 @@ impl ControlPanel {
             engine,
             root,
             "󰌾",
-            YELLOW,
+            theme::yellow(),
             Some(22.0),
             "Super + Ctrl + L",
         );
-        let date = label(tree, engine, root, text("", FONT, 12.0, MUTED));
+        let date = label(tree, engine, root, text("", FONT, 12.0, theme::muted()));
         let tiles = [
             Tile::new(tree, input, engine, root, true),
             Tile::new(tree, input, engine, root, false),
         ];
-        let volume_card = card(tree, root, SURFACE, 16.0);
-        let volume_icon = label(tree, engine, volume_card, text("󰕾", ICONS, 18.0, GREEN));
-        let volume_label = label(tree, engine, volume_card, text("volume", FONT, 12.0, TEXT));
+        let volume_card = card(tree, root, theme::surface(), 16.0);
+        let volume_icon = label(
+            tree,
+            engine,
+            volume_card,
+            text("󰕾", ICONS, 18.0, theme::green()),
+        );
+        let volume_label = label(
+            tree,
+            engine,
+            volume_card,
+            text("volume", FONT, 12.0, theme::text()),
+        );
         let volume_chip = chip(
             tree,
             input,
             engine,
             volume_card,
             "",
-            GREEN,
+            theme::green(),
             None,
             "XF86AudioMute",
         );
-        let mut volume_slider =
-            Slider::new(tree, input, volume_card, &SLIDER_STYLE, GREEN, 0.0, 100.0);
+        let mut volume_slider = Slider::new(
+            tree,
+            input,
+            volume_card,
+            &slider_style(),
+            theme::green(),
+            0.0,
+            100.0,
+        );
         volume_slider.shortcut = "XF86AudioRaiseVolume / XF86AudioLowerVolume".into();
-        let bright_card = card(tree, root, SURFACE, 16.0);
-        let bright_icon = label(tree, engine, bright_card, text("󰃟", ICONS, 18.0, YELLOW));
+        let bright_card = card(tree, root, theme::surface(), 16.0);
+        let bright_icon = label(
+            tree,
+            engine,
+            bright_card,
+            text("󰃟", ICONS, 18.0, theme::yellow()),
+        );
         let bright_label = label(
             tree,
             engine,
             bright_card,
-            text("brightness", FONT, 12.0, TEXT),
+            text("brightness", FONT, 12.0, theme::text()),
         );
-        let bright_value = label(tree, engine, bright_card, text("", ICONS, 12.0, YELLOW));
-        let mut bright_slider =
-            Slider::new(tree, input, bright_card, &SLIDER_STYLE, YELLOW, 5.0, 100.0);
-        bright_slider.shortcut = "XF86MonBrightnessUp / XF86MonBrightnessDown".into();
-        let awake_row = card(tree, root, SURFACE, 13.0);
-        let awake_icon = label(tree, engine, awake_row, text("󰅶", ICONS, 18.0, MUTED));
-        let awake_label = label(
+        let bright_value = label(
             tree,
             engine,
-            awake_row,
-            text("keep awake", FONT, 12.0, TEXT),
+            bright_card,
+            text("", ICONS, 12.0, theme::yellow()),
         );
-        let awake_chip = chip(
+        let mut bright_slider = Slider::new(
+            tree,
+            input,
+            bright_card,
+            &slider_style(),
+            theme::yellow(),
+            5.0,
+            100.0,
+        );
+        bright_slider.shortcut = "XF86MonBrightnessUp / XF86MonBrightnessDown".into();
+        let awake = SwitchRow::new(
             tree,
             input,
             engine,
-            awake_row,
-            "off",
-            MUTED,
-            None,
+            root,
+            "󰅶",
+            "keep awake",
             "prevent automatic locking and screen sleep",
         );
-        let line = card(tree, root, LINE, 0.0);
+        let colors = SwitchRow::new(
+            tree,
+            input,
+            engine,
+            root,
+            "󰏘",
+            "wallpaper colors",
+            "match the desktop colors to the wallpaper",
+        );
+        let line = card(tree, root, theme::line(), 0.0);
         let footer_spec: [(&str, Color, &str, Footer); 6] = [
-            ("󰂚", TEXT, "Super + N", Footer::Toggle("notifications")),
-            ("󰅍", TEXT, "Super + C", Footer::Toggle("clipboard")),
-            ("󰄀", TEXT, "Print", Footer::Run("screenshot")),
-            ("󰸉", GREEN, "Super + B", Footer::Toggle("wallpapers")),
-            ("󰒲", TEXT, "", Footer::Suspend),
-            ("󰐥", RED, "", Footer::Toggle("power")),
+            (
+                "󰂚",
+                theme::text(),
+                "Super + N",
+                Footer::Toggle("notifications"),
+            ),
+            ("󰅍", theme::text(), "Super + C", Footer::Toggle("clipboard")),
+            ("󰄀", theme::text(), "Print", Footer::Run("screenshot")),
+            (
+                "󰸉",
+                theme::green(),
+                "Super + B",
+                Footer::Toggle("wallpapers"),
+            ),
+            ("󰒲", theme::text(), "", Footer::Suspend),
+            ("󰐥", theme::red(), "", Footer::Toggle("power")),
         ];
         let footer = footer_spec
             .into_iter()
@@ -437,11 +604,8 @@ impl ControlPanel {
             bright_label,
             bright_value,
             bright_slider,
-            awake_row,
-            awake_color: Tween::new(SURFACE, NORMAL, Easing::Linear),
-            awake_icon,
-            awake_label,
-            awake_chip,
+            awake,
+            colors,
             line,
             footer,
             data: PanelData::default(),
@@ -461,7 +625,8 @@ impl ControlPanel {
             self.volume_chip.area,
             self.volume_slider.area,
             self.bright_slider.area,
-            self.awake_chip.area,
+            self.awake.chip.area,
+            self.colors.chip.area,
         ];
         areas.extend(self.footer.iter().map(|(chip, _)| chip.area));
         areas
@@ -484,28 +649,16 @@ impl ControlPanel {
         self.bright_value
             .set_text(engine, &format!("{}%", data.brightness));
         self.bright_slider.set_value(data.brightness as f64);
-        self.awake_icon
-            .set_color(if data.keep_awake { GREEN } else { MUTED });
-        self.awake_chip
-            .set_label(engine, if data.keep_awake { "on" } else { "off" }, 12.0);
-        self.awake_chip
-            .set_ink(now, if data.keep_awake { GREEN } else { MUTED });
-        self.awake_chip.selected = data.keep_awake;
-        self.awake_color
-            .set_target(now, if data.keep_awake { ELEVATED } else { SURFACE });
+        self.awake.sync(engine, data.keep_awake, now);
+        self.colors.sync(engine, data.theme_auto, now);
     }
 
     fn jump(&mut self, input: &Input) {
         for tile in &mut self.tiles {
             tile.jump(input);
         }
-        self.awake_color.jump(if self.data.keep_awake {
-            ELEVATED
-        } else {
-            SURFACE
-        });
-        self.awake_chip
-            .jump_ink(if self.data.keep_awake { GREEN } else { MUTED });
+        self.awake.jump();
+        self.colors.jump();
     }
 
     pub fn layout(&mut self, tree: &mut Tree, width: f32, height: f32) {
@@ -526,6 +679,7 @@ impl ControlPanel {
                 Cell::preferred(89.0).margins(18.0, 0.0),
                 Cell::preferred(89.0).margins(10.0, 0.0),
                 Cell::preferred(44.0).margins(15.0, 0.0),
+                Cell::preferred(44.0).margins(8.0, 0.0),
                 Cell::fill(0.0),
                 Cell::preferred(1.0).margins(0.0, 12.0),
                 Cell::layout(30.0),
@@ -561,10 +715,10 @@ impl ControlPanel {
         tree.set_size(self.bright_card, width, bright_height);
         self.layout_brightness(tree, width, bright_height);
         let (awake_y, awake_height) = fit(slots[6], 44.0);
-        tree.set_pos(self.awake_row, 0.0, awake_y);
-        tree.set_size(self.awake_row, width, awake_height);
-        self.layout_awake(tree, width, awake_height);
-        let (line_y, line_height) = fit(slots[8], 1.0);
+        self.awake.place(tree, awake_y, width, awake_height);
+        let (colors_y, colors_height) = fit(slots[7], 44.0);
+        self.colors.place(tree, colors_y, width, colors_height);
+        let (line_y, line_height) = fit(slots[9], 1.0);
         tree.set_pos(self.line, 0.0, line_y);
         tree.set_size(self.line, width, line_height);
         let mut cells: Vec<Cell> = self.footer[..4]
@@ -585,7 +739,7 @@ impl ControlPanel {
             .map(|(_, slot)| slot.pos)
             .collect();
         for ((chip, _), x) in self.footer.iter_mut().zip(positions) {
-            place_chip(tree, chip, x, slots[9]);
+            place_chip(tree, chip, x, slots[10]);
         }
     }
 
@@ -692,45 +846,13 @@ impl ControlPanel {
             .place(tree, 12.0, slider_y, inner, slider_height);
     }
 
-    fn layout_awake(&mut self, tree: &mut Tree, width: f32, height: f32) {
-        let tallest = self
-            .awake_icon
-            .implicit_height()
-            .ceil()
-            .max(self.awake_label.implicit_height().ceil())
-            .max(self.awake_chip.implicit_height());
-        let inner = Slot {
-            pos: 8.0,
-            size: (height - 16.0).max(tallest),
-        };
-        let columns = linear(
-            &[
-                Cell::implicit(self.awake_icon.implicit_width()),
-                Cell::fill(self.awake_label.implicit_width().ceil()),
-                Cell::implicit(self.awake_chip.implicit_width()),
-            ],
-            10.0,
-            width - 16.0,
-        );
-        place_label(
-            tree,
-            &mut self.awake_icon,
-            8.0 + columns[0].pos,
-            inner,
-            columns[0].size,
-        );
-        place_label(
-            tree,
-            &mut self.awake_label,
-            8.0 + columns[1].pos,
-            inner,
-            columns[1].size,
-        );
-        place_chip(tree, &mut self.awake_chip, 8.0 + columns[2].pos, inner);
-    }
-
     fn chips(&self) -> Vec<&Chip> {
-        let mut chips = vec![&self.lock, &self.volume_chip, &self.awake_chip];
+        let mut chips = vec![
+            &self.lock,
+            &self.volume_chip,
+            &self.awake.chip,
+            &self.colors.chip,
+        ];
         chips.extend(self.footer.iter().map(|(chip, _)| chip));
         chips
     }
@@ -740,8 +862,7 @@ impl ControlPanel {
         for tile in &mut self.tiles {
             running |= tile.tick(tree, input, now);
         }
-        let mut chips: Vec<&mut Chip> =
-            vec![&mut self.lock, &mut self.volume_chip, &mut self.awake_chip];
+        let mut chips: Vec<&mut Chip> = vec![&mut self.lock, &mut self.volume_chip];
         chips.extend(self.footer.iter_mut().map(|(chip, _)| chip));
         for chip in chips {
             chip.sync(now, input);
@@ -749,8 +870,8 @@ impl ControlPanel {
         }
         running |= self.volume_slider.tick(tree, input, now);
         running |= self.bright_slider.tick(tree, input, now);
-        running |= self.awake_color.tick(now);
-        tree.set_fill(self.awake_row, self.awake_color.value());
+        running |= self.awake.tick(tree, input, now);
+        running |= self.colors.tick(tree, input, now);
         for label in [
             &self.header,
             &self.time,
@@ -760,8 +881,6 @@ impl ControlPanel {
             &self.bright_icon,
             &self.bright_label,
             &self.bright_value,
-            &self.awake_icon,
-            &self.awake_label,
         ] {
             label.sync(tree);
         }
@@ -771,8 +890,12 @@ impl ControlPanel {
     pub fn settle(&mut self, tree: &mut Tree, input: &Input) {
         self.volume_slider.jump(tree, input);
         self.bright_slider.jump(tree, input);
-        let mut chips: Vec<&mut Chip> =
-            vec![&mut self.lock, &mut self.volume_chip, &mut self.awake_chip];
+        let mut chips: Vec<&mut Chip> = vec![
+            &mut self.lock,
+            &mut self.volume_chip,
+            &mut self.awake.chip,
+            &mut self.colors.chip,
+        ];
         chips.extend(self.footer.iter_mut().map(|(chip, _)| chip));
         for chip in chips {
             chip.jump_color(input);
@@ -854,8 +977,11 @@ impl ControlPanel {
                 PanelAction::ToggleMute
             });
         }
-        if area == self.awake_chip.area {
+        if area == self.awake.chip.area {
             return (!right).then_some(PanelAction::ToggleKeepAwake);
+        }
+        if area == self.colors.chip.area {
+            return (!right).then_some(PanelAction::ToggleTheme);
         }
         let (_, action) = self.footer.iter().find(|(chip, _)| chip.area == area)?;
         if right {

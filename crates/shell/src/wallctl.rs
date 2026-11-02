@@ -217,6 +217,7 @@ impl App {
     }
 
     fn load_wallpaper_state(&mut self, startup: bool) {
+        let previous = self.walls.image.clone();
         match wallpapers::read_state() {
             Some(state) => {
                 self.update_wall_data(|data| data.current = state.path.clone());
@@ -237,6 +238,9 @@ impl App {
             self.sync();
         }
         self.sync_wallpapers();
+        if !startup && self.walls.image != previous {
+            self.theme_wallpaper_changed();
+        }
     }
 
     pub fn refresh_wallpapers(&mut self) {

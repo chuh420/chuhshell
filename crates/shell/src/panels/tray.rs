@@ -9,12 +9,14 @@ use ui::{
 };
 
 use super::{PanelAction, PanelData};
-use crate::theme::{ELEVATED, FONT, GREEN, ICONS, LINE, MUTED, RED, TEXT};
+use crate::theme::{self, FONT, ICONS};
 
-const CHIP_STYLE: ChipStyle = ChipStyle {
-    family: ICONS,
-    hover: ELEVATED,
-};
+fn chip_style() -> ChipStyle {
+    ChipStyle {
+        family: ICONS,
+        hover: theme::elevated(),
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 enum Kind {
@@ -86,13 +88,18 @@ impl TrayPanel {
             input,
             engine,
             root,
-            &CHIP_STYLE,
+            &chip_style(),
             "←",
-            TEXT,
+            theme::text(),
             false,
             None,
         );
-        let title = Label::new(tree, engine, root, TextSpec::plain("", FONT, 14.0, TEXT));
+        let title = Label::new(
+            tree,
+            engine,
+            root,
+            TextSpec::plain("", FONT, 14.0, theme::text()),
+        );
         let mut list_node = Node::new(0.0, 0.0, 0.0, 0.0);
         list_node.clip = true;
         let list = tree.add(root, list_node);
@@ -100,7 +107,7 @@ impl TrayPanel {
             tree,
             engine,
             list,
-            TextSpec::plain("no menu entries", FONT, 12.0, MUTED),
+            TextSpec::plain("no menu entries", FONT, 12.0, theme::muted()),
         );
         let mut panel = Self {
             root,
@@ -238,12 +245,16 @@ impl TrayPanel {
                     0.0,
                     1.0,
                     RectPaint {
-                        color: LINE,
+                        color: theme::line(),
                         ..RectPaint::default()
                     },
                 ),
             );
-            let color = if data.kind == Kind::Quit { RED } else { TEXT };
+            let color = if data.kind == Kind::Quit {
+                theme::red()
+            } else {
+                theme::text()
+            };
             let label = Label::new(
                 tree,
                 engine,
@@ -254,7 +265,7 @@ impl TrayPanel {
                 tree,
                 engine,
                 root,
-                TextSpec::plain(&data.right, FONT, 12.0, GREEN),
+                TextSpec::plain(&data.right, FONT, 12.0, theme::green()),
             );
             let area = input.add(MouseArea::new(root));
             self.rows.push(Row {
@@ -357,7 +368,7 @@ impl TrayPanel {
             tree.set_fill(
                 row.root,
                 if highlight {
-                    ELEVATED
+                    theme::elevated()
                 } else {
                     Color::TRANSPARENT
                 },

@@ -10,12 +10,12 @@ use ui::{
 
 use super::{
     PanelAction, PanelData, TooltipSpot,
-    control::SLIDER_STYLE,
+    control::slider_style,
     kit::{chip, fit, label, place_label, rect},
 };
 use crate::{
     history::LIMIT,
-    theme::{ELEVATED, FONT, GREEN, LINE, MUTED, RED, SURFACE, TEXT, YELLOW},
+    theme::{self, FONT},
 };
 
 const PROFILES: [(&str, &str, &str); 3] = [
@@ -165,44 +165,51 @@ impl BatteryPanel {
         now: Millis,
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
-        let title = label(tree, engine, root, "battery", 18.0, TEXT);
-        let state = label(tree, engine, root, "", 12.0, GREEN);
-        let mut level_spec = TextSpec::plain("", FONT, 42.0, TEXT);
+        let title = label(tree, engine, root, "battery", 18.0, theme::text());
+        let state = label(tree, engine, root, "", 12.0, theme::green());
+        let mut level_spec = TextSpec::plain("", FONT, 42.0, theme::text());
         if let Some(span) = level_spec.spans.first_mut() {
             span.weight = Weight::Light;
         }
         let level = Label::new(tree, engine, root, level_spec);
-        let track = rect(tree, root, ELEVATED, 4.0);
-        let fill = rect(tree, track, GREEN, 4.0);
-        let shimmer = rect(tree, fill, TEXT, 4.0);
+        let track = rect(tree, root, theme::elevated(), 4.0);
+        let fill = rect(tree, track, theme::green(), 4.0);
+        let shimmer = rect(tree, fill, theme::text(), 4.0);
         tree.set_opacity(shimmer, 0.25);
         let rows = ROWS
             .iter()
             .map(|key| {
                 (
-                    label(tree, engine, root, key, 12.0, MUTED),
-                    label(tree, engine, root, "", 12.0, TEXT),
+                    label(tree, engine, root, key, 12.0, theme::muted()),
+                    label(tree, engine, root, "", 12.0, theme::text()),
                 )
             })
             .collect();
         let graph = |tree: &mut Tree, engine: &mut TextEngine, name: &str, color| {
-            let card = rect(tree, root, SURFACE, 12.0);
+            let card = rect(tree, root, theme::surface(), 12.0);
             Graph {
                 card,
-                title: label(tree, engine, card, &format!("{name} · 6h"), 10.0, MUTED),
+                title: label(
+                    tree,
+                    engine,
+                    card,
+                    &format!("{name} · 6h"),
+                    10.0,
+                    theme::muted(),
+                ),
                 range: label(tree, engine, card, "", 10.0, color),
-                spark: Sparkline::new(tree, card, color, YELLOW, LINE),
+                spark: Sparkline::new(tree, card, color, theme::yellow(), theme::line()),
             }
         };
         let graphs = [
-            graph(tree, engine, "level", GREEN),
-            graph(tree, engine, "power", YELLOW),
+            graph(tree, engine, "level", theme::green()),
+            graph(tree, engine, "power", theme::yellow()),
         ];
-        let profile_title = label(tree, engine, root, "power profile", 12.0, MUTED);
+        let profile_title = label(tree, engine, root, "power profile", 12.0, theme::muted());
         let profiles = PROFILES
             .iter()
             .map(|(_, text, tip)| {
-                let mut chip = chip(tree, input, engine, root, text, TEXT, false, None);
+                let mut chip = chip(tree, input, engine, root, text, theme::text(), false, None);
                 chip.shortcut = (*tip).to_string();
                 chip
             })
@@ -213,10 +220,18 @@ impl BatteryPanel {
             root,
             "auto: performance on AC, balanced on battery",
             10.0,
-            MUTED,
+            theme::muted(),
         );
-        let brightness_title = label(tree, engine, root, "", 12.0, MUTED);
-        let mut slider = Slider::new(tree, input, root, &SLIDER_STYLE, YELLOW, 5.0, 100.0);
+        let brightness_title = label(tree, engine, root, "", 12.0, theme::muted());
+        let mut slider = Slider::new(
+            tree,
+            input,
+            root,
+            &slider_style(),
+            theme::yellow(),
+            5.0,
+            100.0,
+        );
         slider.shortcut = "XF86MonBrightnessUp / XF86MonBrightnessDown".into();
         let mut panel = Self {
             root,
@@ -289,7 +304,14 @@ impl BatteryPanel {
         for (chip, (name, _, _)) in self.profiles.iter_mut().zip(PROFILES) {
             let selected = data.profiles.active == name;
             chip.selected = selected;
-            chip.set_ink(now, if selected { GREEN } else { TEXT });
+            chip.set_ink(
+                now,
+                if selected {
+                    theme::green()
+                } else {
+                    theme::text()
+                },
+            );
         }
         self.brightness_title
             .set_text(engine, &format!("Brightness · {}%", data.brightness));
@@ -449,7 +471,14 @@ impl BatteryPanel {
         running |= self.fill_width.tick(now);
         let fill = self.fill_width.value();
         tree.set_size(self.fill, fill, 8.0);
-        tree.set_fill(self.fill, if level(&self.data) < 20 { RED } else { GREEN });
+        tree.set_fill(
+            self.fill,
+            if level(&self.data) < 20 {
+                theme::red()
+            } else {
+                theme::green()
+            },
+        );
         let charging = self.charging();
         tree.set_visible(self.shimmer, charging);
         if charging {

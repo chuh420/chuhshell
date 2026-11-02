@@ -10,7 +10,7 @@ use ui::{
 
 use crate::{
     state::{ShellState, osd_caption, osd_has_bar, osd_icon, osd_level},
-    theme::{BG, ELEVATED, FONT, GREEN, ICONS, LINE, MUTED, NORMAL, TEXT, UI_SCALE, YELLOW},
+    theme::{self, FONT, ICONS, NORMAL, UI_SCALE},
 };
 
 const WIDTH: f32 = 300.0;
@@ -101,9 +101,9 @@ impl Osd {
             WIDTH,
             HEIGHT,
             RectPaint {
-                color: BG,
+                color: theme::bg(),
                 radius: 18.0,
-                border_color: LINE,
+                border_color: theme::line(),
                 border_width: 1.0,
             },
         );
@@ -112,14 +112,14 @@ impl Osd {
         pill.opacity = 0.0;
         let pill = tree.add(root, pill);
         let row = tree.add(pill, Node::new(ROW_X, 0.0, ROW_WIDTH, 0.0));
-        let icon_metrics = engine.measure(&icon_spec("󰌌", GREEN), 1.0);
+        let icon_metrics = engine.measure(&icon_spec("󰌌", theme::green()), 1.0);
         let mut icon_node = Node::new(0.0, 0.0, ICON_WIDTH, icon_metrics.height);
         icon_node.origin = Some((ICON_WIDTH / 2.0, icon_metrics.height / 2.0));
         let icon = tree.add(row, icon_node);
         tree.add(
             icon,
             Node::new(0.0, 0.0, icon_metrics.width, icon_metrics.height)
-                .with_paint(Paint::Text(TextPaint::new(icon_spec("󰌌", GREEN)))),
+                .with_paint(Paint::Text(TextPaint::new(icon_spec("󰌌", theme::green())))),
         );
         let track = tree.add(
             row,
@@ -129,7 +129,7 @@ impl Osd {
                 TRACK_WIDTH,
                 6.0,
                 RectPaint {
-                    color: ELEVATED,
+                    color: theme::elevated(),
                     radius: 3.0,
                     ..RectPaint::default()
                 },
@@ -143,13 +143,23 @@ impl Osd {
                 0.0,
                 6.0,
                 RectPaint {
-                    color: GREEN,
+                    color: theme::green(),
                     radius: 3.0,
                     ..RectPaint::default()
                 },
             ),
         );
-        let mut caption = SwapText::new(&mut tree, engine, row, "", "", FONT, 14.0, TEXT, 100000.0);
+        let mut caption = SwapText::new(
+            &mut tree,
+            engine,
+            row,
+            "",
+            "",
+            FONT,
+            14.0,
+            theme::text(),
+            100000.0,
+        );
         caption.set_distance(5.0);
         Self {
             surface: None,
@@ -166,9 +176,9 @@ impl Osd {
             reveal: Tween::new(0.0, 260.0, Easing::OUT_BACK),
             hide_at: None,
             pulse: bump(),
-            icon_color: Tween::new(GREEN, NORMAL, Easing::Linear),
+            icon_color: Tween::new(theme::green(), NORMAL, Easing::Linear),
             fill_width: Tween::new(0.0, NORMAL, Easing::OutCubic),
-            fill_color: Tween::new(GREEN, NORMAL, Easing::Linear),
+            fill_color: Tween::new(theme::green(), NORMAL, Easing::Linear),
             icon_text: "󰌌".into(),
             icon_metrics,
             has_bar: false,
@@ -205,22 +215,28 @@ impl Osd {
         let kind = state.osd_kind.as_str();
         self.has_bar = osd_has_bar(state);
         let icon_color = if kind == "brightness" || (kind == "hotkeys" && state.hotkeys_paused) {
-            YELLOW
+            theme::yellow()
         } else if (kind == "volume" && state.muted()) || (kind == "mic" && state.mic_muted()) {
-            MUTED
+            theme::muted()
         } else {
-            GREEN
+            theme::green()
         };
         self.icon_color.set_target(now, icon_color);
         let icon = osd_icon(state);
         if icon != self.icon_text {
             self.icon_text = icon.to_string();
-            self.icon_metrics = engine.measure(&icon_spec(icon, GREEN), 1.0);
+            self.icon_metrics = engine.measure(&icon_spec(icon, theme::green()), 1.0);
         }
         let level = osd_level(state).min(100) as f32;
         self.fill_width.set_target(now, TRACK_WIDTH * level / 100.0);
-        self.fill_color
-            .set_target(now, if kind == "brightness" { YELLOW } else { GREEN });
+        self.fill_color.set_target(
+            now,
+            if kind == "brightness" {
+                theme::yellow()
+            } else {
+                theme::green()
+            },
+        );
         if self.has_bar {
             self.caption.set_font(engine, ICONS, 12.0);
         } else {
@@ -322,6 +338,16 @@ impl Osd {
 
     pub fn next_deadline(&self) -> Option<Millis> {
         self.hide_at
+    }
+
+    pub fn retheme(&mut self, engine: &mut TextEngine) {
+        let mut fresh = Osd::new(engine);
+        fresh.surface = self.surface;
+        fresh.output = self.output;
+        fresh.canvas = self.canvas.take();
+        fresh.last_serial = self.last_serial;
+        fresh.tree.mark_all();
+        *self = fresh;
     }
 
     pub fn attach(&mut self, surface: SurfaceId, output: OutputId) {
