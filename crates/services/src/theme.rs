@@ -35,6 +35,45 @@ impl Mode {
     }
 }
 
+pub const SCHEMES: &[&str] = &[
+    "tonal-spot",
+    "content",
+    "fidelity",
+    "vibrant",
+    "rainbow",
+    "neutral",
+];
+
+pub const DEFAULT_SCHEME: &str = "tonal-spot";
+
+pub fn parse_scheme(value: &str) -> Option<&'static str> {
+    let value = value.strip_prefix("scheme-").unwrap_or(value);
+    SCHEMES.iter().copied().find(|scheme| *scheme == value)
+}
+
+pub fn next_scheme(current: &str) -> &'static str {
+    let index = SCHEMES
+        .iter()
+        .position(|scheme| *scheme == current)
+        .map_or(0, |index| (index + 1) % SCHEMES.len());
+    SCHEMES[index]
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Settings {
+    pub mode: Mode,
+    pub scheme: &'static str,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            mode: Mode::Static,
+            scheme: DEFAULT_SCHEME,
+        }
+    }
+}
+
 fn home() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_default())
 }
@@ -51,16 +90,23 @@ fn palette_path(folder: &str) -> PathBuf {
     root().join(folder).join("idk-yet.json")
 }
 
-fn parse_mode(text: &str) -> Option<Mode> {
-    let value: serde_json::Value = serde_json::from_str(text).ok()?;
-    Mode::parse(value.get("mode")?.as_str()?)
+fn parse_settings(text: &str) -> Settings {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return Settings::default();
+    };
+    let field = |key: &str| value.get(key).and_then(serde_json::Value::as_str);
+    Settings {
+        mode: field("mode").and_then(Mode::parse).unwrap_or(Mode::Static),
+        scheme: field("scheme")
+            .and_then(parse_scheme)
+            .unwrap_or(DEFAULT_SCHEME),
+    }
 }
 
-pub fn read_mode() -> Mode {
+pub fn read_settings() -> Settings {
     std::fs::read_to_string(mode_path())
-        .ok()
-        .and_then(|text| parse_mode(&text))
-        .unwrap_or(Mode::Static)
+        .map(|text| parse_settings(&text))
+        .unwrap_or_default()
 }
 
 fn write_atomic(path: &Path, contents: &str) -> io::Result<()> {
@@ -69,12 +115,14 @@ fn write_atomic(path: &Path, contents: &str) -> io::Result<()> {
     std::fs::rename(&temporary, path)
 }
 
-pub fn write_mode(mode: Mode) -> io::Result<()> {
+pub fn write_settings(settings: Settings) -> io::Result<()> {
     let path = mode_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let text = serde_json::json!({ "mode": mode.name() }).to_string() + "\n";
+    let text = serde_json::json!({ "mode": settings.mode.name(), "scheme": settings.scheme })
+        .to_string()
+        + "\n";
     write_atomic(&path, &text)
 }
 
@@ -109,14 +157,17 @@ pub fn stale(wallpaper_state: &Path) -> bool {
     }
 }
 
-pub fn generate_command(image: &str) -> Command {
+pub fn generate_command(image: &str, scheme: &str) -> Command {
     let mut command = Command::new("matugen");
+    let scheme = format!("scheme-{scheme}");
     command
         .args([
             "image",
             image,
             "-m",
             "dark",
+            "-t",
+            &scheme,
             "--source-color-index",
             "0",
             "-q",
@@ -143,10 +194,26 @@ mod tests {
 
     #[test]
     fn mode_file_parses() {
-        assert_eq!(parse_mode(r#"{"mode": "auto"}"#), Some(Mode::Auto));
-        assert_eq!(parse_mode(r#"{"mode": "static"}"#), Some(Mode::Static));
-        assert_eq!(parse_mode(r#"{"mode": "other"}"#), None);
-        assert_eq!(parse_mode("nope"), None);
+        let auto = parse_settings(r#"{"mode": "auto"}"#);
+        assert_eq!(auto.mode, Mode::Auto);
+        assert_eq!(auto.scheme, DEFAULT_SCHEME);
+        let vibrant = parse_settings(r#"{"mode": "static", "scheme": "vibrant"}"#);
+        assert_eq!(vibrant.mode, Mode::Static);
+        assert_eq!(vibrant.scheme, "vibrant");
+        assert_eq!(
+            parse_settings(r#"{"mode": "other", "scheme": "x"}"#),
+            Settings::default()
+        );
+        assert_eq!(parse_settings("nope"), Settings::default());
+    }
+
+    #[test]
+    fn schemes_cycle() {
+        assert_eq!(next_scheme("tonal-spot"), "content");
+        assert_eq!(next_scheme("neutral"), "tonal-spot");
+        assert_eq!(next_scheme("unknown"), "tonal-spot");
+        assert_eq!(parse_scheme("scheme-vibrant"), Some("vibrant"));
+        assert_eq!(parse_scheme("expressive"), None);
     }
 
     #[test]

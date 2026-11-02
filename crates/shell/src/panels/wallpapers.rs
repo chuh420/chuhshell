@@ -61,6 +61,10 @@ pub struct WallpapersPanel {
     animation: Chip,
     size_label: Label,
     size: Chip,
+    scheme_label: Label,
+    scheme_chip: Chip,
+    scheme: &'static str,
+    theme_auto: bool,
     grid: Scroller,
     tiles: Vec<Option<Tile>>,
     empty: Label,
@@ -79,6 +83,10 @@ pub struct WallpapersPanel {
     sent: Option<Vec<PreviewKey>>,
     sent_pixmaps: Vec<String>,
     pending_follow: bool,
+}
+
+fn scheme_text(scheme: &str) -> String {
+    scheme.replace('-', " ")
 }
 
 fn cursor_subtitle(count: usize) -> String {
@@ -162,6 +170,17 @@ impl WallpapersPanel {
             false,
             None,
         );
+        let scheme_label = label(tree, engine, root, "colors", 11.0, theme::muted());
+        let scheme_chip = chip(
+            tree,
+            input,
+            engine,
+            root,
+            &scheme_text(data.theme_scheme),
+            theme::text(),
+            false,
+            None,
+        );
         let grid = Scroller::new(tree, input, root, true);
         let empty = label(
             tree,
@@ -184,6 +203,10 @@ impl WallpapersPanel {
             animation,
             size_label,
             size,
+            scheme_label,
+            scheme_chip,
+            scheme: data.theme_scheme,
+            theme_auto: data.theme_auto,
             grid,
             tiles: Vec::new(),
             empty,
@@ -215,6 +238,7 @@ impl WallpapersPanel {
             self.close.area,
             self.animation.area,
             self.size.area,
+            self.scheme_chip.area,
         ];
         areas.extend(self.grid.areas());
         areas.extend(self.tiles.iter().flatten().map(|tile| tile.area));
@@ -313,6 +337,13 @@ impl WallpapersPanel {
         self.animation.selected = on;
         let size = format!("{} px", self.cursors.size);
         self.size.set_label(engine, &size, 12.0);
+        self.scheme_chip
+            .set_label(engine, &scheme_text(self.scheme), 12.0);
+        self.scheme_chip.jump_ink(if self.theme_auto {
+            theme::text()
+        } else {
+            theme::muted()
+        });
     }
 
     fn error_text(&self) -> &str {
@@ -330,7 +361,13 @@ impl WallpapersPanel {
         data: &PanelData,
     ) {
         self.previews = data.previews.clone();
+        let theme_changed = self.scheme != data.theme_scheme || self.theme_auto != data.theme_auto;
+        self.scheme = data.theme_scheme;
+        self.theme_auto = data.theme_auto;
         if Arc::ptr_eq(&self.data, &data.wall) && Arc::ptr_eq(&self.cursors, &data.cursors) {
+            if theme_changed {
+                self.update_texts(engine);
+            }
             return;
         }
         let reset = match self.mode {
@@ -525,7 +562,10 @@ impl WallpapersPanel {
                 .ceil()
                 .max(self.animation.implicit_height().ceil())
         } else {
-            self.footer.implicit_height().ceil()
+            self.footer
+                .implicit_height()
+                .ceil()
+                .max(self.scheme_chip.implicit_height().ceil())
         };
         let mut cells = vec![Cell::implicit(header_h), Cell::fill(0.0)];
         if error_visible {
@@ -590,6 +630,16 @@ impl WallpapersPanel {
             self.size.root,
         ] {
             tree.set_visible(node, cursors);
+        }
+        for node in [self.scheme_label.node, self.scheme_chip.root] {
+            tree.set_visible(node, !cursors);
+        }
+        if !cursors {
+            let slot = slots[next];
+            let x = width - self.scheme_chip.implicit_width().ceil();
+            place_chip(tree, &mut self.scheme_chip, x, slot);
+            let lw = self.scheme_label.implicit_width();
+            place_label(tree, &mut self.scheme_label, x - 8.0 - lw, slot, lw);
         }
         if cursors {
             let slot = slots[next];
@@ -681,6 +731,7 @@ impl WallpapersPanel {
             &mut self.close,
             &mut self.animation,
             &mut self.size,
+            &mut self.scheme_chip,
         ] {
             chip.sync(now, input);
             running |= chip.tick(tree, now);
@@ -864,6 +915,8 @@ impl WallpapersPanel {
                         actions.push(PanelAction::CursorAnimation);
                     } else if area == self.size.area && self.mode == Mode::Cursors {
                         actions.push(PanelAction::CursorSize);
+                    } else if area == self.scheme_chip.area && self.mode == Mode::Wallpapers {
+                        actions.push(PanelAction::ThemeScheme);
                     } else if area == self.refresh.area {
                         actions.push(match self.mode {
                             Mode::Wallpapers => PanelAction::WallRefresh,

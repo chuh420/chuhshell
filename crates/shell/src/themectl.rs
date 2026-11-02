@@ -1,6 +1,6 @@
 use std::io::Read;
 
-use services::theme::{self, Mode};
+use services::theme::{self, Mode, Settings};
 
 use crate::{
     app::{App, ServiceEvent},
@@ -9,14 +9,16 @@ use crate::{
 
 pub struct ThemeCtl {
     pub mode: Mode,
+    pub scheme: &'static str,
     running: bool,
     queued: Option<String>,
 }
 
 impl ThemeCtl {
-    pub fn new(mode: Mode) -> Self {
+    pub fn new(settings: Settings) -> Self {
         Self {
-            mode,
+            mode: settings.mode,
+            scheme: settings.scheme,
             running: false,
             queued: None,
         }
@@ -33,13 +35,13 @@ pub fn load_palette() -> bool {
     }
 }
 
-pub fn load_initial() -> Mode {
-    let mode = theme::read_mode();
-    if let Err(err) = theme::link(mode) {
+pub fn load_initial() -> Settings {
+    let settings = theme::read_settings();
+    if let Err(err) = theme::link(settings.mode) {
         log::warn!("theme link: {err}");
     }
     load_palette();
-    mode
+    settings
 }
 
 fn run(mut command: std::process::Command) -> Result<(), String> {
@@ -84,8 +86,9 @@ impl App {
         }
         self.theme.running = true;
         let sender = self.events.clone();
+        let scheme = self.theme.scheme;
         std::thread::spawn(move || {
-            let result = run(theme::generate_command(&image));
+            let result = run(theme::generate_command(&image, scheme));
             if result.is_ok()
                 && let Err(err) = run(theme::reload_command())
             {
@@ -109,11 +112,29 @@ impl App {
         }
     }
 
+    fn save_theme_settings(&self) {
+        let settings = Settings {
+            mode: self.theme.mode,
+            scheme: self.theme.scheme,
+        };
+        if let Err(err) = theme::write_settings(settings) {
+            log::error!("theme settings: {err}");
+        }
+    }
+
+    pub fn set_theme_scheme(&mut self, scheme: &'static str) {
+        if self.theme.scheme == scheme {
+            return;
+        }
+        self.theme.scheme = scheme;
+        self.save_theme_settings();
+        self.theme_wallpaper_changed();
+        self.sync();
+    }
+
     pub fn set_theme_mode(&mut self, mode: Mode) {
         self.theme.mode = mode;
-        if let Err(err) = theme::write_mode(mode) {
-            log::error!("theme mode: {err}");
-        }
+        self.save_theme_settings();
         if let Err(err) = theme::link(mode) {
             log::error!("theme link: {err}");
         }

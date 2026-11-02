@@ -146,7 +146,7 @@ impl App {
         scheduler: Scheduler<()>,
         events: Sender<ServiceEvent>,
     ) -> Self {
-        let theme_mode = crate::themectl::load_initial();
+        let theme_settings = crate::themectl::load_initial();
         let mut engine = TextEngine::new(crate::theme::FONT_FAMILIES);
         let osd = Osd::new(&mut engine);
         let mut model = BarModel::placeholder();
@@ -172,7 +172,7 @@ impl App {
             clip: crate::clipctl::Clip::default(),
             walls: crate::wallctl::Walls::default(),
             cursors: crate::cursorctl::Cursors::default(),
-            theme: crate::themectl::ThemeCtl::new(theme_mode),
+            theme: crate::themectl::ThemeCtl::new(theme_settings),
             profiles: services::upower::Profiles::default(),
             cpu_history: Vec::new(),
             ram_history: Vec::new(),
@@ -705,6 +705,23 @@ impl App {
             "theme" => {
                 let mode = match args.get(1).map(String::as_str) {
                     None => return Reply::Ok(self.theme.mode.name().to_string()),
+                    Some("scheme") => {
+                        let scheme = match args.get(2).map(String::as_str) {
+                            None => return Reply::Ok(self.theme.scheme.to_string()),
+                            Some("next") => services::theme::next_scheme(self.theme.scheme),
+                            Some(value) => match services::theme::parse_scheme(value) {
+                                Some(scheme) => scheme,
+                                None => {
+                                    return Reply::Error(format!(
+                                        "unknown scheme: {value} (one of {})",
+                                        services::theme::SCHEMES.join(", ")
+                                    ));
+                                }
+                            },
+                        };
+                        self.set_theme_scheme(scheme);
+                        return Reply::Ok(String::new());
+                    }
                     Some("toggle") => match self.theme.mode {
                         services::theme::Mode::Auto => services::theme::Mode::Static,
                         services::theme::Mode::Static => services::theme::Mode::Auto,
@@ -749,6 +766,7 @@ impl App {
             "popups": self.notes.popups.len(),
             "dnd": self.state.dnd,
             "theme": self.theme.mode.name(),
+            "themeScheme": self.theme.scheme,
         })
         .to_string()
     }
@@ -809,6 +827,7 @@ impl App {
             brightness: self.state.brightness,
             keep_awake: self.state.keep_awake,
             theme_auto: self.theme.mode == services::theme::Mode::Auto,
+            theme_scheme: self.theme.scheme,
             dnd: self.state.dnd,
             notifications: self.notes.list.clone(),
             ages: self.notes.ages(),
@@ -970,6 +989,10 @@ impl App {
                     services::theme::Mode::Static => services::theme::Mode::Auto,
                 };
                 self.set_theme_mode(mode);
+            }
+            PanelAction::ThemeScheme => {
+                let scheme = services::theme::next_scheme(self.theme.scheme);
+                self.set_theme_scheme(scheme);
             }
             PanelAction::ToggleKeepAwake => {
                 self.set_keep_awake(!self.state.keep_awake);
