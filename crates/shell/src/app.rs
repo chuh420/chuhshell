@@ -59,6 +59,8 @@ pub enum ServiceEvent {
     WallList(services::wallpapers::Listing),
     Profiles(services::upower::Profiles),
     WallApplied(Result<(), String>),
+    CursorList(Vec<crate::cursorctl::CursorItem>),
+    CursorApplied(Result<services::cursors::State, String>),
     ThemeGenerated(Result<(), String>),
     Preview(String, String, String),
     PreviewPixmap(String, Option<std::sync::Arc<ui::tiny_skia::Pixmap>>),
@@ -91,6 +93,7 @@ pub struct App {
     pub(crate) apps: crate::appsctl::Apps,
     pub(crate) clip: crate::clipctl::Clip,
     pub(crate) walls: crate::wallctl::Walls,
+    pub(crate) cursors: crate::cursorctl::Cursors,
     pub(crate) theme: crate::themectl::ThemeCtl,
     pub(crate) profiles: services::upower::Profiles,
     cpu_history: Vec<f64>,
@@ -168,6 +171,7 @@ impl App {
             apps: crate::appsctl::Apps::default(),
             clip: crate::clipctl::Clip::default(),
             walls: crate::wallctl::Walls::default(),
+            cursors: crate::cursorctl::Cursors::default(),
             theme: crate::themectl::ThemeCtl::new(theme_mode),
             profiles: services::upower::Profiles::default(),
             cpu_history: Vec::new(),
@@ -198,6 +202,7 @@ impl App {
         self.start_network();
         self.start_apps();
         self.start_wallpapers();
+        self.start_cursors();
         self.start_theme();
         self.start_power_panels();
         let sender = self.events.clone();
@@ -323,6 +328,8 @@ impl App {
             ServiceEvent::WallList(listing) => self.wallpapers_listed(listing),
             ServiceEvent::Profiles(profiles) => self.profiles_changed(profiles),
             ServiceEvent::WallApplied(result) => self.wallpaper_applied(result),
+            ServiceEvent::CursorList(items) => self.cursors_listed(items),
+            ServiceEvent::CursorApplied(result) => self.cursor_applied(result),
             ServiceEvent::ThemeGenerated(result) => self.theme_generated(result),
             ServiceEvent::Preview(path, revision, picture) => {
                 self.preview_ready(path, revision, picture)
@@ -726,6 +733,10 @@ impl App {
             "wallpapers": self.walls.data.items.len(),
             "wallpaper": self.walls.data.current,
             "previews": self.walls.previews.len(),
+            "cursors": self.cursors.data.items.len(),
+            "cursor": self.cursors.state.theme,
+            "cursorAnimation": self.cursors.state.animation,
+            "cursorSize": self.cursors.state.size,
             "keepAwake": self.state.keep_awake,
             "screen": self.state.panel_screen,
             "battery": {
@@ -819,6 +830,7 @@ impl App {
             clipboard: self.clip.entries.clone(),
             wall: self.walls.data.clone(),
             previews: self.walls.previews.clone(),
+            cursors: self.cursors.data.clone(),
             power: self.state.power.clone(),
             battery_plugged: self.state.battery_plugged(),
             battery_stats: self.battery_stats,
@@ -976,6 +988,11 @@ impl App {
             PanelAction::ClipWipe => self.clip_wipe(),
             PanelAction::WallPreviews(items) => self.request_previews(items),
             PanelAction::WallRefresh => self.refresh_wallpapers(),
+            PanelAction::CursorApply(name) => self.apply_cursor(&name),
+            PanelAction::CursorAnimation => self.toggle_cursor_animation(),
+            PanelAction::CursorSize => self.cycle_cursor_size(),
+            PanelAction::CursorRefresh => self.refresh_cursors(),
+            PanelAction::CursorPixmaps => self.request_preview_pixmaps(),
             PanelAction::SetProfile(profile) => self.set_profile(profile),
             PanelAction::SetMicVolume(value) => self.set_mic_volume(value),
             PanelAction::SetDefaultNode(id) => self.set_default_node(id),

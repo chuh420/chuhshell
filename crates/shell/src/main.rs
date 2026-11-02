@@ -3,6 +3,7 @@ mod appsctl;
 mod bar;
 mod card;
 mod clipctl;
+mod cursorctl;
 mod history;
 mod icons;
 mod ipc;

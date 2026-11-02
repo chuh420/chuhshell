@@ -329,6 +329,7 @@ impl App {
             self.walls.pending.clear();
         } else {
             self.refresh_wallpapers();
+            self.refresh_cursors();
         }
     }
 

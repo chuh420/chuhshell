@@ -1052,9 +1052,14 @@ impl Overlay {
             View::Clipboard(panel) => {
                 actions.extend(panel.handle(&mut self.tree, engine, events, pointer, now))
             }
-            View::Wallpapers(panel) => {
-                actions.extend(panel.handle(&self.tree, events, pointer, now))
-            }
+            View::Wallpapers(panel) => actions.extend(panel.handle(
+                &mut self.tree,
+                &mut self.input,
+                engine,
+                events,
+                pointer,
+                now,
+            )),
             View::Battery(panel) => actions.extend(panel.handle(&self.tree, events, pointer)),
             View::Audio(panel) => actions.extend(panel.handle(&self.tree, events, pointer)),
             View::Power(panel) => actions.extend(panel.handle(events, now)),
@@ -1139,7 +1144,7 @@ impl Overlay {
             View::Clipboard(panel) => {
                 panel.key(&mut self.tree, &mut self.input, engine, event, now)
             }
-            View::Wallpapers(panel) => panel.key(&self.tree, event),
+            View::Wallpapers(panel) => panel.key(&mut self.tree, &mut self.input, engine, event),
             View::Power(panel) => panel.key(event, now),
             View::Calendar(panel) => panel.key(event, now),
             _ => (false, Vec::new()),

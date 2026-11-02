@@ -16,9 +16,16 @@ use super::{
     kit::{Scroller, chip, icon_label, label, place_chip, place_label, rect, set_border},
 };
 use crate::{
+    cursorctl::CursorData,
     theme::{self, FAST, NORMAL, SLOW, UI_SCALE},
     wallctl::{PreviewKey, WallData},
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Wallpapers,
+    Cursors,
+}
 
 const CACHE_BUFFER: f32 = 320.0;
 
@@ -47,14 +54,21 @@ pub struct WallpapersPanel {
     pub root: NodeId,
     title: Label,
     subtitle: Label,
+    mode_chip: Chip,
     refresh: Chip,
     close: Chip,
+    animation_label: Label,
+    animation: Chip,
+    size_label: Label,
+    size: Chip,
     grid: Scroller,
     tiles: Vec<Option<Tile>>,
     empty: Label,
     error: Label,
     footer: Label,
     data: Arc<WallData>,
+    cursors: Arc<CursorData>,
+    mode: Mode,
     previews: Arc<HashMap<PreviewKey, String>>,
     pixmaps: HashMap<String, Option<Arc<Pixmap>>>,
     current: usize,
@@ -63,6 +77,13 @@ pub struct WallpapersPanel {
     cell_h: f32,
     grid_h: f32,
     sent: Option<Vec<PreviewKey>>,
+    sent_pixmaps: Vec<String>,
+    pending_follow: bool,
+}
+
+fn cursor_subtitle(count: usize) -> String {
+    let noun = if count == 1 { "theme" } else { "themes" };
+    format!("{count} {noun} · Pictures/Wallpapers/cursors")
 }
 
 fn subtitle(items: &[WallItem]) -> String {
@@ -98,6 +119,16 @@ impl WallpapersPanel {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
         let title = label(tree, engine, root, "wallpapers", 26.0, theme::text());
         let subtitle = label(tree, engine, root, "", 11.0, theme::muted());
+        let mode_chip = chip(
+            tree,
+            input,
+            engine,
+            root,
+            "cursors",
+            theme::text(),
+            false,
+            None,
+        );
         let refresh = chip(
             tree,
             input,
@@ -109,6 +140,28 @@ impl WallpapersPanel {
             None,
         );
         let close = chip(tree, input, engine, root, "×", theme::text(), false, None);
+        let animation_label = label(tree, engine, root, "cursor animation", 11.0, theme::muted());
+        let animation = chip(
+            tree,
+            input,
+            engine,
+            root,
+            "off",
+            theme::muted(),
+            false,
+            None,
+        );
+        let size_label = label(tree, engine, root, "size", 11.0, theme::muted());
+        let size = chip(
+            tree,
+            input,
+            engine,
+            root,
+            "24 px",
+            theme::text(),
+            false,
+            None,
+        );
         let grid = Scroller::new(tree, input, root, true);
         let empty = label(
             tree,
@@ -124,14 +177,21 @@ impl WallpapersPanel {
             root,
             title,
             subtitle,
+            mode_chip,
             refresh,
             close,
+            animation_label,
+            animation,
+            size_label,
+            size,
             grid,
             tiles: Vec::new(),
             empty,
             error,
             footer,
             data: Arc::new(WallData::default()),
+            cursors: data.cursors.clone(),
+            mode: Mode::Wallpapers,
             previews: data.previews.clone(),
             pixmaps: HashMap::new(),
             current: 0,
@@ -140,6 +200,8 @@ impl WallpapersPanel {
             cell_h: 0.0,
             grid_h: 0.0,
             sent: None,
+            sent_pixmaps: Vec::new(),
+            pending_follow: false,
         };
         panel.data = data.wall.clone();
         panel.reset(tree, input, engine);
@@ -147,7 +209,13 @@ impl WallpapersPanel {
     }
 
     pub fn areas(&self) -> Vec<AreaId> {
-        let mut areas = vec![self.refresh.area, self.close.area];
+        let mut areas = vec![
+            self.mode_chip.area,
+            self.refresh.area,
+            self.close.area,
+            self.animation.area,
+            self.size.area,
+        ];
         areas.extend(self.grid.areas());
         areas.extend(self.tiles.iter().flatten().map(|tile| tile.area));
         areas
@@ -158,24 +226,100 @@ impl WallpapersPanel {
             input.remove(tile.area);
             tree.remove(tile.root);
         }
-        self.tiles = (0..self.data.items.len()).map(|_| None).collect();
-        self.current = 0;
+        self.tiles = (0..self.count()).map(|_| None).collect();
+        self.current = match self.mode {
+            Mode::Wallpapers => 0,
+            Mode::Cursors => self
+                .cursors
+                .items
+                .iter()
+                .position(|item| item.theme.name == self.cursors.current)
+                .unwrap_or(0),
+        };
         self.grid.jump(0.0);
         self.sent = None;
-        let text = subtitle(&self.data.items);
+        self.sent_pixmaps.clear();
+        let (title, text, other, empty) = match self.mode {
+            Mode::Wallpapers => (
+                "wallpapers",
+                subtitle(&self.data.items),
+                "cursors",
+                "Add images to Pictures/Wallpapers",
+            ),
+            Mode::Cursors => (
+                "cursors",
+                cursor_subtitle(self.cursors.items.len()),
+                "wallpapers",
+                "Add cursor themes to Pictures/Wallpapers/cursors",
+            ),
+        };
+        self.title.set_text(engine, title);
         self.subtitle.set_text(engine, &text);
+        self.mode_chip.set_label(engine, other, 12.0);
+        self.empty.set_text(engine, empty);
         self.update_texts(engine);
+        self.pending_follow = true;
+    }
+
+    fn set_mode(
+        &mut self,
+        tree: &mut Tree,
+        input: &mut Input,
+        engine: &mut TextEngine,
+        mode: Mode,
+    ) {
+        if self.mode == mode {
+            return;
+        }
+        self.mode = mode;
+        self.reset(tree, input, engine);
+    }
+
+    fn count(&self) -> usize {
+        match self.mode {
+            Mode::Wallpapers => self.data.items.len(),
+            Mode::Cursors => self.cursors.items.len(),
+        }
+    }
+
+    fn busy(&self) -> bool {
+        match self.mode {
+            Mode::Wallpapers => self.data.busy,
+            Mode::Cursors => self.cursors.busy,
+        }
     }
 
     fn update_texts(&mut self, engine: &mut TextEngine) {
-        let footer = if self.data.busy {
-            "Applying…"
-        } else {
-            "Click a preview to apply  ·  ↑ ↓ ← → navigate  ·  Esc close"
+        let footer = match (self.mode, self.busy()) {
+            (_, true) => "Applying…",
+            (Mode::Wallpapers, false) => {
+                "Click a preview to apply  ·  ↑ ↓ ← → navigate  ·  Esc close"
+            }
+            (Mode::Cursors, false) => {
+                "Click a theme to apply  ·  ↑ ↓ ← → navigate  ·  Tab wallpapers  ·  Esc close"
+            }
         };
         self.footer.set_text(engine, footer);
-        let error = self.data.error.clone();
+        let error = match self.mode {
+            Mode::Wallpapers => self.data.error.clone(),
+            Mode::Cursors => self.cursors.error.clone(),
+        };
         self.error.set_text(engine, &error);
+        let on = self.cursors.animation;
+        self.animation
+            .set_label(engine, if on { "on" } else { "off" }, 12.0);
+        self.animation
+            .jump_ink(if on { theme::green() } else { theme::muted() });
+        self.animation.selected = on;
+        let size = format!("{} px", self.cursors.size);
+        self.size.set_label(engine, &size, 12.0);
+    }
+
+    fn error_text(&self) -> &str {
+        match self.mode {
+            Mode::Wallpapers => &self.data.error,
+            Mode::Cursors => &self.cursors.error,
+        }
     }
 
     pub fn sync(
@@ -186,11 +330,15 @@ impl WallpapersPanel {
         data: &PanelData,
     ) {
         self.previews = data.previews.clone();
-        if Arc::ptr_eq(&self.data, &data.wall) {
+        if Arc::ptr_eq(&self.data, &data.wall) && Arc::ptr_eq(&self.cursors, &data.cursors) {
             return;
         }
-        let reset = self.data.generation != data.wall.generation;
+        let reset = match self.mode {
+            Mode::Wallpapers => self.data.generation != data.wall.generation,
+            Mode::Cursors => self.cursors.generation != data.cursors.generation,
+        };
         self.data = data.wall.clone();
+        self.cursors = data.cursors.clone();
         if reset {
             self.reset(tree, input, engine);
         } else {
@@ -246,7 +394,7 @@ impl WallpapersPanel {
     }
 
     fn preview_window(&self) -> Vec<PreviewKey> {
-        if self.cell_h <= 0.0 {
+        if self.cell_h <= 0.0 || self.mode == Mode::Cursors {
             return Vec::new();
         }
         let first = ((self.grid.value() / self.cell_h).floor().max(0.0) as usize) * 2;
@@ -264,7 +412,8 @@ impl WallpapersPanel {
         input: &mut Input,
         engine: &mut TextEngine,
         parent: NodeId,
-        item: &WallItem,
+        name: &str,
+        badge: Option<&str>,
         now: Millis,
     ) -> Tile {
         let root = rect(tree, parent, theme::surface(), 14.0);
@@ -276,13 +425,13 @@ impl WallpapersPanel {
         }
         let placeholder = icon_label(tree, engine, frame, "󰸉", 28.0, theme::line());
         let image = tree.add(frame, Node::new(0.0, 0.0, 0.0, 0.0));
-        let badge = item.live.then(|| {
+        let badge = badge.map(|badge| {
             let pill = rect(tree, frame, theme::surface(), 0.0);
             tree.set_opacity(pill, 0.92);
-            let text = label(tree, engine, pill, "live", 10.0, theme::green());
+            let text = label(tree, engine, pill, badge, 10.0, theme::green());
             (pill, text)
         });
-        let name = label(tree, engine, root, &item.name, 12.0, theme::text());
+        let name = label(tree, engine, root, name, 12.0, theme::text());
         let applied = label(tree, engine, root, "✓ applied", 10.0, theme::green());
         let mut opacity = Tween::new(0.0, SLOW, Easing::Linear);
         opacity.start(now, 0.0, 1.0);
@@ -332,8 +481,20 @@ impl WallpapersPanel {
             if self.tiles[index].is_some() || y + self.cell_h <= top || y >= bottom {
                 continue;
             }
-            let item = self.data.items[index].clone();
-            let tile = Self::make_tile(tree, input, engine, self.grid.content, &item, now);
+            let (name, badge) = match self.mode {
+                Mode::Wallpapers => {
+                    let item = &self.data.items[index];
+                    (item.name.clone(), item.live.then_some("live"))
+                }
+                Mode::Cursors => {
+                    let item = &self.cursors.items[index];
+                    (
+                        item.theme.name.clone(),
+                        item.theme.animated.then_some("animated"),
+                    )
+                }
+            };
+            let tile = Self::make_tile(tree, input, engine, self.grid.content, &name, badge, now);
             self.tiles[index] = Some(tile);
         }
     }
@@ -348,15 +509,24 @@ impl WallpapersPanel {
         let subtitle_h = self.subtitle.implicit_height().ceil();
         let column_h = title_h + 6.0 + subtitle_h;
         let header_h = column_h
+            .max(self.mode_chip.implicit_height().ceil())
             .max(self.refresh.implicit_height().ceil())
             .max(self.close.implicit_height().ceil());
-        let error_visible = !self.data.error.is_empty();
+        let error_visible = !self.error_text().is_empty();
         let error_h = if error_visible {
             self.error.wrap(engine, width, 1000)
         } else {
             0.0
         };
-        let footer_h = self.footer.implicit_height().ceil();
+        let cursors = self.mode == Mode::Cursors;
+        let footer_h = if cursors {
+            self.footer
+                .implicit_height()
+                .ceil()
+                .max(self.animation.implicit_height().ceil())
+        } else {
+            self.footer.implicit_height().ceil()
+        };
         let mut cells = vec![Cell::implicit(header_h), Cell::fill(0.0)];
         if error_visible {
             cells.push(Cell::implicit(error_h));
@@ -373,6 +543,7 @@ impl WallpapersPanel {
                         .ceil(),
                 ),
                 Cell::fill(0.0),
+                Cell::implicit(self.mode_chip.implicit_width()),
                 Cell::implicit(self.refresh.implicit_width()),
                 Cell::implicit(self.close.implicit_width()),
             ],
@@ -385,8 +556,9 @@ impl WallpapersPanel {
         let sw = self.subtitle.implicit_width();
         self.subtitle
             .place(tree, columns[0].pos, top + title_h + 6.0, sw, subtitle_h);
-        place_chip(tree, &mut self.refresh, columns[2].pos, header);
-        place_chip(tree, &mut self.close, columns[3].pos, header);
+        place_chip(tree, &mut self.mode_chip, columns[2].pos, header);
+        place_chip(tree, &mut self.refresh, columns[3].pos, header);
+        place_chip(tree, &mut self.close, columns[4].pos, header);
         let grid = slots[1];
         self.cell_w = width / 2.0;
         self.cell_h = self.cell_w * 9.0 / 16.0 + 54.0;
@@ -395,6 +567,10 @@ impl WallpapersPanel {
         let content_h = rows as f32 * self.cell_h;
         self.grid
             .place(tree, 0.0, grid.pos, width, grid.size, content_h);
+        if self.pending_follow && self.cell_h > 0.0 {
+            self.pending_follow = false;
+            self.follow();
+        }
         let ew = self.empty.implicit_width();
         let eh = self.empty.implicit_height().ceil();
         self.empty
@@ -407,6 +583,27 @@ impl WallpapersPanel {
         }
         let fw = self.footer.implicit_width();
         place_label(tree, &mut self.footer, 0.0, slots[next], fw);
+        for node in [
+            self.animation_label.node,
+            self.animation.root,
+            self.size_label.node,
+            self.size.root,
+        ] {
+            tree.set_visible(node, cursors);
+        }
+        if cursors {
+            let slot = slots[next];
+            let mut x = width - self.animation.implicit_width().ceil();
+            place_chip(tree, &mut self.animation, x, slot);
+            let lw = self.animation_label.implicit_width();
+            x -= 8.0 + lw;
+            place_label(tree, &mut self.animation_label, x, slot, lw);
+            x -= 18.0 + self.size.implicit_width().ceil();
+            place_chip(tree, &mut self.size, x, slot);
+            let sw = self.size_label.implicit_width();
+            x -= 8.0 + sw;
+            place_label(tree, &mut self.size_label, x, slot, sw);
+        }
         self.layout_tiles(tree);
     }
 
@@ -478,20 +675,37 @@ impl WallpapersPanel {
     ) -> (bool, Vec<PanelAction>) {
         let mut running = false;
         let mut actions = Vec::new();
-        for chip in [&mut self.refresh, &mut self.close] {
+        for chip in [
+            &mut self.mode_chip,
+            &mut self.refresh,
+            &mut self.close,
+            &mut self.animation,
+            &mut self.size,
+        ] {
             chip.sync(now, input);
             running |= chip.tick(tree, now);
         }
         running |= self.grid.tick(tree, input, now);
         self.ensure_tiles(tree, input, engine, now);
         for index in 0..self.tiles.len() {
-            let item = &self.data.items[index];
-            let picture = self
-                .previews
-                .get(&(item.path.clone(), item.revision.clone()))
-                .cloned()
-                .unwrap_or_default();
-            let selected = self.data.current == item.path;
+            let (picture, selected) = match self.mode {
+                Mode::Wallpapers => {
+                    let item = &self.data.items[index];
+                    let picture = self
+                        .previews
+                        .get(&(item.path.clone(), item.revision.clone()))
+                        .cloned()
+                        .unwrap_or_default();
+                    (picture, self.data.current == item.path)
+                }
+                Mode::Cursors => {
+                    let item = &self.cursors.items[index];
+                    (
+                        item.picture.clone(),
+                        self.cursors.current == item.theme.name,
+                    )
+                }
+            };
             let current = index == self.current;
             let Some(tile) = self.tiles[index].as_mut() else {
                 continue;
@@ -584,31 +798,56 @@ impl WallpapersPanel {
             tree.set_opacity(tile.applied.node, tile.applied_opacity.value());
         }
         self.apply_pixmaps(tree, now);
-        tree.set_visible(
-            self.empty.node,
-            self.data.items.is_empty() && !self.data.busy,
-        );
+        tree.set_visible(self.empty.node, self.count() == 0 && !self.busy());
         let window = self.preview_window();
         if self.sent.as_ref() != Some(&window) && self.cell_h > 0.0 {
             self.sent = Some(window.clone());
             actions.push(PanelAction::WallPreviews(window));
         }
+        if self.mode == Mode::Cursors {
+            let pending: Vec<String> = self
+                .pixmap_requests()
+                .into_iter()
+                .map(|(picture, _, _)| picture)
+                .collect();
+            if !pending.is_empty() && pending != self.sent_pixmaps {
+                actions.push(PanelAction::CursorPixmaps);
+            }
+            self.sent_pixmaps = pending;
+        }
         (running, actions)
     }
 
     fn apply_at(&self, index: usize, x: f32, y: f32) -> Option<PanelAction> {
-        let item = self.data.items.get(index)?;
-        Some(PanelAction::WallApply(item.path.clone(), x, y))
+        match self.mode {
+            Mode::Wallpapers => {
+                let item = self.data.items.get(index)?;
+                Some(PanelAction::WallApply(item.path.clone(), x, y))
+            }
+            Mode::Cursors => {
+                let item = self.cursors.items.get(index)?;
+                Some(PanelAction::CursorApply(item.theme.name.clone()))
+            }
+        }
+    }
+
+    fn toggle_mode(&mut self, tree: &mut Tree, input: &mut Input, engine: &mut TextEngine) {
+        let mode = match self.mode {
+            Mode::Wallpapers => Mode::Cursors,
+            Mode::Cursors => Mode::Wallpapers,
+        };
+        self.set_mode(tree, input, engine, mode);
     }
 
     pub fn handle(
         &mut self,
-        tree: &Tree,
+        tree: &mut Tree,
+        input: &mut Input,
+        engine: &mut TextEngine,
         events: &[InputEvent],
         pointer: (f32, f32),
         now: Millis,
     ) -> Vec<PanelAction> {
-        let _ = tree;
         let mut actions = Vec::new();
         for event in events {
             match *event {
@@ -618,8 +857,18 @@ impl WallpapersPanel {
                 InputEvent::Click(area, MouseButton::Left) => {
                     if area == self.close.area {
                         actions.push(PanelAction::Close);
+                    } else if area == self.mode_chip.area {
+                        self.toggle_mode(tree, input, engine);
+                        actions.push(PanelAction::CursorRefresh);
+                    } else if area == self.animation.area && self.mode == Mode::Cursors {
+                        actions.push(PanelAction::CursorAnimation);
+                    } else if area == self.size.area && self.mode == Mode::Cursors {
+                        actions.push(PanelAction::CursorSize);
                     } else if area == self.refresh.area {
-                        actions.push(PanelAction::WallRefresh);
+                        actions.push(match self.mode {
+                            Mode::Wallpapers => PanelAction::WallRefresh,
+                            Mode::Cursors => PanelAction::CursorRefresh,
+                        });
                     } else if let Some(index) = self
                         .tiles
                         .iter()
@@ -635,10 +884,20 @@ impl WallpapersPanel {
         actions
     }
 
-    pub fn key(&mut self, tree: &Tree, event: &KeyEvent) -> (bool, Vec<PanelAction>) {
+    pub fn key(
+        &mut self,
+        tree: &mut Tree,
+        input: &mut Input,
+        engine: &mut TextEngine,
+        event: &KeyEvent,
+    ) -> (bool, Vec<PanelAction>) {
         let mut actions = Vec::new();
         match event.keysym {
             keys::ESCAPE => actions.push(PanelAction::Close),
+            keys::TAB | keys::ISO_LEFT_TAB => {
+                self.toggle_mode(tree, input, engine);
+                actions.push(PanelAction::CursorRefresh);
+            }
             keys::RETURN => {
                 if let Some(tile) = self.tiles.get(self.current).and_then(Option::as_ref) {
                     let (w, h) = tree
@@ -651,7 +910,7 @@ impl WallpapersPanel {
                 }
             }
             key @ (keys::LEFT | keys::RIGHT | keys::UP | keys::DOWN) => {
-                let next = move_index(self.current, self.data.items.len(), key);
+                let next = move_index(self.current, self.count(), key);
                 if next != self.current {
                     self.current = next;
                     self.follow();
