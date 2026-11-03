@@ -1,12 +1,13 @@
 use std::{collections::HashMap, sync::Arc};
 
 use platform::{KeyEvent, MouseButton, keys};
-use services::wallpapers::WallItem;
+use services::{apps::casefold, wallpapers::WallItem};
 use ui::{
     Color, Node, NodeId, Paint, TextEngine, TransformOp, Tree,
     anim::{Easing, Millis, Tween},
     input::{AreaId, Input, InputEvent, MouseArea},
     layout::{Cell, linear},
+    textfield::KeyResult,
     tiny_skia::Pixmap,
     widgets::{Chip, Label},
 };
@@ -14,6 +15,7 @@ use ui::{
 use super::{
     PanelAction, PanelData,
     kit::{Scroller, chip, icon_label, label, place_chip, place_label, rect, set_border},
+    picker::{SEARCH_HEIGHT, SearchBox},
 };
 use crate::{
     cursorctl::CursorData,
@@ -28,6 +30,43 @@ pub enum Mode {
 }
 
 const CACHE_BUFFER: f32 = 320.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reset {
+    Fresh,
+    Keep,
+    Search,
+}
+
+#[derive(Clone, Debug)]
+pub struct WallView {
+    mode: Mode,
+    query: String,
+    current: Option<String>,
+    scroll: f32,
+}
+
+pub fn filter<'a>(names: impl Iterator<Item = &'a str>, query: &str) -> Vec<usize> {
+    let terms: Vec<String> = casefold(query)
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    names
+        .enumerate()
+        .filter(|(_, name)| {
+            let name = casefold(name);
+            terms.iter().all(|term| name.contains(term.as_str()))
+        })
+        .map(|(index, _)| index)
+        .collect()
+}
+
+fn placeholder(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Wallpapers => "find a wallpaper…",
+        Mode::Cursors => "find a cursor theme…",
+    }
+}
 
 struct Tile {
     root: NodeId,
@@ -54,6 +93,9 @@ pub struct WallpapersPanel {
     pub root: NodeId,
     title: Label,
     subtitle: Label,
+    search: SearchBox,
+    shown: Vec<usize>,
+    pending_scroll: Option<f32>,
     mode_chip: Chip,
     refresh: Chip,
     close: Chip,
@@ -127,10 +169,21 @@ impl WallpapersPanel {
         engine: &mut TextEngine,
         parent: NodeId,
         data: &PanelData,
+        now: Millis,
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
         let title = label(tree, engine, root, "wallpapers", 26.0, theme::text());
         let subtitle = label(tree, engine, root, "", 11.0, theme::muted());
+        let search = SearchBox::new(
+            tree,
+            input,
+            engine,
+            root,
+            "󰍉",
+            placeholder(Mode::Wallpapers),
+            true,
+            now,
+        );
         let mode_chip = chip(
             tree,
             input,
@@ -222,6 +275,9 @@ impl WallpapersPanel {
             root,
             title,
             subtitle,
+            search,
+            shown: Vec::new(),
+            pending_scroll: None,
             mode_chip,
             refresh,
             close,
@@ -257,8 +313,82 @@ impl WallpapersPanel {
             pending_follow: false,
         };
         panel.data = data.wall.clone();
-        panel.reset(tree, input, engine);
+        panel.reset(tree, input, engine, Reset::Fresh);
         panel
+    }
+
+    fn names(&self) -> Vec<&str> {
+        match self.mode {
+            Mode::Wallpapers => self
+                .data
+                .items
+                .iter()
+                .map(|item| item.name.as_str())
+                .collect(),
+            Mode::Cursors => self
+                .cursors
+                .items
+                .iter()
+                .map(|item| item.theme.name.as_str())
+                .collect(),
+        }
+    }
+
+    fn key_of(&self, index: usize) -> Option<&str> {
+        let item = *self.shown.get(index)?;
+        match self.mode {
+            Mode::Wallpapers => self.data.items.get(item).map(|item| item.path.as_str()),
+            Mode::Cursors => self
+                .cursors
+                .items
+                .get(item)
+                .map(|item| item.theme.name.as_str()),
+        }
+    }
+
+    fn keys(&self) -> Vec<String> {
+        (0..self.shown.len())
+            .filter_map(|index| self.key_of(index).map(str::to_string))
+            .collect()
+    }
+
+    fn wall_item(&self, index: usize) -> Option<&WallItem> {
+        self.data.items.get(*self.shown.get(index)?)
+    }
+
+    fn cursor_item(&self, index: usize) -> Option<&crate::cursorctl::CursorItem> {
+        self.cursors.items.get(*self.shown.get(index)?)
+    }
+
+    pub fn view(&self) -> WallView {
+        WallView {
+            mode: self.mode,
+            query: self.search.text().to_string(),
+            current: self.key_of(self.current).map(str::to_string),
+            scroll: self.grid.value(),
+        }
+    }
+
+    pub fn restore(
+        &mut self,
+        tree: &mut Tree,
+        input: &mut Input,
+        engine: &mut TextEngine,
+        view: WallView,
+    ) {
+        self.mode = view.mode;
+        self.search.field.set_text(tree, engine, &view.query);
+        self.search.set_placeholder(engine, placeholder(self.mode));
+        self.reset(tree, input, engine, Reset::Fresh);
+        let keys = self.keys();
+        if let Some(index) = view
+            .current
+            .and_then(|key| keys.iter().position(|item| *item == key))
+        {
+            self.current = index;
+        }
+        self.pending_follow = false;
+        self.pending_scroll = Some(view.scroll);
     }
 
     pub fn areas(&self) -> Vec<AreaId> {
@@ -266,6 +396,7 @@ impl WallpapersPanel {
             self.mode_chip.area,
             self.refresh.area,
             self.close.area,
+            self.search.field.area,
             self.animation.area,
             self.colors.area,
             self.size.area,
@@ -277,24 +408,47 @@ impl WallpapersPanel {
         areas
     }
 
-    fn reset(&mut self, tree: &mut Tree, input: &mut Input, engine: &mut TextEngine) {
-        for tile in self.tiles.drain(..).flatten() {
-            input.remove(tile.area);
-            tree.remove(tile.root);
+    fn reset(&mut self, tree: &mut Tree, input: &mut Input, engine: &mut TextEngine, how: Reset) {
+        let old_keys = self.keys();
+        let old_current = old_keys.get(self.current).cloned();
+        self.shown = filter(self.names().into_iter(), self.search.text());
+        let keys = self.keys();
+        let count = keys.len();
+        let same = how == Reset::Keep && keys == old_keys && self.tiles.len() == count;
+        match how {
+            Reset::Keep => {
+                self.current = old_current
+                    .and_then(|key| keys.iter().position(|item| *item == key))
+                    .unwrap_or_else(|| self.current.min(count.saturating_sub(1)));
+                if !same {
+                    self.pending_scroll = Some(self.grid.value());
+                }
+            }
+            Reset::Fresh => {
+                let applied = match self.mode {
+                    Mode::Wallpapers => &self.data.current,
+                    Mode::Cursors => &self.cursors.current,
+                };
+                self.current = keys.iter().position(|key| key == applied).unwrap_or(0);
+                self.grid.jump(0.0);
+                self.pending_scroll = None;
+                self.pending_follow = true;
+            }
+            Reset::Search => {
+                self.current = 0;
+                self.grid.jump(0.0);
+                self.pending_scroll = None;
+            }
         }
-        self.tiles = (0..self.count()).map(|_| None).collect();
-        self.current = match self.mode {
-            Mode::Wallpapers => 0,
-            Mode::Cursors => self
-                .cursors
-                .items
-                .iter()
-                .position(|item| item.theme.name == self.cursors.current)
-                .unwrap_or(0),
-        };
-        self.grid.jump(0.0);
-        self.sent = None;
-        self.sent_pixmaps.clear();
+        if !same {
+            for tile in self.tiles.drain(..).flatten() {
+                input.remove(tile.area);
+                tree.remove(tile.root);
+            }
+            self.tiles = (0..count).map(|_| None).collect();
+            self.sent = None;
+            self.sent_pixmaps.clear();
+        }
         let (title, text, other, empty) = match self.mode {
             Mode::Wallpapers => (
                 "wallpapers",
@@ -312,9 +466,13 @@ impl WallpapersPanel {
         self.title.set_text(engine, title);
         self.subtitle.set_text(engine, &text);
         self.mode_chip.set_label(engine, other, 12.0);
+        let empty = if self.search.text().trim().is_empty() {
+            empty
+        } else {
+            "No results found"
+        };
         self.empty.set_text(engine, empty);
         self.update_texts(engine);
-        self.pending_follow = true;
     }
 
     fn set_mode(
@@ -328,14 +486,13 @@ impl WallpapersPanel {
             return;
         }
         self.mode = mode;
-        self.reset(tree, input, engine);
+        self.search.field.set_text(tree, engine, "");
+        self.search.set_placeholder(engine, placeholder(mode));
+        self.reset(tree, input, engine, Reset::Fresh);
     }
 
     fn count(&self) -> usize {
-        match self.mode {
-            Mode::Wallpapers => self.data.items.len(),
-            Mode::Cursors => self.cursors.items.len(),
-        }
+        self.shown.len()
     }
 
     fn busy(&self) -> bool {
@@ -424,7 +581,7 @@ impl WallpapersPanel {
         self.data = data.wall.clone();
         self.cursors = data.cursors.clone();
         if reset {
-            self.reset(tree, input, engine);
+            self.reset(tree, input, engine, Reset::Keep);
         } else {
             self.update_texts(engine);
         }
@@ -482,11 +639,11 @@ impl WallpapersPanel {
             return Vec::new();
         }
         let first = ((self.grid.value() / self.cell_h).floor().max(0.0) as usize) * 2;
-        self.data
-            .items
+        self.shown
             .iter()
             .skip(first)
             .take(8)
+            .filter_map(|&index| self.data.items.get(index))
             .map(|item| (item.path.clone(), item.revision.clone()))
             .collect()
     }
@@ -565,18 +722,19 @@ impl WallpapersPanel {
             if self.tiles[index].is_some() || y + self.cell_h <= top || y >= bottom {
                 continue;
             }
-            let (name, badge) = match self.mode {
-                Mode::Wallpapers => {
-                    let item = &self.data.items[index];
-                    (item.name.clone(), item.live.then_some("live"))
-                }
-                Mode::Cursors => {
-                    let item = &self.cursors.items[index];
+            let spec = match self.mode {
+                Mode::Wallpapers => self
+                    .wall_item(index)
+                    .map(|item| (item.name.clone(), item.live.then_some("live"))),
+                Mode::Cursors => self.cursor_item(index).map(|item| {
                     (
                         item.theme.name.clone(),
                         item.theme.animated.then_some("animated"),
                     )
-                }
+                }),
+            };
+            let Some((name, badge)) = spec else {
+                continue;
             };
             let tile = Self::make_tile(tree, input, engine, self.grid.content, &name, badge, now);
             self.tiles[index] = Some(tile);
@@ -614,7 +772,11 @@ impl WallpapersPanel {
                 .ceil()
                 .max(self.scheme_chip.implicit_height().ceil())
         };
-        let mut cells = vec![Cell::implicit(header_h), Cell::fill(0.0)];
+        let mut cells = vec![
+            Cell::implicit(header_h),
+            Cell::implicit(SEARCH_HEIGHT),
+            Cell::fill(0.0),
+        ];
         if error_visible {
             cells.push(Cell::implicit(error_h));
         }
@@ -646,7 +808,8 @@ impl WallpapersPanel {
         place_chip(tree, &mut self.mode_chip, columns[2].pos, header);
         place_chip(tree, &mut self.refresh, columns[3].pos, header);
         place_chip(tree, &mut self.close, columns[4].pos, header);
-        let grid = slots[1];
+        self.search.layout(tree, engine, slots[1].pos, width);
+        let grid = slots[2];
         self.cell_w = width / 2.0;
         self.cell_h = self.cell_w * 9.0 / 16.0 + 54.0;
         self.grid_h = grid.size;
@@ -654,7 +817,10 @@ impl WallpapersPanel {
         let content_h = rows as f32 * self.cell_h;
         self.grid
             .place(tree, 0.0, grid.pos, width, grid.size, content_h);
-        if self.pending_follow && self.cell_h > 0.0 {
+        if let Some(scroll) = self.pending_scroll.take() {
+            self.grid.jump(scroll);
+            self.pending_follow = false;
+        } else if self.pending_follow && self.cell_h > 0.0 {
             self.pending_follow = false;
             self.follow();
         }
@@ -662,7 +828,7 @@ impl WallpapersPanel {
         let eh = self.empty.implicit_height().ceil();
         self.empty
             .place(tree, (width - ew) / 2.0, (grid.size - eh) / 2.0, ew, eh);
-        let mut next = 2;
+        let mut next = 3;
         tree.set_visible(self.error.node, error_visible);
         if error_visible {
             place_label(tree, &mut self.error, 0.0, slots[next], width);
@@ -803,25 +969,27 @@ impl WallpapersPanel {
             running |= chip.tick(tree, now);
         }
         running |= self.grid.tick(tree, input, now);
+        running |= self.search.tick(tree, now);
         self.ensure_tiles(tree, input, engine, now);
         for index in 0..self.tiles.len() {
-            let (picture, selected) = match self.mode {
-                Mode::Wallpapers => {
-                    let item = &self.data.items[index];
+            let state = match self.mode {
+                Mode::Wallpapers => self.wall_item(index).map(|item| {
                     let picture = self
                         .previews
                         .get(&(item.path.clone(), item.revision.clone()))
                         .cloned()
                         .unwrap_or_default();
                     (picture, self.data.current == item.path)
-                }
-                Mode::Cursors => {
-                    let item = &self.cursors.items[index];
+                }),
+                Mode::Cursors => self.cursor_item(index).map(|item| {
                     (
                         item.picture.clone(),
                         self.cursors.current == item.theme.name,
                     )
-                }
+                }),
+            };
+            let Some((picture, selected)) = state else {
+                continue;
             };
             let current = index == self.current;
             let Some(tile) = self.tiles[index].as_mut() else {
@@ -938,11 +1106,11 @@ impl WallpapersPanel {
     fn apply_at(&self, index: usize, x: f32, y: f32) -> Option<PanelAction> {
         match self.mode {
             Mode::Wallpapers => {
-                let item = self.data.items.get(index)?;
+                let item = self.wall_item(index)?;
                 Some(PanelAction::WallApply(item.path.clone(), x, y))
             }
             Mode::Cursors => {
-                let item = self.cursors.items.get(index)?;
+                let item = self.cursor_item(index)?;
                 Some(PanelAction::CursorApply(item.theme.name.clone()))
             }
         }
@@ -968,6 +1136,11 @@ impl WallpapersPanel {
         let mut actions = Vec::new();
         for event in events {
             match *event {
+                InputEvent::Press(area, MouseButton::Left) if area == self.search.field.area => {
+                    self.search
+                        .field
+                        .press(tree, engine, pointer.0, pointer.1, now);
+                }
                 InputEvent::Wheel(area, delta) if area == self.grid.area => {
                     self.grid.wheel(delta, now);
                 }
@@ -1010,12 +1183,28 @@ impl WallpapersPanel {
         actions
     }
 
+    pub fn motion(
+        &mut self,
+        tree: &mut Tree,
+        engine: &mut TextEngine,
+        input: &Input,
+        x: f32,
+        y: f32,
+    ) {
+        self.search.field.drag(tree, engine, input, x, y);
+    }
+
+    pub fn next_deadline(&self, now: Millis) -> Option<Millis> {
+        self.search.field.next_blink(now)
+    }
+
     pub fn key(
         &mut self,
         tree: &mut Tree,
         input: &mut Input,
         engine: &mut TextEngine,
         event: &KeyEvent,
+        now: Millis,
     ) -> (bool, Vec<PanelAction>) {
         let mut actions = Vec::new();
         match event.keysym {
@@ -1042,7 +1231,18 @@ impl WallpapersPanel {
                     self.follow();
                 }
             }
-            _ => return (false, actions),
+            keys::KP_ENTER => {}
+            _ => {
+                let before = self.search.text().to_string();
+                match self.search.field.key(tree, engine, event, now) {
+                    KeyResult::Ignored => return (false, actions),
+                    KeyResult::Escape => actions.push(PanelAction::Close),
+                    KeyResult::Accepted | KeyResult::Handled => {}
+                }
+                if self.search.text() != before {
+                    self.reset(tree, input, engine, Reset::Search);
+                }
+            }
         }
         (true, actions)
     }
@@ -1051,6 +1251,19 @@ impl WallpapersPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_matches_every_term() {
+        let names = [
+            "Wallhaven 2e2xyx.jpg",
+            "Forest Night.png",
+            "night city.webp",
+        ];
+        assert_eq!(filter(names.iter().copied(), ""), vec![0, 1, 2]);
+        assert_eq!(filter(names.iter().copied(), "NIGHT"), vec![1, 2]);
+        assert_eq!(filter(names.iter().copied(), "night  city"), vec![2]);
+        assert_eq!(filter(names.iter().copied(), "nope"), Vec::<usize>::new());
+    }
 
     #[test]
     fn grid_keys_follow_qt() {

@@ -69,6 +69,10 @@ impl SearchBox {
         self.field.text()
     }
 
+    pub fn set_placeholder(&mut self, engine: &mut TextEngine, text: &str) {
+        self.placeholder.set_text(engine, text);
+    }
+
     pub fn layout(&mut self, tree: &mut Tree, engine: &mut TextEngine, y: f32, width: f32) {
         tree.set_pos(self.rect, 0.0, y);
         tree.set_size(self.rect, width, SEARCH_HEIGHT);

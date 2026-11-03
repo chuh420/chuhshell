@@ -469,6 +469,7 @@ impl Overlay {
                 engine,
                 self.content,
                 &self.data,
+                now,
             );
             self.view = View::Wallpapers(Box::new(panel));
         } else if name == "clipboard" {
@@ -523,8 +524,15 @@ impl Overlay {
             rect.border_color = theme::line();
         }
         if !matches!(self.view, View::None) {
+            let walls = match &self.view {
+                View::Wallpapers(panel) => Some(panel.view()),
+                _ => None,
+            };
             let name = std::mem::take(&mut self.content_panel);
             self.set_content(engine, &name, now);
+            if let (View::Wallpapers(panel), Some(view)) = (&mut self.view, walls) {
+                panel.restore(&mut self.tree, &mut self.input, engine, view);
+            }
         }
         self.tree.mark_all();
         self.full = true;
@@ -643,6 +651,7 @@ impl Overlay {
             View::Bluetooth(panel) => panel.next_deadline(self.last_now),
             View::Launcher(panel) => panel.next_deadline(self.last_now),
             View::Clipboard(panel) => panel.next_deadline(self.last_now),
+            View::Wallpapers(panel) => panel.next_deadline(self.last_now),
             _ => None,
         };
         [self.morph_arm, blink]
@@ -1118,11 +1127,10 @@ impl Overlay {
                 }
                 View::Audio(panel) => actions.extend(panel.motion(&self.tree, &self.input, lx, ly)),
                 View::Calendar(panel) => panel.motion(&self.tree, &self.input, lx, ly),
-                View::Tray(_)
-                | View::Wallpapers(_)
-                | View::Power(_)
-                | View::System(_)
-                | View::None => {}
+                View::Wallpapers(panel) => {
+                    panel.motion(&mut self.tree, engine, &self.input, lx, ly)
+                }
+                View::Tray(_) | View::Power(_) | View::System(_) | View::None => {}
             }
         }
         actions.extend(self.handle_events(engine, &events, now));
@@ -1143,7 +1151,9 @@ impl Overlay {
             View::Clipboard(panel) => {
                 panel.key(&mut self.tree, &mut self.input, engine, event, now)
             }
-            View::Wallpapers(panel) => panel.key(&mut self.tree, &mut self.input, engine, event),
+            View::Wallpapers(panel) => {
+                panel.key(&mut self.tree, &mut self.input, engine, event, now)
+            }
             View::Power(panel) => panel.key(event, now),
             View::Calendar(panel) => panel.key(event, now),
             _ => (false, Vec::new()),
