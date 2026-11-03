@@ -1,6 +1,10 @@
 use std::{path::Path, sync::Arc};
 
-use services::cursors::{self, CursorTheme, PREVIEW_SHAPES, State};
+use services::{
+    cursor_colors::Recolor,
+    cursors::{self, CursorTheme, PREVIEW_SHAPES, State},
+    theme::Mode,
+};
 use ui::tiny_skia::{FilterQuality, IntSize, Pixmap, PixmapPaint, Transform};
 
 use crate::app::{App, ServiceEvent};
@@ -21,6 +25,7 @@ pub struct CursorData {
     pub current: String,
     pub animation: bool,
     pub size: u32,
+    pub colors: bool,
     pub busy: bool,
     pub error: String,
     pub generation: u64,
@@ -31,6 +36,12 @@ pub struct Cursors {
     pub data: Arc<CursorData>,
     pub state: State,
     scanning: bool,
+    recolor_queued: bool,
+}
+
+fn rgb(color: ui::Color) -> [u8; 3] {
+    let [r, g, b, _] = color.to_rgba8();
+    [r, g, b]
 }
 
 fn shape_pixmap(image: &cursors::Image) -> Option<Pixmap> {
@@ -141,6 +152,70 @@ impl App {
         }
         self.cursors.state = state;
         self.sync_cursor_state();
+        if self.cursor_needs_render() {
+            self.recolor_cursor();
+        }
+    }
+
+    fn cursor_palette(&self) -> Option<Recolor> {
+        (self.theme.mode == Mode::Auto).then(|| Recolor {
+            accent: rgb(crate::theme::green()),
+            outline: rgb(crate::theme::bg()),
+        })
+    }
+
+    fn current_cursor_theme(&self) -> CursorTheme {
+        let name = &self.cursors.state.theme;
+        self.cursors
+            .data
+            .items
+            .iter()
+            .find(|item| &item.theme.name == name)
+            .map(|item| item.theme.clone())
+            .unwrap_or_else(|| CursorTheme {
+                name: name.clone(),
+                path: cursors::folder().join(name).to_string_lossy().into_owned(),
+                revision: String::new(),
+                animated: false,
+            })
+    }
+
+    fn cursor_needs_render(&self) -> bool {
+        let state = &self.cursors.state;
+        let effective = state.effective();
+        if self.theme.mode == Mode::Auto && state.colors_wanted() {
+            !(cursors::is_slot(effective) && cursors::folder().join(effective).is_dir())
+        } else {
+            effective != state.theme
+        }
+    }
+
+    pub fn cursor_palette_changed(&mut self) {
+        let state = &self.cursors.state;
+        let wanted = self.theme.mode == Mode::Auto && state.colors_wanted();
+        if wanted || state.effective() != state.theme {
+            self.recolor_cursor();
+        }
+    }
+
+    fn recolor_cursor(&mut self) {
+        if self.cursors.data.busy {
+            self.cursors.recolor_queued = true;
+            return;
+        }
+        let theme = self.current_cursor_theme();
+        let palette = self.cursor_palette();
+        self.cursor_job(move |state| cursors::apply(&theme, &state, palette));
+    }
+
+    pub fn toggle_cursor_colors(&mut self) {
+        if self.theme.mode != Mode::Auto {
+            return;
+        }
+        let enabled = !self.cursors.data.colors;
+        let theme = self.current_cursor_theme();
+        let palette = self.cursor_palette();
+        self.cursor_job(move |state| cursors::set_colors(&theme, &state, enabled, palette));
     }
 
     fn update_cursor_data(&mut self, change: impl FnOnce(&mut CursorData)) {
@@ -153,10 +228,12 @@ impl App {
 
     fn sync_cursor_state(&mut self) {
         let state = self.cursors.state.clone();
+        let colors = state.colors_wanted();
         self.update_cursor_data(|data| {
             data.current = state.theme;
             data.animation = state.animation;
             data.size = state.size;
+            data.colors = colors;
         });
     }
 
@@ -209,7 +286,8 @@ impl App {
         else {
             return;
         };
-        self.cursor_job(move |state| cursors::apply(&theme, &state));
+        let palette = self.cursor_palette();
+        self.cursor_job(move |state| cursors::apply(&theme, &state, palette));
     }
 
     pub fn toggle_cursor_animation(&mut self) {
@@ -240,6 +318,10 @@ impl App {
             }
         }
         self.sync_cursor_state();
+        crate::memory::trim();
+        if std::mem::take(&mut self.cursors.recolor_queued) {
+            self.recolor_cursor();
+        }
         self.sync();
     }
 }

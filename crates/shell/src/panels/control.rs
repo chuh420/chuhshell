@@ -437,7 +437,6 @@ pub struct ControlPanel {
     bright_value: Label,
     bright_slider: Slider,
     awake: SwitchRow,
-    colors: SwitchRow,
     line: NodeId,
     footer: Vec<(Chip, Footer)>,
     data: PanelData,
@@ -550,15 +549,6 @@ impl ControlPanel {
             "keep awake",
             "prevent automatic locking and screen sleep",
         );
-        let colors = SwitchRow::new(
-            tree,
-            input,
-            engine,
-            root,
-            "󰏘",
-            "wallpaper colors",
-            "match the desktop colors to the wallpaper",
-        );
         let line = card(tree, root, theme::line(), 0.0);
         let footer_spec: [(&str, Color, &str, Footer); 6] = [
             (
@@ -605,7 +595,6 @@ impl ControlPanel {
             bright_value,
             bright_slider,
             awake,
-            colors,
             line,
             footer,
             data: PanelData::default(),
@@ -626,7 +615,6 @@ impl ControlPanel {
             self.volume_slider.area,
             self.bright_slider.area,
             self.awake.chip.area,
-            self.colors.chip.area,
         ];
         areas.extend(self.footer.iter().map(|(chip, _)| chip.area));
         areas
@@ -650,7 +638,6 @@ impl ControlPanel {
             .set_text(engine, &format!("{}%", data.brightness));
         self.bright_slider.set_value(data.brightness as f64);
         self.awake.sync(engine, data.keep_awake, now);
-        self.colors.sync(engine, data.theme_auto, now);
     }
 
     fn jump(&mut self, input: &Input) {
@@ -658,7 +645,6 @@ impl ControlPanel {
             tile.jump(input);
         }
         self.awake.jump();
-        self.colors.jump();
     }
 
     pub fn layout(&mut self, tree: &mut Tree, width: f32, height: f32) {
@@ -679,7 +665,6 @@ impl ControlPanel {
                 Cell::preferred(89.0).margins(18.0, 0.0),
                 Cell::preferred(89.0).margins(10.0, 0.0),
                 Cell::preferred(44.0).margins(15.0, 0.0),
-                Cell::preferred(44.0).margins(8.0, 0.0),
                 Cell::fill(0.0),
                 Cell::preferred(1.0).margins(0.0, 12.0),
                 Cell::layout(30.0),
@@ -716,9 +701,7 @@ impl ControlPanel {
         self.layout_brightness(tree, width, bright_height);
         let (awake_y, awake_height) = fit(slots[6], 44.0);
         self.awake.place(tree, awake_y, width, awake_height);
-        let (colors_y, colors_height) = fit(slots[7], 44.0);
-        self.colors.place(tree, colors_y, width, colors_height);
-        let (line_y, line_height) = fit(slots[9], 1.0);
+        let (line_y, line_height) = fit(slots[8], 1.0);
         tree.set_pos(self.line, 0.0, line_y);
         tree.set_size(self.line, width, line_height);
         let mut cells: Vec<Cell> = self.footer[..4]
@@ -739,7 +722,7 @@ impl ControlPanel {
             .map(|(_, slot)| slot.pos)
             .collect();
         for ((chip, _), x) in self.footer.iter_mut().zip(positions) {
-            place_chip(tree, chip, x, slots[10]);
+            place_chip(tree, chip, x, slots[9]);
         }
     }
 
@@ -847,12 +830,7 @@ impl ControlPanel {
     }
 
     fn chips(&self) -> Vec<&Chip> {
-        let mut chips = vec![
-            &self.lock,
-            &self.volume_chip,
-            &self.awake.chip,
-            &self.colors.chip,
-        ];
+        let mut chips = vec![&self.lock, &self.volume_chip, &self.awake.chip];
         chips.extend(self.footer.iter().map(|(chip, _)| chip));
         chips
     }
@@ -871,7 +849,6 @@ impl ControlPanel {
         running |= self.volume_slider.tick(tree, input, now);
         running |= self.bright_slider.tick(tree, input, now);
         running |= self.awake.tick(tree, input, now);
-        running |= self.colors.tick(tree, input, now);
         for label in [
             &self.header,
             &self.time,
@@ -890,12 +867,8 @@ impl ControlPanel {
     pub fn settle(&mut self, tree: &mut Tree, input: &Input) {
         self.volume_slider.jump(tree, input);
         self.bright_slider.jump(tree, input);
-        let mut chips: Vec<&mut Chip> = vec![
-            &mut self.lock,
-            &mut self.volume_chip,
-            &mut self.awake.chip,
-            &mut self.colors.chip,
-        ];
+        let mut chips: Vec<&mut Chip> =
+            vec![&mut self.lock, &mut self.volume_chip, &mut self.awake.chip];
         chips.extend(self.footer.iter_mut().map(|(chip, _)| chip));
         for chip in chips {
             chip.jump_color(input);
@@ -979,9 +952,6 @@ impl ControlPanel {
         }
         if area == self.awake.chip.area {
             return (!right).then_some(PanelAction::ToggleKeepAwake);
-        }
-        if area == self.colors.chip.area {
-            return (!right).then_some(PanelAction::ToggleTheme);
         }
         let (_, action) = self.footer.iter().find(|(chip, _)| chip.area == area)?;
         if right {

@@ -754,6 +754,8 @@ impl App {
             "cursor": self.cursors.state.theme,
             "cursorAnimation": self.cursors.state.animation,
             "cursorSize": self.cursors.state.size,
+            "cursorColors": self.cursors.data.colors,
+            "cursorApplied": self.cursors.state.effective(),
             "keepAwake": self.state.keep_awake,
             "screen": self.state.panel_screen,
             "battery": {
@@ -1013,6 +1015,7 @@ impl App {
             PanelAction::WallRefresh => self.refresh_wallpapers(),
             PanelAction::CursorApply(name) => self.apply_cursor(&name),
             PanelAction::CursorAnimation => self.toggle_cursor_animation(),
+            PanelAction::CursorColors => self.toggle_cursor_colors(),
             PanelAction::CursorSize => self.cycle_cursor_size(),
             PanelAction::CursorRefresh => self.refresh_cursors(),
             PanelAction::CursorPixmaps => self.request_preview_pixmaps(),

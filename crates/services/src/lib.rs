@@ -2,6 +2,7 @@ pub mod apps;
 pub mod audio;
 pub mod clipboard;
 pub mod clock;
+pub mod cursor_colors;
 pub mod cursors;
 pub mod hyprland;
 pub mod network;

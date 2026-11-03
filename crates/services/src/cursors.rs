@@ -8,9 +8,12 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
+use crate::cursor_colors::{self, Recolor};
+
 pub const DEFAULT_THEME: &str = "Capitaine Cursors (Gruvbox)";
 pub const DEFAULT_SIZE: u32 = 24;
 pub const SIZES: [u32; 5] = [24, 32, 40, 48, 64];
+pub const SLOTS: [&str; 2] = [".idk-yet-colors-a", ".idk-yet-colors-b"];
 pub const PREVIEW_SHAPES: [&[&str]; 5] = [
     &["default", "left_ptr"],
     &["pointer", "hand2"],
@@ -33,6 +36,8 @@ pub struct State {
     pub size: u32,
     pub animation: bool,
     pub sizes: BTreeMap<String, u32>,
+    pub colors: BTreeMap<String, bool>,
+    pub applied: String,
 }
 
 impl Default for State {
@@ -42,6 +47,8 @@ impl Default for State {
             size: DEFAULT_SIZE,
             animation: true,
             sizes: BTreeMap::new(),
+            colors: BTreeMap::new(),
+            applied: String::new(),
         }
     }
 }
@@ -50,6 +57,22 @@ impl State {
     pub fn size_for(&self, theme: &str) -> u32 {
         self.sizes.get(theme).copied().unwrap_or(DEFAULT_SIZE)
     }
+
+    pub fn effective(&self) -> &str {
+        if self.applied.is_empty() {
+            &self.theme
+        } else {
+            &self.applied
+        }
+    }
+
+    pub fn colors_wanted(&self) -> bool {
+        self.colors.get(&self.theme) != Some(&false)
+    }
+}
+
+pub fn is_slot(name: &str) -> bool {
+    SLOTS.contains(&name)
 }
 
 pub fn next_size(size: u32) -> u32 {
@@ -178,11 +201,27 @@ pub fn parse_state(text: &str) -> Option<State> {
         })
         .unwrap_or_default();
     sizes.entry(theme.to_string()).or_insert(size);
+    let colors = value
+        .get("colors")
+        .and_then(serde_json::Value::as_object)
+        .map(|map| {
+            map.iter()
+                .filter_map(|(name, on)| Some((name.clone(), on.as_bool()?)))
+                .collect()
+        })
+        .unwrap_or_default();
+    let applied = value
+        .get("applied")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
     Some(State {
         theme: theme.to_string(),
         size,
         animation,
         sizes,
+        colors,
+        applied,
     })
 }
 
@@ -212,7 +251,7 @@ fn lua_string(text: &str) -> String {
 pub fn lua_state(state: &State) -> String {
     format!(
         "return {{ theme = {}, size = {}, animation = {} }}\n",
-        lua_string(&state.theme),
+        lua_string(state.effective()),
         state.size,
         state.animation
     )
@@ -234,6 +273,8 @@ pub fn write_state(state: &State) -> io::Result<()> {
         "size": state.size,
         "animation": state.animation,
         "sizes": state.sizes,
+        "colors": state.colors,
+        "applied": state.effective(),
     });
     atomic_write(&state_path(), &format!("{json:#}\n"))?;
     atomic_write(&lua_path(), &lua_state(state))
@@ -275,10 +316,10 @@ pub fn dot_icons() -> PathBuf {
     home().join(".icons")
 }
 
-fn link_theme(theme: &CursorTheme) -> io::Result<()> {
+fn link_theme(name: &str, path: &Path) -> io::Result<()> {
     let visible = [icons_dir(), dot_icons()]
         .iter()
-        .any(|dir| dir.join(&theme.name).join("cursors").is_dir());
+        .any(|dir| dir.join(name).join("cursors").is_dir());
     if visible {
         return Ok(());
     }
@@ -287,9 +328,7 @@ fn link_theme(theme: &CursorTheme) -> io::Result<()> {
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
             std::os::unix::fs::symlink(folder(), &icons)
         }
-        Ok(meta) if meta.is_dir() => {
-            std::os::unix::fs::symlink(&theme.path, icons.join(&theme.name))
-        }
+        Ok(meta) if meta.is_dir() => std::os::unix::fs::symlink(path, icons.join(name)),
         Ok(_) => Err(io::Error::other(format!(
             "{} is not a folder",
             icons.display()
@@ -330,15 +369,75 @@ fn run(command: &mut Command) -> Result<(), String> {
     Ok(())
 }
 
-pub fn apply(theme: &CursorTheme, state: &State) -> Result<State, String> {
-    link_theme(theme).map_err(|err| format!("Could not link cursor theme: {err}"))?;
+pub fn apply(
+    theme: &CursorTheme,
+    state: &State,
+    palette: Option<Recolor>,
+) -> Result<State, String> {
+    link_theme(&theme.name, Path::new(&theme.path))
+        .map_err(|err| format!("Could not link cursor theme: {err}"))?;
     let mut next = State {
         theme: theme.name.clone(),
         size: state.size_for(&theme.name),
         ..state.clone()
     };
     next.sizes.insert(next.theme.clone(), next.size);
-    activate(next)
+    let source = Path::new(&theme.path);
+    let enabled = *next
+        .colors
+        .entry(theme.name.clone())
+        .or_insert_with(|| !cursor_colors::theme_drawn(source));
+    render(next, source, palette.filter(|_| enabled))
+}
+
+pub fn set_colors(
+    theme: &CursorTheme,
+    state: &State,
+    enabled: bool,
+    palette: Option<Recolor>,
+) -> Result<State, String> {
+    let mut next = state.clone();
+    next.colors.insert(theme.name.clone(), enabled);
+    apply(theme, &next, palette)
+}
+
+fn remove_slots(keep: &str) {
+    for slot in SLOTS.iter().filter(|slot| **slot != keep) {
+        let path = folder().join(slot);
+        if let Err(err) = std::fs::remove_dir_all(&path)
+            && err.kind() != io::ErrorKind::NotFound
+        {
+            log::warn!("cursor colors {}: {err}", path.display());
+        }
+    }
+}
+
+fn render(mut next: State, source: &Path, palette: Option<Recolor>) -> Result<State, String> {
+    let previous = next.effective().to_string();
+    next.applied = match palette {
+        Some(palette) => {
+            let slot = if previous == SLOTS[0] {
+                SLOTS[1]
+            } else {
+                SLOTS[0]
+            };
+            let mapping = cursor_colors::theme_mapping(source, palette)
+                .ok_or_else(|| "This cursor theme cannot be recolored".to_string())?;
+            let target = folder().join(slot);
+            cursor_colors::write_theme(source, &target, slot, &mapping)
+                .map_err(|err| format!("Could not recolor cursor theme: {err}"))?;
+            link_theme(slot, &target)
+                .map_err(|err| format!("Could not link cursor theme: {err}"))?;
+            slot.to_string()
+        }
+        None => next.theme.clone(),
+    };
+    let result = activate(next);
+    match &result {
+        Ok(state) => remove_slots(state.effective()),
+        Err(_) => remove_slots(&previous),
+    }
+    result
 }
 
 pub fn set_size(state: &State, size: u32) -> Result<State, String> {
@@ -353,14 +452,14 @@ pub fn set_size(state: &State, size: u32) -> Result<State, String> {
 fn activate(next: State) -> Result<State, String> {
     run(Command::new("hyprctl")
         .arg("setcursor")
-        .arg(&next.theme)
+        .arg(next.effective())
         .arg(next.size.to_string()))?;
-    if let Err(err) = update_gtk(&next.theme, next.size) {
+    if let Err(err) = update_gtk(next.effective(), next.size) {
         log::warn!("cursor gtk settings: {err}");
     }
     if let Err(err) = run(Command::new("gsettings")
         .args(["set", "org.gnome.desktop.interface", "cursor-theme"])
-        .arg(&next.theme))
+        .arg(next.effective()))
     {
         log::warn!("cursor gsettings: {err}");
     }
@@ -520,6 +619,8 @@ mod tests {
                 size: 32,
                 animation: false,
                 sizes: BTreeMap::from([("Hu Tao".into(), 32)]),
+                colors: BTreeMap::new(),
+                applied: String::new(),
             })
         );
         assert_eq!(
@@ -533,9 +634,19 @@ mod tests {
                 size: 24,
                 animation: true,
                 sizes: BTreeMap::new(),
+                colors: BTreeMap::new(),
+                applied: String::new(),
             }),
             "return { theme = \"A \\\"b\\\"\", size = 24, animation = true }\n"
         );
+        let colored = parse_state(
+            r#"{"theme": "a", "colors": {"a": true, "b": false}, "applied": ".idk-yet-colors-b"}"#,
+        )
+        .unwrap_or_default();
+        assert_eq!(colored.effective(), ".idk-yet-colors-b");
+        assert!(colored.colors_wanted());
+        assert_eq!(colored.colors.get("b"), Some(&false));
+        assert!(lua_state(&colored).contains("theme = \".idk-yet-colors-b\""));
     }
 
     #[test]

@@ -109,6 +109,7 @@ impl App {
         }
         if self.theme.mode == Mode::Auto {
             self.apply_palette();
+            self.cursor_palette_changed();
         }
     }
 
@@ -138,7 +139,10 @@ impl App {
         if let Err(err) = theme::link(mode) {
             log::error!("theme link: {err}");
         }
-        if mode == Mode::Auto && theme::stale(&services::wallpapers::state_path()) {
+        let regenerate = mode == Mode::Auto
+            && theme::stale(&services::wallpapers::state_path())
+            && !self.walls.image.is_empty();
+        if regenerate {
             self.theme_wallpaper_changed();
         } else {
             std::thread::spawn(|| {
@@ -148,6 +152,9 @@ impl App {
             });
         }
         self.apply_palette();
+        if !regenerate {
+            self.cursor_palette_changed();
+        }
     }
 
     fn apply_palette(&mut self) {

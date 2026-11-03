@@ -54,6 +54,7 @@ pub enum PanelAction {
     WallRefresh,
     CursorApply(String),
     CursorAnimation,
+    CursorColors,
     CursorSize,
     ThemeScheme,
     CursorRefresh,

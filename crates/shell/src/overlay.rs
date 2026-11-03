@@ -89,7 +89,6 @@ pub fn panel_height(p: &str, available: f64, tray_tall: bool, wifi_prompt: bool)
         "calendar" => 500.0,
         "notifications" => 640.0,
         "power" => 290.0,
-        "control" => 756.0,
         _ => 704.0,
     };
     (available - 70.0).min(value)
@@ -1205,10 +1204,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn control_geometry() {
+    fn control_geometry_matches_qml() {
         let w = panel_width("control", 1920.0);
         let h = panel_height("control", 1080.0, false, false);
-        assert_eq!((w, h), (520.0, 756.0));
+        assert_eq!((w, h), (520.0, 704.0));
         assert_eq!(panel_x("control", w, 1920.0, 0.0), 1386.0);
         assert_eq!(panel_y("control", h, 1080.0), 58.0);
     }

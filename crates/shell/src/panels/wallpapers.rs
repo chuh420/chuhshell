@@ -59,8 +59,12 @@ pub struct WallpapersPanel {
     close: Chip,
     animation_label: Label,
     animation: Chip,
+    colors_label: Label,
+    colors: Chip,
     size_label: Label,
     size: Chip,
+    auto_label: Label,
+    auto_chip: Chip,
     scheme_label: Label,
     scheme_chip: Chip,
     scheme: &'static str,
@@ -159,6 +163,17 @@ impl WallpapersPanel {
             false,
             None,
         );
+        let colors_label = label(tree, engine, root, "colors", 11.0, theme::muted());
+        let colors = chip(
+            tree,
+            input,
+            engine,
+            root,
+            "off",
+            theme::muted(),
+            false,
+            None,
+        );
         let size_label = label(tree, engine, root, "size", 11.0, theme::muted());
         let size = chip(
             tree,
@@ -170,7 +185,18 @@ impl WallpapersPanel {
             false,
             None,
         );
-        let scheme_label = label(tree, engine, root, "colors", 11.0, theme::muted());
+        let auto_label = label(tree, engine, root, "wallpaper colors", 11.0, theme::muted());
+        let auto_chip = chip(
+            tree,
+            input,
+            engine,
+            root,
+            "off",
+            theme::muted(),
+            false,
+            None,
+        );
+        let scheme_label = label(tree, engine, root, "scheme", 11.0, theme::muted());
         let scheme_chip = chip(
             tree,
             input,
@@ -201,8 +227,12 @@ impl WallpapersPanel {
             close,
             animation_label,
             animation,
+            colors_label,
+            colors,
             size_label,
             size,
+            auto_label,
+            auto_chip,
             scheme_label,
             scheme_chip,
             scheme: data.theme_scheme,
@@ -237,7 +267,9 @@ impl WallpapersPanel {
             self.refresh.area,
             self.close.area,
             self.animation.area,
+            self.colors.area,
             self.size.area,
+            self.auto_chip.area,
             self.scheme_chip.area,
         ];
         areas.extend(self.grid.areas());
@@ -335,8 +367,23 @@ impl WallpapersPanel {
         self.animation
             .jump_ink(if on { theme::green() } else { theme::muted() });
         self.animation.selected = on;
+        let colored = self.cursors.colors;
+        self.colors
+            .set_label(engine, if colored { "on" } else { "off" }, 12.0);
+        self.colors.jump_ink(if colored && self.theme_auto {
+            theme::green()
+        } else {
+            theme::muted()
+        });
+        self.colors.selected = colored && self.theme_auto;
         let size = format!("{} px", self.cursors.size);
         self.size.set_label(engine, &size, 12.0);
+        let auto = self.theme_auto;
+        self.auto_chip
+            .set_label(engine, if auto { "on" } else { "off" }, 12.0);
+        self.auto_chip
+            .jump_ink(if auto { theme::green() } else { theme::muted() });
+        self.auto_chip.selected = auto;
         self.scheme_chip
             .set_label(engine, &scheme_text(self.scheme), 12.0);
         self.scheme_chip.jump_ink(if self.theme_auto {
@@ -626,12 +673,19 @@ impl WallpapersPanel {
         for node in [
             self.animation_label.node,
             self.animation.root,
+            self.colors_label.node,
+            self.colors.root,
             self.size_label.node,
             self.size.root,
         ] {
             tree.set_visible(node, cursors);
         }
-        for node in [self.scheme_label.node, self.scheme_chip.root] {
+        for node in [
+            self.auto_label.node,
+            self.auto_chip.root,
+            self.scheme_label.node,
+            self.scheme_chip.root,
+        ] {
             tree.set_visible(node, !cursors);
         }
         if !cursors {
@@ -639,7 +693,12 @@ impl WallpapersPanel {
             let x = width - self.scheme_chip.implicit_width().ceil();
             place_chip(tree, &mut self.scheme_chip, x, slot);
             let lw = self.scheme_label.implicit_width();
-            place_label(tree, &mut self.scheme_label, x - 8.0 - lw, slot, lw);
+            let x = x - 8.0 - lw;
+            place_label(tree, &mut self.scheme_label, x, slot, lw);
+            let x = x - 18.0 - self.auto_chip.implicit_width().ceil();
+            place_chip(tree, &mut self.auto_chip, x, slot);
+            let aw = self.auto_label.implicit_width();
+            place_label(tree, &mut self.auto_label, x - 8.0 - aw, slot, aw);
         }
         if cursors {
             let slot = slots[next];
@@ -648,6 +707,11 @@ impl WallpapersPanel {
             let lw = self.animation_label.implicit_width();
             x -= 8.0 + lw;
             place_label(tree, &mut self.animation_label, x, slot, lw);
+            x -= 18.0 + self.colors.implicit_width().ceil();
+            place_chip(tree, &mut self.colors, x, slot);
+            let cw = self.colors_label.implicit_width();
+            x -= 8.0 + cw;
+            place_label(tree, &mut self.colors_label, x, slot, cw);
             x -= 18.0 + self.size.implicit_width().ceil();
             place_chip(tree, &mut self.size, x, slot);
             let sw = self.size_label.implicit_width();
@@ -730,7 +794,9 @@ impl WallpapersPanel {
             &mut self.refresh,
             &mut self.close,
             &mut self.animation,
+            &mut self.colors,
             &mut self.size,
+            &mut self.auto_chip,
             &mut self.scheme_chip,
         ] {
             chip.sync(now, input);
@@ -913,8 +979,15 @@ impl WallpapersPanel {
                         actions.push(PanelAction::CursorRefresh);
                     } else if area == self.animation.area && self.mode == Mode::Cursors {
                         actions.push(PanelAction::CursorAnimation);
+                    } else if area == self.colors.area
+                        && self.mode == Mode::Cursors
+                        && self.theme_auto
+                    {
+                        actions.push(PanelAction::CursorColors);
                     } else if area == self.size.area && self.mode == Mode::Cursors {
                         actions.push(PanelAction::CursorSize);
+                    } else if area == self.auto_chip.area && self.mode == Mode::Wallpapers {
+                        actions.push(PanelAction::ToggleTheme);
                     } else if area == self.scheme_chip.area && self.mode == Mode::Wallpapers {
                         actions.push(PanelAction::ThemeScheme);
                     } else if area == self.refresh.area {
