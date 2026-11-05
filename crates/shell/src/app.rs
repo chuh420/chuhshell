@@ -741,7 +741,9 @@ impl App {
                         None => return Reply::Error(format!("unknown theme mode: {value}")),
                     },
                 };
-                self.set_theme_mode(mode);
+                if let Err(err) = self.set_theme_mode(mode) {
+                    return Reply::Error(err);
+                }
             }
             "inspect" => return Reply::Ok(self.inspect()),
             other => return Reply::Error(format!("unknown command: {other}")),
@@ -839,6 +841,7 @@ impl App {
             brightness: self.state.brightness,
             keep_awake: self.state.keep_awake,
             theme_auto: self.theme.mode == services::theme::Mode::Auto,
+            theme_available: self.theme.available,
             theme_scheme: self.theme.scheme,
             dnd: self.state.dnd,
             notifications: self.notes.list.clone(),
@@ -1000,7 +1003,9 @@ impl App {
                     services::theme::Mode::Auto => services::theme::Mode::Static,
                     services::theme::Mode::Static => services::theme::Mode::Auto,
                 };
-                self.set_theme_mode(mode);
+                if let Err(err) = self.set_theme_mode(mode) {
+                    log::warn!("theme: {err}");
+                }
             }
             PanelAction::ThemeScheme => {
                 let scheme = services::theme::next_scheme(self.theme.scheme);

@@ -9,6 +9,7 @@ pub mod cursors;
 pub mod network;
 pub mod notifications;
 pub mod oneshot;
+pub mod programs;
 pub mod system;
 pub mod theme;
 pub mod tray;

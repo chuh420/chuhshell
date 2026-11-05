@@ -127,6 +127,129 @@ pub const GRUVBOX: Palette = Palette {
     blue: Color::rgb(0x7daea3),
 };
 
+pub const CATPPUCCIN_MOCHA: Palette = Palette {
+    bg: Color::rgb(0x1e1e2e),
+    dim: Color::rgb(0x181825),
+    surface: Color::rgb(0x313244),
+    elevated: Color::rgb(0x45475a),
+    line: Color::rgb(0x585b70),
+    text: Color::rgb(0xcdd6f4),
+    muted: Color::rgb(0x7f849c),
+    green: Color::rgb(0xa6e3a1),
+    yellow: Color::rgb(0xf9e2af),
+    red: Color::rgb(0xf38ba8),
+    blue: Color::rgb(0x89b4fa),
+};
+
+pub const NORD: Palette = Palette {
+    bg: Color::rgb(0x2e3440),
+    dim: Color::rgb(0x242933),
+    surface: Color::rgb(0x3b4252),
+    elevated: Color::rgb(0x434c5e),
+    line: Color::rgb(0x4c566a),
+    text: Color::rgb(0xd8dee9),
+    muted: Color::rgb(0x7b88a1),
+    green: Color::rgb(0xa3be8c),
+    yellow: Color::rgb(0xebcb8b),
+    red: Color::rgb(0xbf616a),
+    blue: Color::rgb(0x88c0d0),
+};
+
+pub const TOKYO_NIGHT: Palette = Palette {
+    bg: Color::rgb(0x1a1b26),
+    dim: Color::rgb(0x16161e),
+    surface: Color::rgb(0x24283b),
+    elevated: Color::rgb(0x292e42),
+    line: Color::rgb(0x3b4261),
+    text: Color::rgb(0xc0caf5),
+    muted: Color::rgb(0x565f89),
+    green: Color::rgb(0x9ece6a),
+    yellow: Color::rgb(0xe0af68),
+    red: Color::rgb(0xf7768e),
+    blue: Color::rgb(0x7aa2f7),
+};
+
+pub const ROSE_PINE: Palette = Palette {
+    bg: Color::rgb(0x191724),
+    dim: Color::rgb(0x13111e),
+    surface: Color::rgb(0x1f1d2e),
+    elevated: Color::rgb(0x26233a),
+    line: Color::rgb(0x403d52),
+    text: Color::rgb(0xe0def4),
+    muted: Color::rgb(0x6e6a86),
+    green: Color::rgb(0x9ccfd8),
+    yellow: Color::rgb(0xf6c177),
+    red: Color::rgb(0xeb6f92),
+    blue: Color::rgb(0xc4a7e7),
+};
+
+pub const EVERFOREST: Palette = Palette {
+    bg: Color::rgb(0x2d353b),
+    dim: Color::rgb(0x232a2e),
+    surface: Color::rgb(0x343f44),
+    elevated: Color::rgb(0x3d484d),
+    line: Color::rgb(0x475258),
+    text: Color::rgb(0xd3c6aa),
+    muted: Color::rgb(0x859289),
+    green: Color::rgb(0xa7c080),
+    yellow: Color::rgb(0xdbbc7f),
+    red: Color::rgb(0xe67e80),
+    blue: Color::rgb(0x7fbbb3),
+};
+
+pub const BUILTIN: &[(&str, Palette)] = &[
+    ("gruvbox", GRUVBOX),
+    ("catppuccin-mocha", CATPPUCCIN_MOCHA),
+    ("nord", NORD),
+    ("tokyo-night", TOKYO_NIGHT),
+    ("rose-pine", ROSE_PINE),
+    ("everforest", EVERFOREST),
+];
+
+pub fn builtin(name: &str) -> Option<Palette> {
+    BUILTIN
+        .iter()
+        .find(|(builtin, _)| *builtin == name)
+        .map(|(_, palette)| *palette)
+}
+
+pub fn hex(color: Color) -> String {
+    let [r, g, b, _] = color.to_rgba8();
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
+impl Palette {
+    pub fn with_overrides(mut self, colors: &config::Colors) -> Palette {
+        for (key, value) in colors.entries() {
+            let Some(color) = value.and_then(config::parse_hex).map(Color::rgb) else {
+                continue;
+            };
+            let slot = match key {
+                "bg" => &mut self.bg,
+                "dim" => &mut self.dim,
+                "surface" => &mut self.surface,
+                "elevated" => &mut self.elevated,
+                "line" => &mut self.line,
+                "text" => &mut self.text,
+                "muted" => &mut self.muted,
+                "green" => &mut self.green,
+                "yellow" => &mut self.yellow,
+                "red" => &mut self.red,
+                "blue" => &mut self.blue,
+                _ => continue,
+            };
+            *slot = color;
+        }
+        self
+    }
+
+    pub fn configured(theme: &config::Theme) -> Palette {
+        builtin(&theme.name)
+            .unwrap_or(GRUVBOX)
+            .with_overrides(&theme.colors)
+    }
+}
+
 thread_local! {
     static CURRENT: Cell<Palette> = const { Cell::new(GRUVBOX) };
 }
@@ -244,6 +367,28 @@ mod tests {
             Palette::from_json(&SNAPSHOT.replace("#1d2021", "#zzzzzz")),
             None
         );
+    }
+
+    #[test]
+    fn builtin_palettes_and_overrides() {
+        assert_eq!(builtin("gruvbox"), Some(GRUVBOX));
+        assert_eq!(builtin("nord").map(|p| hex(p.bg)), Some("#2e3440".into()));
+        assert_eq!(builtin("solarized"), None);
+        assert_eq!(BUILTIN.len(), 6);
+        for (name, palette) in BUILTIN {
+            assert_ne!(palette.bg, palette.text, "{name}");
+        }
+        let mut theme = config::Theme::default();
+        assert_eq!(Palette::configured(&theme), GRUVBOX);
+        theme.name = "tokyo-night".into();
+        theme.colors.green = Some("#123456".into());
+        theme.colors.red = Some("broken".into());
+        let palette = Palette::configured(&theme);
+        assert_eq!(hex(palette.green), "#123456");
+        assert_eq!(palette.red, TOKYO_NIGHT.red);
+        assert_eq!(palette.bg, TOKYO_NIGHT.bg);
+        theme.name = "unknown".into();
+        assert_eq!(Palette::configured(&theme).bg, GRUVBOX.bg);
     }
 
     #[test]

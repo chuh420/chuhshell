@@ -20,10 +20,34 @@ pub struct ConfigCtl {
 
 pub fn check(config: &Config) -> Result<(), String> {
     let now = services::clock::now();
+    let mut errors = Vec::new();
     if let Err(err) = jiff::fmt::strtime::format(config.general.clock_format.as_str(), &now) {
-        return Err(format!("general.clock_format: {err}"));
+        errors.push(format!("general.clock_format: {err}"));
     }
-    Ok(())
+    if crate::theme::builtin(&config.theme.name).is_none() {
+        let names: Vec<&str> = crate::theme::BUILTIN
+            .iter()
+            .map(|(name, _)| *name)
+            .collect();
+        errors.push(format!(
+            "theme.name: \"{}\" is not one of {}",
+            config.theme.name,
+            names.join(", ")
+        ));
+    }
+    if let Some(scheme) = config.theme.scheme.as_deref()
+        && services::theme::parse_scheme(scheme).is_none()
+    {
+        errors.push(format!(
+            "theme.scheme: \"{scheme}\" is not one of {}",
+            services::theme::SCHEMES.join(", ")
+        ));
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
 }
 
 pub fn load() -> Result<Config, String> {
@@ -141,6 +165,7 @@ impl App {
         let changes = crate::theme::apply_config(&next);
         let walls_moved = previous.general.wallpapers_dir != next.general.wallpapers_dir;
         config::set(next);
+        self.theme_config_changed(&previous);
         if changes.fonts {
             self.engine = TextEngine::new(&crate::theme::font_families());
         }

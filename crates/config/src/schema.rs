@@ -159,6 +159,7 @@ pub struct Theme {
     pub colors: Colors,
     pub auto: Option<bool>,
     pub scheme: Option<String>,
+    pub templates: Option<PathBuf>,
 }
 
 impl Default for Theme {
@@ -168,6 +169,7 @@ impl Default for Theme {
             colors: Colors::default(),
             auto: None,
             scheme: None,
+            templates: None,
         }
     }
 }

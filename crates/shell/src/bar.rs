@@ -21,7 +21,7 @@ fn chip_style() -> ChipStyle {
         hover: theme::elevated(),
     }
 }
-const KEYBOARD_ICON: &[u8] = include_bytes!("../assets/keyboard-bar.svg");
+const KEYBOARD_ICON: &str = include_str!("../assets/keyboard-bar.svg");
 const SLOT: f32 = 25.0;
 const GAP: f32 = 3.0;
 
@@ -753,7 +753,7 @@ impl Bar {
             &mut input,
             engine,
             right_row,
-            ui::image::svg_from_data(KEYBOARD_ICON, "keyboard-bar.svg"),
+            ui::image::svg_from_data(keyboard_icon().as_bytes(), "keyboard-bar.svg"),
             &model.keyboard_label,
         );
         let network = chip(
@@ -1401,6 +1401,12 @@ fn title_text(model: &BarModel) -> String {
         .clone()
         .filter(|title| !title.is_empty())
         .unwrap_or_else(|| "still / material".into())
+}
+
+fn keyboard_icon() -> String {
+    KEYBOARD_ICON
+        .replace("#a9b665", &theme::hex(theme::green()))
+        .replace("#d4be98", &theme::hex(theme::text()))
 }
 
 fn workspace_ids(kind: Option<services::compositor::Kind>, model: &BarModel) -> Vec<i32> {

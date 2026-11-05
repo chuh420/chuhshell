@@ -111,6 +111,7 @@ pub struct WallpapersPanel {
     scheme_chip: Chip,
     scheme: &'static str,
     theme_auto: bool,
+    theme_available: bool,
     grid: Scroller,
     tiles: Vec<Option<Tile>>,
     empty: Label,
@@ -293,6 +294,7 @@ impl WallpapersPanel {
             scheme_chip,
             scheme: data.theme_scheme,
             theme_auto: data.theme_auto,
+            theme_available: data.theme_available,
             grid,
             tiles: Vec::new(),
             empty,
@@ -853,9 +855,9 @@ impl WallpapersPanel {
             self.scheme_label.node,
             self.scheme_chip.root,
         ] {
-            tree.set_visible(node, !cursors);
+            tree.set_visible(node, !cursors && self.theme_available);
         }
-        if !cursors {
+        if !cursors && self.theme_available {
             let slot = slots[next];
             let x = width - self.scheme_chip.implicit_width().ceil();
             place_chip(tree, &mut self.scheme_chip, x, slot);
@@ -1166,9 +1168,15 @@ impl WallpapersPanel {
                         actions.push(PanelAction::CursorColors);
                     } else if area == self.size.area && self.mode == Mode::Cursors {
                         actions.push(PanelAction::CursorSize);
-                    } else if area == self.auto_chip.area && self.mode == Mode::Wallpapers {
+                    } else if area == self.auto_chip.area
+                        && self.mode == Mode::Wallpapers
+                        && self.theme_available
+                    {
                         actions.push(PanelAction::ToggleTheme);
-                    } else if area == self.scheme_chip.area && self.mode == Mode::Wallpapers {
+                    } else if area == self.scheme_chip.area
+                        && self.mode == Mode::Wallpapers
+                        && self.theme_available
+                    {
                         actions.push(PanelAction::ThemeScheme);
                     } else if area == self.refresh.area {
                         actions.push(match self.mode {

@@ -67,6 +67,14 @@ pub fn load() -> Result<Config, Error> {
     }
 }
 
+pub fn templates_dir() -> PathBuf {
+    let paths = paths();
+    match current().theme.templates.as_deref() {
+        Some(dir) => expand_home(dir, &paths.home),
+        None => paths.home.join(".config/matugen/templates"),
+    }
+}
+
 pub fn wallpapers_dir() -> PathBuf {
     let paths = paths();
     match current().general.wallpapers_dir.as_deref() {

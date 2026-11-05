@@ -29,6 +29,7 @@ French = "FR"
 name = "gruvbox"
 # auto = false
 # scheme = "vibrant"
+# templates = "~/.config/matugen/templates"
 
 [theme.colors]
 # bg = "#282828"

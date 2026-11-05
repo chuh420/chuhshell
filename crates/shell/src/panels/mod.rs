@@ -117,6 +117,7 @@ pub struct PanelData {
     pub brightness: u32,
     pub keep_awake: bool,
     pub theme_auto: bool,
+    pub theme_available: bool,
     pub theme_scheme: &'static str,
     pub dnd: bool,
     pub notifications: Vec<Notification>,
