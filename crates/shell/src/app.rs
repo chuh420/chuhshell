@@ -57,7 +57,7 @@ pub enum ServiceEvent {
     ClipThumb(u64, String, Option<std::sync::Arc<ui::tiny_skia::Pixmap>>),
     WallList(services::wallpapers::Listing),
     Profiles(services::upower::Profiles),
-    WallApplied(Result<(), String>),
+    WallApplied(Result<services::wallpapers::State, String>),
     CursorList(Vec<crate::cursorctl::CursorItem>),
     CursorApplied(Result<services::cursors::State, String>),
     ThemeGenerated(Result<(), String>),
@@ -108,6 +108,7 @@ pub struct App {
     pub(crate) scheduler: Scheduler<()>,
     pub(crate) events: Sender<ServiceEvent>,
     pub(crate) config: crate::configctl::ConfigCtl,
+    pub(crate) session: crate::sessionctl::Session,
     brightness_throttle: bool,
     brightness_running: bool,
     start: Instant,
@@ -188,6 +189,7 @@ impl App {
             scheduler,
             events,
             config: crate::configctl::ConfigCtl::default(),
+            session: crate::sessionctl::Session::default(),
             brightness_throttle: false,
             brightness_running: false,
             start: Instant::now(),
@@ -374,6 +376,7 @@ impl App {
                     .as_ref()
                     .map_or_else(|| "none".to_string(), |w| w.address.clone());
                 self.state.focused_monitor = state.focused_output;
+                self.update_live_pause();
             }
             compositor::Event::Keyboard(keyboard) => {
                 let changed =
@@ -415,9 +418,12 @@ impl App {
         self.sync();
     }
 
-    fn battery_alert(&self, alert: BatteryAlert) {
+    fn battery_alert(&mut self, alert: BatteryAlert) {
         let result = match alert {
-            BatteryAlert::Suspend => Command::new(chuhctl()).arg("suspend").spawn(),
+            BatteryAlert::Suspend => {
+                self.power_action(services::session::Power::Suspend);
+                return;
+            }
             BatteryAlert::Notify { critical, level } => Command::new("notify-send")
                 .args([
                     "-a",
@@ -708,6 +714,14 @@ impl App {
                 let id = args.get(1).cloned().unwrap_or_default();
                 self.tray_ipc(&id);
             }
+            "wallpaper" => match args.get(1) {
+                Some(path) => self.apply_wallpaper(path, None),
+                None => return Reply::Ok(self.walls.data.current.clone()),
+            },
+            "lock" => self.lock_screen(),
+            "suspend" => self.power_action(services::session::Power::Suspend),
+            "screenshot" => self.take_screenshot(),
+            "mixer" => self.open_mixer(),
             "close" => {
                 self.state.panel.clear();
                 self.sync();
@@ -973,12 +987,8 @@ impl App {
                 self.state.toggle(name, false);
                 self.sync();
             }
-            PanelAction::Run(name) => run(name),
-            PanelAction::Suspend => {
-                self.state.panel.clear();
-                self.sync();
-                run("suspend");
-            }
+            PanelAction::Run(name) => self.run_command(name),
+            PanelAction::Suspend => self.power_action(services::session::Power::Suspend),
             PanelAction::ToggleMute => self.toggle_mute(false),
             PanelAction::SetVolume(value) => {
                 let sink = self
@@ -1053,7 +1063,7 @@ impl App {
                     y: y + oy as f32,
                     screen,
                 };
-                self.apply_wallpaper(&path, origin);
+                self.apply_wallpaper(&path, Some(origin));
             }
             PanelAction::Close => {
                 self.state.panel.clear();
@@ -1552,18 +1562,6 @@ impl App {
         let wait = (deadline - self.now()).max(0.0);
         Some(Duration::from_secs_f64(wait / 1000.0))
     }
-}
-
-pub(crate) fn run(action: &str) {
-    match Command::new(chuhctl()).arg(action).spawn() {
-        Ok(child) => reap(child),
-        Err(err) => log::warn!("{action}: {err}"),
-    }
-}
-
-fn chuhctl() -> String {
-    let home = std::env::var("HOME").unwrap_or_default();
-    format!("{home}/.local/bin/chuhctl")
 }
 
 pub(crate) fn reap(mut child: std::process::Child) {

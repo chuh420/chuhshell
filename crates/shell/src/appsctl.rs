@@ -59,7 +59,7 @@ impl App {
         }
     }
 
-    fn queue_app_reload(&mut self) {
+    pub(crate) fn queue_app_reload(&mut self) {
         if self.apps.reload_queued {
             return;
         }

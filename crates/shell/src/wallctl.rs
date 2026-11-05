@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    io::Read,
     os::fd::AsFd,
     path::PathBuf,
     process::Child,
@@ -241,6 +240,7 @@ impl App {
         if !startup && self.walls.image != previous {
             self.theme_wallpaper_changed();
         }
+        self.sync_live();
     }
 
     pub fn refresh_wallpapers(&mut self) {
@@ -268,7 +268,7 @@ impl App {
         self.sync_wallpapers();
     }
 
-    pub fn apply_wallpaper(&mut self, path: &str, origin: Origin) {
+    pub fn apply_wallpaper(&mut self, path: &str, origin: Option<Origin>) {
         if self.walls.data.busy {
             return;
         }
@@ -276,32 +276,17 @@ impl App {
             data.error.clear();
             data.busy = true;
         });
-        self.walls.origin = Some(origin);
+        self.walls.origin = origin;
         let sender = self.events.clone();
         let path = path.to_string();
         std::thread::spawn(move || {
-            let result = match wallpapers::apply_command(&path).spawn() {
-                Ok(mut child) => {
-                    let mut stderr = String::new();
-                    if let Some(mut pipe) = child.stderr.take() {
-                        let _ = pipe.read_to_string(&mut stderr);
-                    }
-                    match child.wait() {
-                        Ok(status) if status.success() => Ok(()),
-                        _ => Err(stderr.trim().to_string()),
-                    }
-                }
-                Err(_) => Err(String::new()),
-            };
-            let result = result.and_then(|()| {
-                wallpapers::adopt_legacy_state().map_err(|err| format!("wallpaper state: {err}"))
-            });
+            let result = wallpapers::apply(&path);
             let _ = sender.send(ServiceEvent::WallApplied(result));
         });
         self.sync();
     }
 
-    pub fn wallpaper_applied(&mut self, result: Result<(), String>) {
+    pub fn wallpaper_applied(&mut self, result: Result<wallpapers::State, String>) {
         self.update_wall_data(|data| {
             data.busy = false;
             if let Err(error) = &result {
@@ -312,7 +297,9 @@ impl App {
                 };
             }
         });
-        if result.is_ok() {
+        if let Ok(state) = &result {
+            self.run_wallpaper_hook(state);
+            self.load_wallpaper_state(false);
             self.walls.scanning = false;
             self.refresh_wallpapers();
         }

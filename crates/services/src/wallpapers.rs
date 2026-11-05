@@ -36,10 +36,6 @@ pub struct State {
     pub live: bool,
 }
 
-fn home() -> PathBuf {
-    config::paths().home.clone()
-}
-
 pub fn folder() -> PathBuf {
     config::wallpapers_dir()
 }
@@ -48,26 +44,90 @@ pub fn state_path() -> PathBuf {
     config::paths().state_file("wallpaper.json")
 }
 
-fn legacy_state_path() -> PathBuf {
-    home().join(".local/state/rice/wallpaper.json")
+pub fn default_wallpaper() -> PathBuf {
+    PathBuf::new()
 }
 
-pub fn adopt_legacy_state() -> io::Result<()> {
-    let text = std::fs::read_to_string(legacy_state_path())?;
-    if parse_state(&text).is_none() {
-        return Err(io::Error::other("wallpapers.py wrote an invalid state"));
-    }
-    let path = state_path();
+fn poster_cache() -> PathBuf {
+    config::paths().cache_dir("posters")
+}
+
+pub fn apply_id(path: &Path, mtime_ns: i128) -> String {
+    let digest = Sha256::digest(format!("{}{mtime_ns}", path.display()).as_bytes());
+    digest
+        .iter()
+        .take(10)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+pub fn state_json(state: &State) -> String {
+    serde_json::json!({ "path": state.path, "image": state.image, "live": state.live }).to_string()
+        + "\n"
+}
+
+fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let temporary = path.with_extension("tmp");
     std::fs::write(&temporary, text)?;
-    std::fs::rename(&temporary, &path)
+    std::fs::rename(&temporary, path)
 }
 
-pub fn default_wallpaper() -> PathBuf {
-    home().join(".config/rice/wallpaper.png")
+fn poster(video: &Path, id: &str) -> Result<PathBuf, String> {
+    let dir = poster_cache();
+    let target = dir.join(format!("{id}-poster.png"));
+    if target.is_file() {
+        return Ok(target);
+    }
+    std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    let temporary = dir.join(format!("{id}-poster.tmp.png"));
+    let mut command = Command::new("ffmpeg");
+    command
+        .args(["-nostdin", "-loglevel", "error", "-y", "-i"])
+        .arg(video)
+        .args([
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080",
+        ])
+        .arg(&temporary)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    bind_to_parent(&mut command);
+    let output = command.output().map_err(|err| format!("ffmpeg: {err}"))?;
+    if !output.status.success() || !temporary.is_file() {
+        let _ = std::fs::remove_file(&temporary);
+        return Err("Could not read first video frame".into());
+    }
+    std::fs::rename(&temporary, &target).map_err(|err| err.to_string())?;
+    Ok(target)
+}
+
+pub fn apply(path: &str) -> Result<State, String> {
+    let selected = std::fs::canonicalize(path).map_err(|err| format!("{path}: {err}"))?;
+    let live = is_live(&selected);
+    if !live && !EXTENSIONS.contains(&extension(&selected).as_str()) {
+        return Err("Unsupported image format".into());
+    }
+    let meta = std::fs::metadata(&selected).map_err(|err| err.to_string())?;
+    let (mtime, _) = revision(&meta);
+    let image = if live {
+        poster(&selected, &apply_id(&selected, mtime))?
+    } else {
+        selected.clone()
+    };
+    let state = State {
+        path: selected.to_string_lossy().into_owned(),
+        image: image.to_string_lossy().into_owned(),
+        live,
+    };
+    write_atomic(&state_path(), &state_json(&state))
+        .map_err(|err| format!("Could not save wallpaper state: {err}"))?;
+    Ok(state)
 }
 
 pub fn preview_cache() -> PathBuf {
@@ -265,18 +325,6 @@ pub(crate) fn bind_to_parent(command: &mut Command) {
     }
 }
 
-pub fn apply_command(path: &str) -> Command {
-    let mut command = Command::new("python");
-    command
-        .arg(home().join(".config/rice/wallpapers.py"))
-        .arg("apply")
-        .arg(path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
-    command
-}
-
 pub struct StateWatcher {
     inotify: inotify::Inotify,
 }
@@ -329,6 +377,24 @@ pub fn read_state() -> Option<State> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn state_json_round_trips() {
+        let state = State {
+            path: "/w/live wallpapers/sea.mp4".into(),
+            image: "/c/posters/abc-poster.png".into(),
+            live: true,
+        };
+        assert_eq!(parse_state(&state_json(&state)), Some(state));
+    }
+
+    #[test]
+    fn apply_ids_are_short_and_stable() {
+        let id = apply_id(Path::new("/w/a.jpg"), 42);
+        assert_eq!(id.len(), 20);
+        assert_eq!(id, apply_id(Path::new("/w/a.jpg"), 42));
+        assert_ne!(id, apply_id(Path::new("/w/a.jpg"), 43));
+    }
 
     #[test]
     fn preview_key_matches_python() {

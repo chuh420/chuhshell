@@ -18,6 +18,7 @@ mod overlay;
 mod panels;
 mod popups;
 mod powerctl;
+mod sessionctl;
 mod state;
 #[allow(dead_code)]
 mod theme;
@@ -71,6 +72,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         event_loop.dispatch(timeout, &mut app)?;
         app.process();
     }
+    app.stop_live();
     let _ = std::fs::remove_file(ipc::socket_path());
     Ok(())
 }

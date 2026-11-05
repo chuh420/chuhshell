@@ -99,26 +99,10 @@ impl App {
     }
 
     pub fn session_action(&mut self, action: &'static str) {
-        let command: &[&str] = match action {
-            "lock" => {
-                crate::app::run("lock");
-                return;
-            }
-            "suspend" => {
-                self.state.panel.clear();
-                self.sync();
-                &["systemctl", "suspend"]
-            }
-            "reboot" => &["systemctl", "reboot"],
-            "poweroff" => &["systemctl", "poweroff"],
-            _ => return,
-        };
-        match std::process::Command::new(command[0])
-            .args(&command[1..])
-            .spawn()
-        {
-            Ok(child) => reap(child),
-            Err(err) => log::warn!("{action}: {err}"),
+        if action == "lock" {
+            self.lock_screen();
+        } else if let Some(power) = services::session::Power::parse(action) {
+            self.power_action(power);
         }
     }
 }

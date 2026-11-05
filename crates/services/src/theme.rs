@@ -298,22 +298,9 @@ pub fn generate_command(image: &str, scheme: &str, config_path: &Path) -> Comman
     command
 }
 
-pub fn hook_command(hook: &str, argument: &str) -> Command {
-    let mut command = Command::new("sh");
-    command
-        .arg("-c")
-        .arg(format!("{hook} \"$1\""))
-        .arg("sh")
-        .arg(argument)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
-    command
-}
-
 pub fn reload_command(mode: Mode) -> Option<Command> {
     let hook = config::current().hooks.theme_changed.clone()?;
-    Some(hook_command(&hook, mode.name()))
+    Some(crate::session::hook_command(&hook, &[mode.name()]))
 }
 
 #[cfg(test)]

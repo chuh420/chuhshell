@@ -164,8 +164,12 @@ impl App {
         log::info!("config reloaded");
         let changes = crate::theme::apply_config(&next);
         let walls_moved = previous.general.wallpapers_dir != next.general.wallpapers_dir;
+        let pinned_changed = previous.launcher.pinned != next.launcher.pinned;
         config::set(next);
         self.theme_config_changed(&previous);
+        if pinned_changed {
+            self.queue_app_reload();
+        }
         if changes.fonts {
             self.engine = TextEngine::new(&crate::theme::font_families());
         }

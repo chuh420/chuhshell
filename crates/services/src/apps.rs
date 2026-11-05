@@ -8,8 +8,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const FIRST: [&str; 4] = ["kitty", "zen", "dolphin", "pavucontrol"];
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppEntry {
     pub id: String,
@@ -378,9 +376,12 @@ pub fn subdirs(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-fn priority(entry: &AppEntry) -> bool {
+fn priority(entry: &AppEntry, pinned: &[String]) -> bool {
     let id = entry.id.to_lowercase();
-    !FIRST.iter().any(|term| id.contains(term))
+    !pinned
+        .iter()
+        .filter(|term| !term.is_empty())
+        .any(|term| id.contains(&term.to_lowercase()))
 }
 
 pub fn scan() -> Vec<AppEntry> {
@@ -405,7 +406,8 @@ pub fn scan() -> Vec<AppEntry> {
 }
 
 fn sort(apps: &mut [AppEntry]) {
-    apps.sort_by_cached_key(|app| (priority(app), casefold(&app.name)));
+    let pinned = config::current().launcher.pinned.clone();
+    apps.sort_by_cached_key(|app| (priority(app, &pinned), casefold(&app.name)));
 }
 
 pub fn search(apps: &[AppEntry], query: &str) -> Vec<AppEntry> {
@@ -549,7 +551,8 @@ pub fn launch_plan(app: &AppEntry) -> Result<LaunchPlan, String> {
             .ok_or_else(|| "Invalid Exec line".to_string())
     };
     if entry.boolean("Terminal") {
-        let mut argv = vec!["kitty".to_string(), "-e".to_string()];
+        let mut argv =
+            crate::session::terminal().ok_or_else(|| "No terminal emulator found".to_string())?;
         argv.extend(expand_exec(&tokens()?, icon, &name, &filename)?);
         return Ok(LaunchPlan {
             argv,
