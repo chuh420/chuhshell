@@ -8,7 +8,11 @@ on one 1920x1080 output it idles at about 28 MB RSS and 0.2% CPU.
 
 ## status
 
-chuhshell is in beta. I built it for my own desktop and then moved every personal path and tool into a config file. expect bugs, and expect the NetworkManager backend to break first: I have only tested it with unit tests so far (NetworkManager backend untested on real hardware).
+chuhshell is in beta. I built it for my own desktop and then moved every personal path and tool into a config file. expect bugs.
+
+- Hyprland is my daily driver and the best tested.
+- niri and sway were only checked in a nested session: the shell starts, picks the compositor, draws the bar and follows workspaces and window titles. I have not used them for real work.
+- the NetworkManager backend is covered by unit tests only and has not run on real hardware, so expect it to break first.
 
 ## features
 
