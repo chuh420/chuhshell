@@ -44,7 +44,7 @@ chuhshell runs my desktop and assumes my setup. expect to edit code if yours dif
 
 - the compositor must be Hyprland. the shell talks to its IPC sockets for workspaces, windows and layouts.
 - the colors, fonts and sizes are fixed in code. there is no config file.
-- some actions call external scripts. `~/.config/rice/wallpapers.py` applies wallpapers and comes from [chuh's quickshell](https://github.com/chuh420/chuhs-quickshell). `~/.config/rice/theme-reload` reloads app colors and `~/.local/bin/chuhctl` handles lock, suspend and screenshots; both are local scripts outside this repo, and chuh's quickshell has an older version of `chuhctl` named `chuhshell`.
+- some actions call scripts at fixed paths. this repo ships two of them in `dist/`: `chuhctl` (lock, suspend, screenshots and the bind entry point) and `theme-reload` (pushes new colors to Hyprland, kitty, btop, cava and tmux). `~/.config/rice/wallpapers.py` applies wallpapers and comes from [chuh's quickshell](https://github.com/chuh420/chuhs-quickshell).
 - state and caches live under `~/.local/state/rice`, `~/.local/state/quickshell/material` and `~/.cache/quickshell/material`, shared with the QML version.
 
 ## requirements
@@ -61,13 +61,16 @@ to run:
 - fonts: Adwaita Sans and JetBrainsMono Nerd Font
 - services: PipeWire with WirePlumber, UPower, power-profiles-daemon, iwd, BlueZ
 - tools: `wpctl`, `brightnessctl`, `cliphist`, `wl-clipboard`, `rfkill`, `notify-send`, `xdg-open`, ImageMagick, ffmpeg, kitty, Python
-- optional: matugen for wallpaper colors
+- for `chuhctl`: hyprlock, grim, slurp, satty, pavucontrol
+- optional: matugen for wallpaper colors; swaync and swayosd as fallbacks in `chuhctl`
 
 ## install
 
 ```sh
 cargo build --release
 install -Dm755 target/release/chuhshell ~/.local/bin/chuhshell
+install -Dm755 dist/chuhctl ~/.local/bin/chuhctl
+install -Dm755 dist/theme-reload ~/.config/rice/theme-reload
 install -Dm644 dist/chuhshell.service ~/.config/systemd/user/chuhshell.service
 systemctl --user daemon-reload
 systemctl --user start chuhshell.service
@@ -97,13 +100,16 @@ running `chuhshell` with no arguments starts the shell. a second instance exits 
 | `theme scheme [NAME\|next]` | pick the matugen scheme |
 | `inspect` | print the shell state as JSON |
 
-bind them in Hyprland, for example:
+for key bindings, call `chuhctl`. it forwards panel and media actions to the shell and falls back to swaync, swayosd, `wpctl` or `brightnessctl` when the shell is down. it also runs actions the shell does not own: `lock` (hyprlock), `suspend`, `screenshot` (slurp, grim and satty), `screenshot-output` and `audio` (pavucontrol).
 
 ```lua
-bind("SUPER + D", hl.dsp.exec_cmd("chuhshell msg launcher"))
-bind("SUPER + Space", hl.dsp.exec_cmd("chuhshell msg menu"))
-bind("XF86AudioRaiseVolume", hl.dsp.exec_cmd("chuhshell msg volumeUp"), { locked = true, repeating = true })
+bind("SUPER + D", hl.dsp.exec_cmd("chuhctl launcher"))
+bind("SUPER + Space", hl.dsp.exec_cmd("chuhctl menu"))
+bind("XF86AudioRaiseVolume", hl.dsp.exec_cmd("chuhctl volume-up"), { locked = true, repeating = true })
+bind("Print", hl.dsp.exec_cmd("chuhctl screenshot"))
 ```
+
+`chuhctl` names differ from IPC names in a few places: `volume-up`, `volume-down`, `volume-mute`, `microphone-mute`, `brightness-key-up`, `brightness-key-down`, `audio-panel` and `network`. see the script for the full list.
 
 in the launcher, `Ctrl + H` hides the selected app and `Ctrl + Shift + H` shows hidden ones. the wallpaper gallery reads `~/Pictures/Wallpapers` and its `live wallpapers` folder; cursor themes go in `~/Pictures/Wallpapers/cursors`.
 

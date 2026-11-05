@@ -1,0 +1,14 @@
+#!/bin/sh
+theme="$HOME/.local/state/rice/theme/current"
+hyprctl reload >/dev/null 2>&1
+pkill -USR1 -x kitty
+pkill -USR2 -x btop
+pkill -USR1 -x cava
+tmux source-file -q "$theme/tmux.conf" >/dev/null 2>&1
+snippet="$HOME/trainvault/.obsidian/snippets/20-wallpaper-colors.css"
+if [ -f "$theme/obsidian.css" ] && [ -d "$(dirname "$snippet")" ]; then
+    cmp -s "$theme/obsidian.css" "$snippet" || cp "$theme/obsidian.css" "$snippet"
+fi
+helium="$HOME/.config/rice/helium-theme.py"
+[ -x "$helium" ] && "$helium" >/dev/null 2>&1
+exit 0
