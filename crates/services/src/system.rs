@@ -432,6 +432,11 @@ impl ResourceMonitor {
     }
 }
 
+pub fn backlight_available() -> bool {
+    std::fs::read_dir("/sys/class/backlight").is_ok_and(|mut entries| entries.next().is_some())
+        && crate::programs::exists("brightnessctl")
+}
+
 pub fn brightness() -> u32 {
     let Ok(entries) = std::fs::read_dir("/sys/class/backlight") else {
         return 50;

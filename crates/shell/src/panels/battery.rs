@@ -383,7 +383,13 @@ impl BatteryPanel {
         }
         let pw = self.profile_title.implicit_width();
         place_label(tree, &mut self.profile_title, 0.0, slots[9], pw);
+        let available = self.data.available;
+        tree.set_visible(self.profile_title.node, available.profiles);
+        tree.set_visible(self.auto.node, available.profiles);
+        tree.set_visible(self.brightness_title.node, available.brightness);
+        tree.set_visible(self.slider.root, available.brightness);
         let visible: Vec<usize> = (0..PROFILES.len())
+            .filter(|_| available.profiles)
             .filter(|index| *index != 2 || self.data.profiles.has_performance)
             .collect();
         let cells: Vec<Cell> = visible

@@ -106,6 +106,10 @@ impl App {
     pub fn network_event(&mut self, event: network::Event) {
         match event {
             network::Event::Wifi(state) => {
+                self.available.wifi = !state.backend.is_empty();
+                if !self.available.wifi {
+                    services::programs::warn_missing("iwd or NetworkManager", "Wi-Fi");
+                }
                 self.net.wifi = state;
                 self.sync();
             }
@@ -126,6 +130,10 @@ impl App {
                 self.sync();
             }
             network::Event::Bluetooth(state) => {
+                self.available.bluetooth = state.available;
+                if !state.available {
+                    services::programs::warn_missing("a BlueZ adapter", "Bluetooth");
+                }
                 self.net.bluetooth = state;
                 self.sync();
             }

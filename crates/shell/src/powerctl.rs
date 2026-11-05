@@ -10,6 +10,7 @@ impl App {
         let sender = self.events.clone();
         let handle = self.handle.clone();
         let task = async move {
+            let mut reported = false;
             loop {
                 let callback_sender = sender.clone();
                 if let Err(err) = upower::watch_profiles(move |profiles| {
@@ -17,7 +18,12 @@ impl App {
                 })
                 .await
                 {
-                    log::warn!("power profiles: {err}");
+                    log::debug!("power profiles: {err}");
+                    if !reported {
+                        reported = true;
+                        services::programs::warn_missing("power-profiles-daemon", "power profiles");
+                        let _ = sender.send(ServiceEvent::Profiles(upower::Profiles::default()));
+                    }
                 }
                 TimeoutFuture::from_duration(&handle, Duration::from_secs(2)).await;
             }
@@ -48,6 +54,7 @@ impl App {
     }
 
     pub fn profiles_changed(&mut self, profiles: upower::Profiles) {
+        self.available.profiles = !profiles.active.is_empty();
         let performance_changed = profiles.has_performance != self.profiles.has_performance;
         self.profiles = profiles;
         if performance_changed {

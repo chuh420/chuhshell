@@ -106,6 +106,7 @@ pub struct TooltipSpot {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PanelData {
+    pub available: crate::model::Availability,
     pub time: String,
     pub date: String,
     pub network_connected: bool,

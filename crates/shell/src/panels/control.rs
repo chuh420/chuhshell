@@ -726,15 +726,23 @@ impl ControlPanel {
         place_chip(tree, &mut self.lock, top[1].pos, slots[1]);
         let date_width = self.date.implicit_width().ceil().min(width);
         place_label(tree, &mut self.date, 0.0, slots[2], date_width);
-        let tiles = linear(&[Cell::fill(0.0), Cell::fill(0.0)], 10.0, width);
+        let available = self.data.available;
+        let shown = [available.wifi, available.bluetooth];
+        let visible_tiles = shown.iter().filter(|shown| **shown).count();
+        let tiles = linear(&vec![Cell::fill(0.0); visible_tiles], 10.0, width);
         let (tile_y, tile_height) = fit(slots[3], 95.0);
-        for (tile, slot) in self.tiles.iter_mut().zip(&tiles) {
-            tile.place(tree, slot.pos, tile_y, slot.size, tile_height);
+        let mut slots_iter = tiles.iter();
+        for (tile, shown) in self.tiles.iter_mut().zip(shown) {
+            tree.set_visible(tile.root, shown);
+            if shown && let Some(slot) = slots_iter.next() {
+                tile.place(tree, slot.pos, tile_y, slot.size, tile_height);
+            }
         }
         let (volume_y, volume_height) = fit(slots[4], 89.0);
         tree.set_pos(self.volume_card, 0.0, volume_y);
         tree.set_size(self.volume_card, width, volume_height);
         self.layout_volume(tree, width, volume_height);
+        tree.set_visible(self.bright_card, available.brightness);
         let (bright_y, bright_height) = fit(slots[5], 89.0);
         tree.set_pos(self.bright_card, 0.0, bright_y);
         tree.set_size(self.bright_card, width, bright_height);
@@ -744,25 +752,33 @@ impl ControlPanel {
         let (line_y, line_height) = fit(slots[8], 1.0);
         tree.set_pos(self.line, 0.0, line_y);
         tree.set_size(self.line, width, line_height);
-        let mut cells: Vec<Cell> = self.footer[..4]
+        let footer_shown: Vec<bool> = self
+            .footer
             .iter()
-            .map(|(chip, _)| Cell::implicit(chip.implicit_width()))
+            .map(|(_, action)| match action {
+                Footer::Toggle("clipboard") => available.clipboard,
+                Footer::Run("screenshot") => available.screenshot,
+                _ => true,
+            })
             .collect();
-        cells.push(Cell::fill(0.0));
-        cells.extend(
-            self.footer[4..]
-                .iter()
-                .map(|(chip, _)| Cell::implicit(chip.implicit_width())),
-        );
+        let mut cells: Vec<Cell> = Vec::new();
+        let mut owners: Vec<Option<usize>> = Vec::new();
+        for (index, ((chip, _), shown)) in self.footer.iter().zip(&footer_shown).enumerate() {
+            if index == 4 {
+                cells.push(Cell::fill(0.0));
+                owners.push(None);
+            }
+            if *shown {
+                cells.push(Cell::implicit(chip.implicit_width()));
+                owners.push(Some(index));
+            }
+        }
         let columns = linear(&cells, 7.0, width);
-        let positions: Vec<f32> = columns
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| *index != 4)
-            .map(|(_, slot)| slot.pos)
-            .collect();
-        for ((chip, _), x) in self.footer.iter_mut().zip(positions) {
-            place_chip(tree, chip, x, slots[9]);
+        for (index, ((chip, _), shown)) in self.footer.iter_mut().zip(&footer_shown).enumerate() {
+            tree.set_visible(chip.root, *shown);
+            if let Some(column) = owners.iter().position(|owner| *owner == Some(index)) {
+                place_chip(tree, chip, columns[column].pos, slots[9]);
+            }
         }
     }
 

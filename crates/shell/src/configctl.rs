@@ -167,6 +167,7 @@ impl App {
         let pinned_changed = previous.launcher.pinned != next.launcher.pinned;
         config::set(next);
         self.theme_config_changed(&previous);
+        self.probe_availability();
         if pinned_changed {
             self.queue_app_reload();
         }
@@ -199,6 +200,7 @@ impl App {
         if let Some(err) = self.config.pending_error.take() {
             handle.post(
                 crate::APP_NAME,
+                "",
                 "Config error",
                 &format!("{err}\nThe shell keeps the last working settings."),
                 Urgency::Critical,

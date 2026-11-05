@@ -27,6 +27,10 @@ impl ClipEntry {
     }
 }
 
+pub fn available() -> bool {
+    crate::programs::exists("cliphist") && crate::programs::exists("wl-copy")
+}
+
 pub fn cache_dir() -> PathBuf {
     config::paths().cache_dir("clipboard")
 }

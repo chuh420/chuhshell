@@ -313,6 +313,7 @@ impl App {
                 {
                     handle.post(
                         crate::APP_NAME,
+                        "",
                         "Cursor theme saved",
                         "Restart the session to apply it to every window.",
                         services::notifications::Urgency::Normal,

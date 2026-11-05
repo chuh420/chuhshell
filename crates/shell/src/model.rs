@@ -1,3 +1,37 @@
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Availability {
+    pub wifi: bool,
+    pub bluetooth: bool,
+    pub brightness: bool,
+    pub clipboard: bool,
+    pub screenshot: bool,
+    pub profiles: bool,
+}
+
+impl Default for Availability {
+    fn default() -> Self {
+        Self {
+            wifi: true,
+            bluetooth: true,
+            brightness: true,
+            clipboard: true,
+            screenshot: true,
+            profiles: true,
+        }
+    }
+}
+
+impl Availability {
+    pub fn panel(&self, name: &str) -> bool {
+        match name {
+            "wifi" => self.wifi,
+            "bluetooth" => self.bluetooth,
+            "clipboard" => self.clipboard,
+            _ => true,
+        }
+    }
+}
+
 pub struct BarModel {
     pub panel: String,
     pub title: Option<String>,
@@ -10,6 +44,7 @@ pub struct BarModel {
     pub ram_used: f64,
     pub ram_total: f64,
     pub keyboard_label: String,
+    pub available: Availability,
     pub network_connected: bool,
     pub wifi_connected: bool,
     pub wifi_strength: f64,
@@ -40,6 +75,7 @@ impl Default for BarModel {
             ram_used: 0.0,
             ram_total: 0.0,
             keyboard_label: "…".into(),
+            available: Availability::default(),
             network_connected: false,
             wifi_connected: false,
             wifi_strength: 0.0,

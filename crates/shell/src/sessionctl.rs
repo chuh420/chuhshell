@@ -80,7 +80,7 @@ impl App {
 
     pub fn open_mixer(&mut self) {
         let Some(line) = session::mixer_command() else {
-            services::programs::warn_missing("pavucontrol", "the audio mixer");
+            services::programs::warn_missing("pavucontrol", "audio mixer");
             return;
         };
         if let Some(child) = self.spawn_line("mixer", &line) {

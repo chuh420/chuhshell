@@ -165,6 +165,12 @@ fn gallery(requests: Receiver<Vec<PreviewKey>>, events: Sender<ServiceEvent>) {
                     });
                 }
                 Err(_) => {
+                    let tool = if wallpapers::is_live(&source) {
+                        "ffmpeg"
+                    } else {
+                        "magick"
+                    };
+                    services::programs::warn_missing(tool, "wallpaper previews");
                     let _ = std::fs::remove_file(&temporary);
                     emit(&item, String::new());
                 }

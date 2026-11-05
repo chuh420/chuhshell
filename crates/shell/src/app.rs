@@ -109,6 +109,7 @@ pub struct App {
     pub(crate) events: Sender<ServiceEvent>,
     pub(crate) config: crate::configctl::ConfigCtl,
     pub(crate) session: crate::sessionctl::Session,
+    pub(crate) available: crate::model::Availability,
     brightness_throttle: bool,
     brightness_running: bool,
     start: Instant,
@@ -190,6 +191,7 @@ impl App {
             events,
             config: crate::configctl::ConfigCtl::default(),
             session: crate::sessionctl::Session::default(),
+            available: crate::model::Availability::default(),
             brightness_throttle: false,
             brightness_running: false,
             start: Instant::now(),
@@ -200,7 +202,23 @@ impl App {
     pub fn now(&self) -> Millis {
         self.start.elapsed().as_secs_f64() * 1000.0
     }
+    pub(crate) fn probe_availability(&mut self) {
+        self.available.brightness = system::backlight_available();
+        if !self.available.brightness {
+            services::programs::warn_missing("backlight or brightnessctl", "brightness control");
+        }
+        self.available.clipboard = services::clipboard::available();
+        if !self.available.clipboard {
+            services::programs::warn_missing("cliphist or wl-copy", "clipboard panel");
+        }
+        self.available.screenshot = services::session::screenshot_command().is_some();
+        if !self.available.screenshot {
+            services::programs::warn_missing("grim, slurp or wl-copy", "screenshots");
+        }
+    }
+
     pub fn start_services(&mut self) {
+        self.probe_availability();
         self.start_notifications();
         self.start_tray();
         self.start_network();
@@ -232,7 +250,8 @@ impl App {
                 })
                 .await
                 {
-                    log::warn!("upower: {err}");
+                    log::debug!("upower: {err}");
+                    services::programs::warn_missing("UPower", "battery chip");
                 }
                 TimeoutFuture::from_duration(&handle, Duration::from_secs(2)).await;
             }
@@ -419,18 +438,15 @@ impl App {
     }
 
     fn battery_alert(&mut self, alert: BatteryAlert) {
-        let result = match alert {
-            BatteryAlert::Suspend => {
-                self.power_action(services::session::Power::Suspend);
-                return;
-            }
-            BatteryAlert::Notify { critical, level } => Command::new("notify-send")
-                .args([
-                    "-a",
+        match alert {
+            BatteryAlert::Suspend => self.power_action(services::session::Power::Suspend),
+            BatteryAlert::Notify { critical, level } => {
+                let Some(handle) = self.notes.handle.clone() else {
+                    log::warn!("battery low · {level}%");
+                    return;
+                };
+                handle.post(
                     "Battery",
-                    "-u",
-                    if critical { "critical" } else { "normal" },
-                    "-i",
                     "battery-caution",
                     &format!("Battery low · {level}%"),
                     if critical {
@@ -438,12 +454,13 @@ impl App {
                     } else {
                         "Plug in the charger soon."
                     },
-                ])
-                .spawn(),
-        };
-        match result {
-            Ok(child) => reap(child),
-            Err(err) => log::warn!("battery alert: {err}"),
+                    if critical {
+                        services::notifications::Urgency::Critical
+                    } else {
+                        services::notifications::Urgency::Normal
+                    },
+                );
+            }
         }
     }
 
@@ -659,6 +676,9 @@ impl App {
     }
 
     fn step_brightness(&mut self, step: f64) {
+        if !self.available.brightness {
+            return;
+        }
         self.set_brightness(self.state.brightness as f64 + step);
         self.state.show_osd("brightness");
         self.sync();
@@ -799,6 +819,11 @@ impl App {
         .to_string()
     }
     pub(crate) fn sync(&mut self) {
+        if !self.available.panel(&self.state.panel) {
+            log::info!("{} is unavailable on this system", self.state.panel);
+            self.state.panel.clear();
+        }
+        self.model.available = self.available;
         let state = &self.state;
         self.model.panel = state.panel.clone();
         self.model.keyboard_label = state.keyboard.label.clone();
@@ -848,6 +873,7 @@ impl App {
             } else {
                 self.state.wired.network.clone()
             },
+            available: self.available,
             bluetooth_powered: self.net.bluetooth.powered,
             bluetooth_name: self.net.bluetooth.name.clone(),
             muted: self.state.muted(),

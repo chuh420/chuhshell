@@ -78,6 +78,7 @@ pub struct BluetoothDevice {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BluetoothState {
+    pub available: bool,
     pub powered: bool,
     pub discovering: bool,
     pub name: String,
@@ -1066,15 +1067,14 @@ impl Handle {
                     .map(|inner| inner.pairing.clone())
                     .unwrap_or_default();
                 let empty = Props::new();
-                let adapter = managed
-                    .values()
-                    .find_map(|interfaces| {
-                        interfaces
-                            .iter()
-                            .find(|(name, _)| name.as_str() == "org.bluez.Adapter1")
-                            .map(|(_, props)| props)
-                    })
-                    .unwrap_or(&empty);
+                let found = managed.values().find_map(|interfaces| {
+                    interfaces
+                        .iter()
+                        .find(|(name, _)| name.as_str() == "org.bluez.Adapter1")
+                        .map(|(_, props)| props)
+                });
+                let available = found.is_some();
+                let adapter = found.unwrap_or(&empty);
                 let mut devices = Vec::new();
                 for (path, interfaces) in &managed {
                     let find = |name: &str| {
@@ -1114,6 +1114,7 @@ impl Handle {
                         .cmp(&(!b.connected, b.name.to_lowercase()))
                 });
                 BluetoothState {
+                    available,
                     powered: prop(adapter, "Powered").and_then(boolean).unwrap_or(false),
                     discovering: prop(adapter, "Discovering")
                         .and_then(boolean)
@@ -1126,6 +1127,7 @@ impl Handle {
                 }
             }
             Err(error) => BluetoothState {
+                available: false,
                 powered: false,
                 discovering: false,
                 name: error_text(&error),

@@ -37,7 +37,7 @@ pub fn warn_missing(name: &str, purpose: &str) {
             .get_or_insert_with(HashSet::new)
             .insert(name.to_string())
     {
-        log::info!("{name} not found, {purpose} is unavailable");
+        log::info!("{name} not found: no {purpose}");
     }
 }
 

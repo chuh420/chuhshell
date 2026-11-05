@@ -340,7 +340,14 @@ pub struct Handle {
 }
 
 impl Handle {
-    pub fn post(&self, app_name: &str, summary: &str, body: &str, urgency: Urgency) -> u32 {
+    pub fn post(
+        &self,
+        app_name: &str,
+        icon: &str,
+        summary: &str,
+        body: &str,
+        urgency: Urgency,
+    ) -> u32 {
         let Ok(mut store) = self.store.lock() else {
             return 0;
         };
@@ -349,7 +356,7 @@ impl Handle {
         let mut notification = parse(
             id,
             app_name.into(),
-            String::new(),
+            icon.into(),
             summary.into(),
             body.into(),
             Vec::new(),

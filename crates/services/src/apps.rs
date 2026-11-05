@@ -587,30 +587,47 @@ pub fn launch_plan(app: &AppEntry) -> Result<LaunchPlan, String> {
     })
 }
 
-pub fn scope_command(plan: &LaunchPlan) -> std::process::Command {
-    let mut command = std::process::Command::new("systemd-run");
-    command.args([
-        "--user",
-        "--scope",
-        "--slice=app.slice",
-        "--collect",
-        "--quiet",
-        "--expand-environment=no",
-        "--",
-    ]);
+pub fn launch_argv(plan: &LaunchPlan, scope: bool) -> Vec<String> {
+    let mut argv: Vec<String> = Vec::new();
+    if scope {
+        argv.extend(
+            [
+                "systemd-run",
+                "--user",
+                "--scope",
+                "--slice=app.slice",
+                "--collect",
+                "--quiet",
+                "--expand-environment=no",
+                "--",
+            ]
+            .map(String::from),
+        );
+    }
     if plan
         .env
         .iter()
         .any(|(key, _)| key == "GIO_LAUNCHED_DESKTOP_FILE")
     {
-        command.args([
-            "sh",
-            "-c",
-            "export GIO_LAUNCHED_DESKTOP_FILE_PID=$$; exec \"$@\"",
-            "sh",
-        ]);
+        argv.extend(
+            [
+                "sh",
+                "-c",
+                "export GIO_LAUNCHED_DESKTOP_FILE_PID=$$; exec \"$@\"",
+                "sh",
+            ]
+            .map(String::from),
+        );
     }
-    command.args(&plan.argv);
+    argv.extend(plan.argv.iter().cloned());
+    argv
+}
+
+pub fn scope_command(plan: &LaunchPlan) -> std::process::Command {
+    let argv = launch_argv(plan, crate::programs::exists("systemd-run"));
+    let mut command =
+        std::process::Command::new(argv.first().map(String::as_str).unwrap_or("true"));
+    command.args(argv.iter().skip(1));
     if let Some(cwd) = &plan.cwd {
         command.current_dir(cwd);
     }
@@ -697,6 +714,21 @@ mod tests {
             path: PathBuf::new(),
             searchable: casefold(&format!("{name} {generic} {comment}")),
         }
+    }
+
+    #[test]
+    fn launch_without_systemd_run() {
+        let plan = LaunchPlan {
+            argv: vec!["zen".into(), "--new-window".into()],
+            cwd: None,
+            env: vec![("GIO_LAUNCHED_DESKTOP_FILE".into(), "/a/zen.desktop".into())],
+        };
+        let scoped = launch_argv(&plan, true);
+        assert_eq!(scoped[0], "systemd-run");
+        assert_eq!(&scoped[scoped.len() - 2..], ["zen", "--new-window"]);
+        let plain = launch_argv(&plan, false);
+        assert_eq!(&plain[..2], ["sh", "-c"]);
+        assert_eq!(&plain[4..], ["zen", "--new-window"]);
     }
 
     #[test]

@@ -672,6 +672,8 @@ pub struct Bar {
     audio: Chip,
     battery: Chip,
     battery_visible: bool,
+    network_visible: bool,
+    bluetooth_visible: bool,
     battery_plugged: Option<bool>,
     battery_pulse: Sequence,
     right_separator: NodeId,
@@ -844,6 +846,8 @@ impl Bar {
             audio,
             battery,
             battery_visible: false,
+            network_visible: true,
+            bluetooth_visible: true,
             battery_plugged: None,
             battery_pulse: Sequence::new(
                 1.0,
@@ -976,6 +980,8 @@ impl Bar {
         };
         set(&mut self.battery, engine, &battery_label, battery_ink);
         self.battery_visible = model.battery_present;
+        self.network_visible = model.available.wifi || model.network_connected;
+        self.bluetooth_visible = model.available.bluetooth;
         self.sync_tray(engine, model, now);
         if let Some(previous) = self.battery_plugged
             && previous != model.battery_plugged
@@ -1287,16 +1293,20 @@ impl Bar {
                 Item::new(self.resources.width, 22.0).margins(2.0, 0.0),
             ),
             (Slot::Keyboard, Item::new(49.0, 22.0)),
-            (
+        ]);
+        if self.network_visible {
+            slots.push((
                 Slot::Network,
                 Item::new(self.network.implicit_width(), 22.0),
-            ),
-            (
+            ));
+        }
+        if self.bluetooth_visible {
+            slots.push((
                 Slot::Bluetooth,
                 Item::new(self.bluetooth.implicit_width(), 22.0),
-            ),
-            (Slot::Audio, Item::new(self.audio.implicit_width(), 22.0)),
-        ]);
+            ));
+        }
+        slots.push((Slot::Audio, Item::new(self.audio.implicit_width(), 22.0)));
         if self.battery_visible {
             slots.push((
                 Slot::Battery,
@@ -1321,6 +1331,8 @@ impl Bar {
         );
         tree.set_size(self.right_row, right.width, right.height);
         tree.set_visible(self.battery.root, self.battery_visible);
+        tree.set_visible(self.network.root, self.network_visible);
+        tree.set_visible(self.bluetooth.root, self.bluetooth_visible);
         tree.set_visible(self.paused.root, self.paused_visible);
         for ((slot, item), (x, y)) in slots.iter().zip(right.positions.iter().copied()) {
             let width = item.layout_width();
