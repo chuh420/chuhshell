@@ -18,7 +18,7 @@ use platform::{
 };
 use services::{
     audio::{self, AudioHandle, AudioState},
-    clock, hyprland,
+    clock, compositor,
     system::{self, ResourceMonitor},
     upower::{self, PowerState},
 };
@@ -47,7 +47,7 @@ pub enum ServiceEvent {
     TrayMenu(String, Vec<services::tray::MenuEntry>),
     Network(services::network::Event),
     NetworkReady(services::network::Handle),
-    Hyprland(hyprland::Event),
+    Compositor(compositor::Event),
     Audio(AudioState),
     Power(PowerState),
     BrightnessDone,
@@ -208,10 +208,10 @@ impl App {
         self.start_theme();
         self.start_power_panels();
         let sender = self.events.clone();
-        if let Err(err) = hyprland::spawn(move |event| {
-            let _ = sender.send(ServiceEvent::Hyprland(event));
+        if let Err(err) = compositor::spawn(move |event| {
+            let _ = sender.send(ServiceEvent::Compositor(event));
         }) {
-            log::error!("hyprland: {err}");
+            log::error!("compositor: {err}");
         }
         let sender = self.events.clone();
         match audio::spawn(move |state| {
@@ -318,7 +318,7 @@ impl App {
             ServiceEvent::TrayMenu(key, entries) => self.tray_menu_loaded(key, entries),
             ServiceEvent::Network(event) => self.network_event(event),
             ServiceEvent::NetworkReady(handle) => self.network_ready(handle),
-            ServiceEvent::Hyprland(event) => self.hyprland(event),
+            ServiceEvent::Compositor(event) => self.compositor(event),
             ServiceEvent::Audio(state) => {
                 self.state.audio = state;
                 self.sync();
@@ -356,19 +356,26 @@ impl App {
         }
     }
 
-    fn hyprland(&mut self, event: hyprland::Event) {
+    fn compositor(&mut self, event: compositor::Event) {
         match event {
-            hyprland::Event::State(state) => {
+            compositor::Event::State(state) => {
+                self.state.workspace_occupied = state.active_occupied();
                 self.model.workspaces = state.workspaces.iter().map(|w| w.id).collect();
+                self.model.occupied = state
+                    .workspaces
+                    .iter()
+                    .filter(|w| w.occupied)
+                    .map(|w| w.id)
+                    .collect();
                 self.model.active_workspace = state.active_workspace.unwrap_or(1);
                 self.model.title = state.active_window.as_ref().map(|w| w.title.clone());
                 self.model.title_key = state
                     .active_window
                     .as_ref()
                     .map_or_else(|| "none".to_string(), |w| w.address.clone());
-                self.state.focused_monitor = state.focused_monitor;
+                self.state.focused_monitor = state.focused_output;
             }
-            hyprland::Event::Keyboard(keyboard) => {
+            compositor::Event::Keyboard(keyboard) => {
                 let changed =
                     self.state.keyboard_initialized && keyboard.name != self.state.keyboard.name;
                 self.state.keyboard = crate::state::KeyboardLayout {
@@ -381,10 +388,8 @@ impl App {
                     self.state.show_osd("keyboard");
                 }
             }
-            hyprland::Event::Raw { name, .. } => {
-                if name == "configreloaded" {
-                    self.state.hotkeys_paused = false;
-                }
+            compositor::Event::ConfigReloaded => {
+                self.state.hotkeys_paused = false;
             }
         }
         self.sync();
@@ -1203,8 +1208,8 @@ impl App {
                 self.tray_scroll(&key, delta);
                 Ok(())
             }
-            BarAction::Workspace(id) => hyprland::focus_workspace(id),
-            BarAction::KeyboardNext => hyprland::next_layout(),
+            BarAction::Workspace(id) => compositor::focus_workspace(id),
+            BarAction::KeyboardNext => compositor::next_layout(),
             BarAction::Volume(delta) => {
                 self.change_volume(if delta > 0 { 0.05 } else { -0.05 }, true);
                 Ok(())

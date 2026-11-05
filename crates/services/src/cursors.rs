@@ -277,7 +277,10 @@ pub fn write_state(state: &State) -> io::Result<()> {
         "applied": state.effective(),
     });
     atomic_write(&state_path(), &format!("{json:#}\n"))?;
-    atomic_write(&lua_path(), &lua_state(state))
+    if crate::compositor::is_hyprland() {
+        atomic_write(&lua_path(), &lua_state(state))?;
+    }
+    Ok(())
 }
 
 pub fn replace_setting(text: &str, key: &str, value: &str) -> String {
@@ -450,10 +453,12 @@ pub fn set_size(state: &State, size: u32) -> Result<State, String> {
 }
 
 fn activate(next: State) -> Result<State, String> {
-    run(Command::new("hyprctl")
-        .arg("setcursor")
-        .arg(next.effective())
-        .arg(next.size.to_string()))?;
+    if crate::compositor::is_hyprland() {
+        run(Command::new("hyprctl")
+            .arg("setcursor")
+            .arg(next.effective())
+            .arg(next.size.to_string()))?;
+    }
     if let Err(err) = update_gtk(next.effective(), next.size) {
         log::warn!("cursor gtk settings: {err}");
     }
@@ -480,6 +485,9 @@ pub fn animation_script(enabled: bool) -> String {
 }
 
 pub fn set_animation(state: &State, enabled: bool) -> Result<State, String> {
+    if !crate::compositor::is_hyprland() {
+        return Err("Cursor animation needs Hyprland".into());
+    }
     run(Command::new("hyprctl")
         .arg("eval")
         .arg(animation_script(enabled)))?;

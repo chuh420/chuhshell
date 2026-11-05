@@ -185,7 +185,7 @@ impl Workspaces {
 
     fn width_for(count: usize) -> f32 {
         let count = count as f32;
-        count * SLOT + (count - 1.0) * GAP
+        (count * SLOT + (count - 1.0) * GAP).max(0.0)
     }
 
     fn active_index(&self) -> Option<usize> {
@@ -890,23 +890,14 @@ impl Bar {
 
     pub fn apply(&mut self, engine: &mut TextEngine, model: &BarModel, now: Millis, initial: bool) {
         self.panel = model.panel.clone();
-        let fixed = config::current().bar.workspaces as i32;
-        let mut computed: Vec<i32> = (1..=fixed).collect();
-        let mut extra: Vec<i32> = model
-            .workspaces
-            .iter()
-            .copied()
-            .filter(|id| *id > fixed)
-            .collect();
-        extra.sort_unstable();
-        computed.extend(extra);
+        let computed = workspace_ids(services::compositor::kind(), model);
         self.workspaces.apply(
             &mut self.tree,
             &mut self.input,
             engine,
             computed,
             model.active_workspace,
-            model.workspaces.clone(),
+            model.occupied.clone(),
             now,
         );
         self.title.set(&title_text(model), &model.title_key);
@@ -1410,6 +1401,32 @@ fn title_text(model: &BarModel) -> String {
         .clone()
         .filter(|title| !title.is_empty())
         .unwrap_or_else(|| "still / material".into())
+}
+
+fn workspace_ids(kind: Option<services::compositor::Kind>, model: &BarModel) -> Vec<i32> {
+    match kind {
+        Some(kind) if kind.fixed_workspaces() => {
+            let fixed = config::current().bar.workspaces as i32;
+            let mut computed: Vec<i32> = (1..=fixed).collect();
+            let mut extra: Vec<i32> = model
+                .workspaces
+                .iter()
+                .copied()
+                .filter(|id| *id > fixed)
+                .collect();
+            extra.sort_unstable();
+            extra.dedup();
+            computed.extend(extra);
+            computed
+        }
+        Some(_) => {
+            let mut ids = model.workspaces.clone();
+            ids.sort_unstable();
+            ids.dedup();
+            ids
+        }
+        None => Vec::new(),
+    }
 }
 
 #[cfg(test)]

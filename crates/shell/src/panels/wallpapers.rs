@@ -836,9 +836,10 @@ impl WallpapersPanel {
         }
         let fw = self.footer.implicit_width();
         place_label(tree, &mut self.footer, 0.0, slots[next], fw);
+        let animation_shown = cursors && services::compositor::is_hyprland();
+        tree.set_visible(self.animation_label.node, animation_shown);
+        tree.set_visible(self.animation.root, animation_shown);
         for node in [
-            self.animation_label.node,
-            self.animation.root,
             self.colors_label.node,
             self.colors.root,
             self.size_label.node,
@@ -868,11 +869,14 @@ impl WallpapersPanel {
         }
         if cursors {
             let slot = slots[next];
-            let mut x = width - self.animation.implicit_width().ceil();
-            place_chip(tree, &mut self.animation, x, slot);
-            let lw = self.animation_label.implicit_width();
-            x -= 8.0 + lw;
-            place_label(tree, &mut self.animation_label, x, slot, lw);
+            let mut x = width + 18.0;
+            if animation_shown {
+                x = width - self.animation.implicit_width().ceil();
+                place_chip(tree, &mut self.animation, x, slot);
+                let lw = self.animation_label.implicit_width();
+                x -= 8.0 + lw;
+                place_label(tree, &mut self.animation_label, x, slot, lw);
+            }
             x -= 18.0 + self.colors.implicit_width().ceil();
             place_chip(tree, &mut self.colors, x, slot);
             let cw = self.colors_label.implicit_width();
@@ -1150,7 +1154,10 @@ impl WallpapersPanel {
                     } else if area == self.mode_chip.area {
                         self.toggle_mode(tree, input, engine);
                         actions.push(PanelAction::CursorRefresh);
-                    } else if area == self.animation.area && self.mode == Mode::Cursors {
+                    } else if area == self.animation.area
+                        && self.mode == Mode::Cursors
+                        && services::compositor::is_hyprland()
+                    {
                         actions.push(PanelAction::CursorAnimation);
                     } else if area == self.colors.area
                         && self.mode == Mode::Cursors

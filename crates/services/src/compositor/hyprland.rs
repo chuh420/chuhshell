@@ -8,44 +8,16 @@ use std::{
 
 use serde::Deserialize;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Workspace {
-    pub id: i32,
-    pub name: String,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Window {
-    pub address: String,
-    pub title: String,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Keyboard {
-    pub device: String,
-    pub name: String,
-    pub label: String,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct State {
-    pub workspaces: Vec<Workspace>,
-    pub focused_monitor: Option<String>,
-    pub active_workspace: Option<i32>,
-    pub active_window: Option<Window>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Event {
-    State(State),
-    Keyboard(Keyboard),
-    Raw { name: String, data: String },
-}
+use super::{Callback, Event, Keyboard, State, Window, Workspace, layout_label};
 
 #[derive(Deserialize)]
 struct RawWorkspace {
     id: i32,
     name: String,
+    #[serde(default)]
+    monitor: String,
+    #[serde(default)]
+    windows: u32,
 }
 
 #[derive(Deserialize)]
@@ -84,7 +56,6 @@ struct RawDevices {
 }
 
 const TIMEOUT: Duration = Duration::from_secs(3);
-const RETRY: Duration = Duration::from_secs(2);
 
 fn socket_dir() -> io::Result<PathBuf> {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
@@ -138,22 +109,22 @@ pub fn snapshot(previous: Option<&Window>) -> io::Result<State> {
             title: window.title,
         })
     };
+    let active_workspace = focused.map(|monitor| monitor.active_workspace.id);
     Ok(State {
         workspaces: workspaces
             .into_iter()
             .map(|workspace| Workspace {
+                active: Some(workspace.id) == active_workspace,
+                occupied: workspace.windows > 0,
                 id: workspace.id,
                 name: workspace.name,
+                output: workspace.monitor,
             })
             .collect(),
-        focused_monitor: focused.map(|monitor| monitor.name.clone()),
-        active_workspace: focused.map(|monitor| monitor.active_workspace.id),
+        focused_output: focused.map(|monitor| monitor.name.clone()),
+        active_workspace,
         active_window,
     })
-}
-
-pub fn layout_label(name: &str) -> String {
-    config::current().keyboard.label(name)
 }
 
 pub fn keyboard() -> io::Result<Keyboard> {
@@ -231,7 +202,7 @@ pub fn parse_event(line: &str) -> Option<(&str, &str)> {
     line.split_once(">>")
 }
 
-fn listen(callback: &(dyn Fn(Event) + Send)) -> io::Result<()> {
+pub(super) fn listen(callback: &Callback) -> io::Result<()> {
     let stream = UnixStream::connect(socket_dir()?.join(".socket2.sock"))?;
     let mut last = snapshot(None)?;
     callback(Event::State(last.clone()));
@@ -248,14 +219,11 @@ fn listen(callback: &(dyn Fn(Event) + Send)) -> io::Result<()> {
                 "event socket closed",
             ));
         }
-        if let Some((name, data)) = parse_event(line.trim_end_matches('\n')) {
+        if let Some((name, _)) = parse_event(line.trim_end_matches('\n')) {
             state_dirty |= affects_state(name);
             keyboard_dirty |= affects_keyboard(name);
-            if matches!(name, "activelayout" | "configreloaded") {
-                callback(Event::Raw {
-                    name: name.to_string(),
-                    data: data.to_string(),
-                });
+            if name == "configreloaded" {
+                callback(Event::ConfigReloaded);
             }
         }
         if !reader.buffer().is_empty() {
@@ -282,19 +250,6 @@ fn listen(callback: &(dyn Fn(Event) + Send)) -> io::Result<()> {
             }
         }
     }
-}
-
-pub fn spawn(callback: impl Fn(Event) + Send + 'static) -> io::Result<thread::JoinHandle<()>> {
-    thread::Builder::new()
-        .name("hyprland".into())
-        .spawn(move || {
-            loop {
-                if let Err(err) = listen(&callback) {
-                    log::warn!("hyprland: {err}");
-                }
-                thread::sleep(RETRY);
-            }
-        })
 }
 
 #[cfg(test)]

@@ -303,8 +303,21 @@ impl App {
     pub fn cursor_applied(&mut self, result: Result<State, String>) {
         match result {
             Ok(state) => {
+                let applied_changed = state.effective() != self.cursors.state.effective()
+                    || state.size != self.cursors.state.size;
                 self.cursors.state = state;
                 self.update_cursor_data(|data| data.busy = false);
+                if applied_changed
+                    && !services::compositor::is_hyprland()
+                    && let Some(handle) = self.notes.handle.clone()
+                {
+                    handle.post(
+                        crate::APP_NAME,
+                        "Cursor theme saved",
+                        "Restart the session to apply it to every window.",
+                        services::notifications::Urgency::Normal,
+                    );
+                }
             }
             Err(error) => {
                 self.update_cursor_data(|data| {
