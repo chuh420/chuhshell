@@ -44,7 +44,7 @@ chuhshell runs my desktop and assumes my setup. expect to edit code if yours dif
 
 - the compositor must be Hyprland. the shell talks to its IPC sockets for workspaces, windows and layouts.
 - the colors, fonts and sizes are fixed in code. there is no config file.
-- some actions call scripts from [chuh's quickshell](https://github.com/chuh420/chuhs-quickshell): `~/.config/rice/wallpapers.py` applies wallpapers, `~/.config/rice/theme-reload` reloads colors, and `~/.local/bin/chuhctl` handles lock, suspend and screenshots.
+- some actions call external scripts. `~/.config/rice/wallpapers.py` applies wallpapers and comes from [chuh's quickshell](https://github.com/chuh420/chuhs-quickshell). `~/.config/rice/theme-reload` reloads app colors and `~/.local/bin/chuhctl` handles lock, suspend and screenshots; both are local scripts outside this repo, and chuh's quickshell has an older version of `chuhctl` named `chuhshell`.
 - state and caches live under `~/.local/state/rice`, `~/.local/state/quickshell/material` and `~/.cache/quickshell/material`, shared with the QML version.
 
 ## requirements
