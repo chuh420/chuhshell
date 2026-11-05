@@ -4,7 +4,11 @@ a Wayland desktop shell for Hyprland, written in Rust. it draws the bar, panels,
 
 ![control center](docs/screenshots/control.webp)
 
-chuhshell started as a port of [chuh's quickshell](https://github.com/chuh420/chuhs-quickshell), a QML config for Quickshell. it keeps the same layout, animations, IPC commands and state files, so you can switch between the two. on one 1920x1080 output it idles at about 29 MB RSS; the QML version with its Python helpers takes about 285 MB.
+on one 1920x1080 output it idles at about 29 MB RSS and 0.2% CPU.
+
+## status
+
+chuhshell is raw and in beta. I built it for my own desktop, so you will hit hardcoded paths, missing settings and bugs. updates will keep coming (if anyone needs this at all).
 
 ## features
 
@@ -44,8 +48,8 @@ chuhshell runs my desktop and assumes my setup. expect to edit code if yours dif
 
 - the compositor must be Hyprland. the shell talks to its IPC sockets for workspaces, windows and layouts.
 - the colors, fonts and sizes are fixed in code. there is no config file.
-- some actions call scripts at fixed paths. this repo ships two of them in `dist/`: `chuhctl` (lock, suspend, screenshots and the bind entry point) and `theme-reload` (pushes new colors to Hyprland, kitty, btop, cava and tmux). `~/.config/rice/wallpapers.py` applies wallpapers and comes from [chuh's quickshell](https://github.com/chuh420/chuhs-quickshell).
-- state and caches live under `~/.local/state/rice`, `~/.local/state/quickshell/material` and `~/.cache/quickshell/material`, shared with the QML version.
+- some actions call scripts at fixed paths. this repo ships two of them in `dist/`: `chuhctl` (lock, suspend, screenshots and the bind entry point) and `theme-reload` (pushes new colors to Hyprland, kitty, btop, cava and tmux). the wallpaper picker calls `~/.config/rice/wallpapers.py`, which is not in this repo yet.
+- state and caches live under `~/.local/state/rice`, `~/.local/state/quickshell/material` and `~/.cache/quickshell/material`. the folder names come from an older version of the shell.
 
 ## requirements
 
@@ -76,7 +80,7 @@ systemctl --user daemon-reload
 systemctl --user start chuhshell.service
 ```
 
-the unit starts after `graphical-session.target` and stops with it. it conflicts with `swaync` and the Quickshell units, because they claim the same D-Bus names. start it from your Hyprland config or session script. logs go to `journalctl --user -u chuhshell.service`; set `CHUHSHELL_LOG=debug` for more.
+the unit starts after `graphical-session.target` and stops with it. it conflicts with `swaync`, because both claim the notification D-Bus name. start it from your Hyprland config or session script. logs go to `journalctl --user -u chuhshell.service`; set `CHUHSHELL_LOG=debug` for more.
 
 turn off compositor animations for the `material-*` layer namespaces. the shell animates its own surfaces.
 
