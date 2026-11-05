@@ -401,13 +401,12 @@ pub fn scan() -> Vec<AppEntry> {
             }
         }
     }
-    sort(&mut apps);
+    sort(&mut apps, &config::current().launcher.pinned);
     apps
 }
 
-fn sort(apps: &mut [AppEntry]) {
-    let pinned = config::current().launcher.pinned.clone();
-    apps.sort_by_cached_key(|app| (priority(app, &pinned), casefold(&app.name)));
+fn sort(apps: &mut [AppEntry], pinned: &[String]) {
+    apps.sort_by_cached_key(|app| (priority(app, pinned), casefold(&app.name)));
 }
 
 pub fn search(apps: &[AppEntry], query: &str) -> Vec<AppEntry> {
@@ -739,9 +738,13 @@ mod tests {
             entry("audacity.desktop", "Audacity", "", ""),
             entry("kitty.desktop", "kitty", "", ""),
         ];
-        sort(&mut apps);
+        let pinned = ["kitty", "zen", "dolphin", "pavucontrol"].map(String::from);
+        sort(&mut apps, &pinned);
         let names: Vec<_> = apps.iter().map(|app| app.name.as_str()).collect();
         assert_eq!(names, ["kitty", "Zen Browser", "Audacity", "Blender"]);
+        sort(&mut apps, &[]);
+        let names: Vec<_> = apps.iter().map(|app| app.name.as_str()).collect();
+        assert_eq!(names, ["Audacity", "Blender", "kitty", "Zen Browser"]);
     }
 
     #[test]

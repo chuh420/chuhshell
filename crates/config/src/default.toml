@@ -16,7 +16,8 @@ icon_fallback = "JetBrainsMonoNL Nerd Font"
 workspaces = 5
 
 [launcher]
-pinned = ["kitty", "zen", "dolphin", "pavucontrol"]
+pinned = []
+# pinned = ["kitty", "firefox"]
 
 [keyboard.labels]
 English = "EN"

@@ -2,7 +2,7 @@
 Description=chuhshell desktop shell
 PartOf=graphical-session.target
 After=graphical-session.target
-Conflicts=rice-quickshell.service swaync.service rice-osd.service
+Conflicts=swaync.service
 StartLimitIntervalSec=30
 StartLimitBurst=3
 

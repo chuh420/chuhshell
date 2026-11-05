@@ -112,7 +112,7 @@ pub fn state_path() -> PathBuf {
 }
 
 pub fn lua_path() -> PathBuf {
-    home().join(".local/state/rice/cursor.lua")
+    config::paths().state_file("cursor.lua")
 }
 
 pub fn icons_dir() -> PathBuf {

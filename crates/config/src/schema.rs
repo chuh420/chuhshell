@@ -67,20 +67,10 @@ impl Default for Bar {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Launcher {
     pub pinned: Vec<String>,
-}
-
-impl Default for Launcher {
-    fn default() -> Self {
-        Self {
-            pinned: ["kitty", "zen", "dolphin", "pavucontrol"]
-                .map(String::from)
-                .to_vec(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
