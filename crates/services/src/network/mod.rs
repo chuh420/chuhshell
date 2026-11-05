@@ -11,6 +11,8 @@ use zbus::{
     message::Type,
 };
 
+mod nm;
+
 use crate::oneshot;
 
 const IWD: &str = "net.connman.iwd";
@@ -44,6 +46,7 @@ pub struct WifiState {
     pub connected: bool,
     pub network: String,
     pub airplane: bool,
+    pub backend: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -122,8 +125,28 @@ enum Answer {
     Accept(String),
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Backend {
+    #[default]
+    None,
+    Iwd,
+    NetworkManager,
+}
+
+pub fn choose_backend(networkmanager: bool, iwd: bool) -> Backend {
+    if networkmanager {
+        Backend::NetworkManager
+    } else if iwd {
+        Backend::Iwd
+    } else {
+        Backend::None
+    }
+}
+
 #[derive(Default)]
 struct Inner {
+    backend: Backend,
+    nm_agent: bool,
     busy: bool,
     message: String,
     last_wifi: Option<WifiState>,
@@ -510,7 +533,7 @@ impl Handle {
             .map(|(path, interfaces)| (path.to_string(), interfaces))
     }
 
-    async fn read_wifi(&self) -> Result<WifiState, String> {
+    async fn iwd_read_wifi(&self) -> Result<WifiState, String> {
         let managed = self.managed(IWD).await.map_err(|err| error_text(&err))?;
         let (path, interfaces) =
             Self::station(&managed).ok_or_else(|| "No Wi-Fi adapter found".to_string())?;
@@ -632,7 +655,64 @@ impl Handle {
             connected,
             network,
             airplane: airplane_mode(),
+            backend: "iwd".into(),
         })
+    }
+
+    async fn has_owner(&self, name: &str) -> bool {
+        match self
+            .call(
+                "org.freedesktop.DBus",
+                "/org/freedesktop/DBus",
+                "org.freedesktop.DBus",
+                "NameHasOwner",
+                &(name,),
+            )
+            .await
+        {
+            Ok(reply) => reply.body().deserialize::<bool>().unwrap_or(false),
+            Err(_) => false,
+        }
+    }
+
+    async fn detect_backend(&self) -> Backend {
+        let backend = choose_backend(self.has_owner(nm::NM).await, self.has_owner(IWD).await);
+        let register = match self.inner.lock() {
+            Ok(mut inner) => {
+                if inner.backend != backend {
+                    log::info!("wifi backend: {backend:?}");
+                }
+                inner.backend = backend;
+                let register = backend == Backend::NetworkManager && !inner.nm_agent;
+                if register {
+                    inner.nm_agent = true;
+                }
+                register
+            }
+            Err(_) => false,
+        };
+        if register && let Err(err) = self.nm_register_agent().await {
+            log::warn!("networkmanager agent: {err}");
+            if let Ok(mut inner) = self.inner.lock() {
+                inner.nm_agent = false;
+            }
+        }
+        backend
+    }
+
+    fn backend(&self) -> Backend {
+        self.inner
+            .lock()
+            .map(|inner| inner.backend)
+            .unwrap_or_default()
+    }
+
+    async fn read_wifi(&self) -> Result<WifiState, String> {
+        match self.detect_backend().await {
+            Backend::Iwd => self.iwd_read_wifi().await,
+            Backend::NetworkManager => self.nm_read_wifi().await,
+            Backend::None => Err(String::new()),
+        }
     }
 
     pub async fn refresh_wifi(&self) {
@@ -656,6 +736,11 @@ impl Handle {
                     connected: false,
                     network: "Offline".into(),
                     airplane,
+                    backend: match self.backend() {
+                        Backend::None => String::new(),
+                        Backend::Iwd => "iwd".into(),
+                        Backend::NetworkManager => "networkmanager".into(),
+                    },
                 }
             }
         };
@@ -698,7 +783,9 @@ impl Handle {
             connected: true,
             ..WifiDetails::default()
         };
-        if let Ok(managed) = self.managed(IWD).await
+        if self.backend() == Backend::NetworkManager {
+            self.nm_diagnostics(&mut details).await;
+        } else if let Ok(managed) = self.managed(IWD).await
             && let Some((path, _)) = Self::station(&managed)
             && let Ok(reply) = self
                 .call(
@@ -774,6 +861,11 @@ impl Handle {
     }
 
     async fn station_path(&self) -> Result<String, String> {
+        match self.detect_backend().await {
+            Backend::NetworkManager => return self.nm_device().await.map(|(path, _)| path),
+            Backend::None => return Err("No Wi-Fi service found".into()),
+            Backend::Iwd => {}
+        }
         let managed = self.managed(IWD).await.map_err(|err| error_text(&err))?;
         Self::station(&managed)
             .map(|(path, _)| path)
@@ -806,6 +898,9 @@ impl Handle {
 
     pub async fn wifi_power(&self, enabled: bool) {
         self.wifi_command(async |handle, path| {
+            if handle.backend() == Backend::NetworkManager {
+                return handle.nm_power(enabled).await;
+            }
             handle
                 .set_property(
                     IWD,
@@ -823,6 +918,9 @@ impl Handle {
     pub async fn scan(&self) {
         self.wifi_command(async |handle, path| {
             handle.refresh_wifi().await;
+            if handle.backend() == Backend::NetworkManager {
+                return handle.nm_scan(&path).await;
+            }
             handle
                 .call(IWD, &path, "net.connman.iwd.Station", "Scan", &())
                 .await
@@ -832,9 +930,12 @@ impl Handle {
     }
 
     pub async fn connect(&self, network: String) {
-        self.wifi_command(async |handle, _| {
+        self.wifi_command(async |handle, path| {
             handle.set_busy(true, None);
             handle.refresh_wifi().await;
+            if handle.backend() == Backend::NetworkManager {
+                return handle.nm_connect(&path, &network).await;
+            }
             handle
                 .call(IWD, &network, "net.connman.iwd.Network", "Connect", &())
                 .await
@@ -845,6 +946,9 @@ impl Handle {
 
     pub async fn disconnect(&self) {
         self.wifi_command(async |handle, path| {
+            if handle.backend() == Backend::NetworkManager {
+                return handle.nm_disconnect(&path).await;
+            }
             handle
                 .call(IWD, &path, "net.connman.iwd.Station", "Disconnect", &())
                 .await
@@ -855,6 +959,9 @@ impl Handle {
 
     pub async fn forget(&self, known: String) {
         self.wifi_command(async |handle, _| {
+            if handle.backend() == Backend::NetworkManager {
+                return handle.nm_forget(&known).await;
+            }
             handle
                 .call(IWD, &known, "net.connman.iwd.KnownNetwork", "Forget", &())
                 .await
@@ -865,6 +972,9 @@ impl Handle {
 
     pub async fn autoconnect(&self, known: String, enabled: bool) {
         self.wifi_command(async |handle, _| {
+            if handle.backend() == Backend::NetworkManager {
+                return handle.nm_autoconnect(&known, enabled).await;
+            }
             handle
                 .set_property(
                     IWD,
@@ -890,6 +1000,9 @@ impl Handle {
         self.wifi_command(async |handle, path| {
             handle.set_busy(true, None);
             handle.refresh_wifi().await;
+            if handle.backend() == Backend::NetworkManager {
+                return handle.nm_connect_hidden(&path, &name).await;
+            }
             handle
                 .call(
                     IWD,
@@ -1305,6 +1418,12 @@ impl Handle {
             (IWD, "PropertiesChanged"),
             (IWD, "InterfacesAdded"),
             (IWD, "InterfacesRemoved"),
+            (nm::NM, "PropertiesChanged"),
+            (nm::NM, "StateChanged"),
+            (nm::NM, "NewConnection"),
+            (nm::NM, "ConnectionRemoved"),
+            (nm::NM, "AccessPointAdded"),
+            (nm::NM, "AccessPointRemoved"),
             (BLUEZ, "PropertiesChanged"),
             (BLUEZ, "InterfacesAdded"),
             (BLUEZ, "InterfacesRemoved"),
@@ -1329,6 +1448,16 @@ impl Handle {
             IWD,
             MessageStream::for_match_rule(owner_rule, &self.connection, None).await?,
         ));
+        let nm_owner_rule = MatchRule::builder()
+            .msg_type(Type::Signal)
+            .sender("org.freedesktop.DBus")
+            .member("NameOwnerChanged")
+            .arg(0, nm::NM)
+            .build()?;
+        streams.push((
+            nm::NM,
+            MessageStream::for_match_rule(nm_owner_rule, &self.connection, None).await?,
+        ));
         let tagged = streams
             .into_iter()
             .map(|(service, stream)| StreamExt::map(stream, move |message| (service, message)));
@@ -1337,7 +1466,18 @@ impl Handle {
             if message.is_err() {
                 continue;
             }
-            self.emit(if service == IWD {
+            if service == nm::NM
+                && message.as_ref().is_ok_and(|message| {
+                    message
+                        .header()
+                        .member()
+                        .is_some_and(|m| m == "NameOwnerChanged")
+                })
+                && let Ok(mut inner) = self.inner.lock()
+            {
+                inner.nm_agent = false;
+            }
+            self.emit(if service == IWD || service == nm::NM {
                 Event::WifiChanged
             } else {
                 Event::BluetoothChanged
@@ -1372,6 +1512,15 @@ pub async fn start(callback: impl Fn(Event) + Send + Sync + 'static) -> zbus::Re
             },
         )
         .await?;
+    connection
+        .object_server()
+        .at(
+            nm::AGENT_PATH,
+            nm::Agent {
+                handle: handle.clone(),
+            },
+        )
+        .await?;
     let path = zbus::ObjectPath::try_from(BLUETOOTH_AGENT)?;
     if handle
         .call(
@@ -1395,15 +1544,16 @@ pub async fn start(callback: impl Fn(Event) + Send + Sync + 'static) -> zbus::Re
             .await;
     }
     let wifi_path = zbus::ObjectPath::try_from(WIFI_AGENT)?;
-    if let Err(error) = handle
-        .call(
-            IWD,
-            "/net/connman/iwd",
-            "net.connman.iwd.AgentManager",
-            "RegisterAgent",
-            &(wifi_path,),
-        )
-        .await
+    if handle.detect_backend().await == Backend::Iwd
+        && let Err(error) = handle
+            .call(
+                IWD,
+                "/net/connman/iwd",
+                "net.connman.iwd.AgentManager",
+                "RegisterAgent",
+                &(wifi_path,),
+            )
+            .await
         && let Ok(mut inner) = handle.inner.lock()
     {
         inner.message = error_text(&error);
@@ -1414,6 +1564,14 @@ pub async fn start(callback: impl Fn(Event) + Send + Sync + 'static) -> zbus::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backend_prefers_networkmanager() {
+        assert_eq!(choose_backend(true, true), Backend::NetworkManager);
+        assert_eq!(choose_backend(false, true), Backend::Iwd);
+        assert_eq!(choose_backend(true, false), Backend::NetworkManager);
+        assert_eq!(choose_backend(false, false), Backend::None);
+    }
 
     #[test]
     fn failures_read_like_wifi_py() {
