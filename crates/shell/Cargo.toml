@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "idk-yet"
+name = "chuhshell"
 path = "src/main.rs"
 
 [dependencies]

@@ -87,7 +87,7 @@ fn mode_path() -> PathBuf {
 }
 
 fn palette_path(folder: &str) -> PathBuf {
-    root().join(folder).join("idk-yet.json")
+    root().join(folder).join("chuhshell.json")
 }
 
 fn parse_settings(text: &str) -> Settings {

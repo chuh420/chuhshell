@@ -407,7 +407,7 @@ impl App {
 
     fn battery_alert(&self, alert: BatteryAlert) {
         let result = match alert {
-            BatteryAlert::Suspend => Command::new(chuhshell()).arg("suspend").spawn(),
+            BatteryAlert::Suspend => Command::new(chuhctl()).arg("suspend").spawn(),
             BatteryAlert::Notify { critical, level } => Command::new("notify-send")
                 .args([
                     "-a",
@@ -1515,15 +1515,15 @@ impl App {
 }
 
 pub(crate) fn run(action: &str) {
-    match Command::new(chuhshell()).arg(action).spawn() {
+    match Command::new(chuhctl()).arg(action).spawn() {
         Ok(child) => reap(child),
         Err(err) => log::warn!("{action}: {err}"),
     }
 }
 
-fn chuhshell() -> String {
+fn chuhctl() -> String {
     let home = std::env::var("HOME").unwrap_or_default();
-    format!("{home}/.local/bin/chuhshell")
+    format!("{home}/.local/bin/chuhctl")
 }
 
 pub(crate) fn reap(mut child: std::process::Child) {

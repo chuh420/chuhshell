@@ -35,7 +35,7 @@ use platform::Platform;
 
 use crate::app::{App, ServiceEvent};
 
-pub const APP_NAME: &str = "idk-yet";
+pub const APP_NAME: &str = "chuhshell";
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     memory::configure();

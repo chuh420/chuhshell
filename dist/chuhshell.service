@@ -1,5 +1,5 @@
 [Unit]
-Description=idk-yet desktop shell
+Description=chuhshell desktop shell
 PartOf=graphical-session.target
 After=graphical-session.target
 Conflicts=rice-quickshell.service swaync.service rice-osd.service
@@ -8,7 +8,7 @@ StartLimitBurst=3
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/idk-yet
+ExecStart=%h/.local/bin/chuhshell
 Restart=on-failure
 RestartMode=direct
 RestartSec=2

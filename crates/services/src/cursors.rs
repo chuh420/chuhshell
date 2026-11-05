@@ -13,7 +13,7 @@ use crate::cursor_colors::{self, Recolor};
 pub const DEFAULT_THEME: &str = "Capitaine Cursors (Gruvbox)";
 pub const DEFAULT_SIZE: u32 = 24;
 pub const SIZES: [u32; 5] = [24, 32, 40, 48, 64];
-pub const SLOTS: [&str; 2] = [".idk-yet-colors-a", ".idk-yet-colors-b"];
+pub const SLOTS: [&str; 2] = [".chuhshell-colors-a", ".chuhshell-colors-b"];
 pub const PREVIEW_SHAPES: [&[&str]; 5] = [
     &["default", "left_ptr"],
     &["pointer", "hand2"],
@@ -640,13 +640,13 @@ mod tests {
             "return { theme = \"A \\\"b\\\"\", size = 24, animation = true }\n"
         );
         let colored = parse_state(
-            r#"{"theme": "a", "colors": {"a": true, "b": false}, "applied": ".idk-yet-colors-b"}"#,
+            r#"{"theme": "a", "colors": {"a": true, "b": false}, "applied": ".chuhshell-colors-b"}"#,
         )
         .unwrap_or_default();
-        assert_eq!(colored.effective(), ".idk-yet-colors-b");
+        assert_eq!(colored.effective(), ".chuhshell-colors-b");
         assert!(colored.colors_wanted());
         assert_eq!(colored.colors.get("b"), Some(&false));
-        assert!(lua_state(&colored).contains("theme = \".idk-yet-colors-b\""));
+        assert!(lua_state(&colored).contains("theme = \".chuhshell-colors-b\""));
     }
 
     #[test]
