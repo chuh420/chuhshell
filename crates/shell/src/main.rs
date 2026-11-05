@@ -3,6 +3,7 @@ mod appsctl;
 mod bar;
 mod card;
 mod clipctl;
+mod configctl;
 mod cursorctl;
 mod history;
 mod icons;
@@ -44,6 +45,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let listener = ipc::listen()?;
+    let config_error = configctl::startup();
     let mut event_loop: EventLoop<'static, App> = EventLoop::try_new()?;
     let handle = event_loop.handle();
     let signals = Signals::new(&[Signal::SIGINT, Signal::SIGTERM])?;
@@ -62,6 +64,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     let mut app = App::new(platform, handle.clone(), scheduler, sender);
     app.listen_ipc(listener);
+    app.start_config(config_error);
     app.start_services();
     while app.running {
         let timeout = app.timeout();
@@ -77,6 +80,9 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("msg") {
         std::process::exit(ipc::client(&args[1..]));
+    }
+    if args.first().map(String::as_str) == Some("config") {
+        std::process::exit(configctl::cli(&args[1..]));
     }
     if let Err(err) = run() {
         log::error!("{err}");

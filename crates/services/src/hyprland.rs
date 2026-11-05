@@ -153,18 +153,7 @@ pub fn snapshot(previous: Option<&Window>) -> io::Result<State> {
 }
 
 pub fn layout_label(name: &str) -> String {
-    const LABELS: [(&str, &str); 5] = [
-        ("English", "EN"),
-        ("Russian", "RU"),
-        ("Kazakh", "KZ"),
-        ("German", "DE"),
-        ("French", "FR"),
-    ];
-    LABELS
-        .iter()
-        .find(|(language, _)| name.contains(language))
-        .map(|(_, short)| short.to_string())
-        .unwrap_or_else(|| name.chars().take(2).collect::<String>().to_uppercase())
+    config::current().keyboard.label(name)
 }
 
 pub fn keyboard() -> io::Result<Keyboard> {

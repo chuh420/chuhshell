@@ -17,7 +17,7 @@ use crate::{
         power::PowerPanel, system::SystemPanel, tray::TrayPanel, wallpapers::WallpapersPanel,
         wifi::WifiPanel,
     },
-    theme::{self, NORMAL, SLOW, UI_SCALE},
+    theme::{self, NORMAL, SLOW},
 };
 
 pub const ANCHORED: [&str; 8] = [
@@ -233,7 +233,7 @@ impl Overlay {
                 border_width: 1.0,
             },
         );
-        card_node.scale = UI_SCALE;
+        card_node.scale = crate::theme::scale();
         card_node.origin = Some((0.0, 0.0));
         let card = tree.add(offset, card_node);
         let mut card_mouse = MouseArea::new(card);
@@ -736,8 +736,8 @@ impl Overlay {
         Some((
             x as f32,
             y as f32,
-            (vw / UI_SCALE as f64) as f32,
-            (vh / UI_SCALE as f64) as f32,
+            (vw / crate::theme::scale() as f64) as f32,
+            (vh / crate::theme::scale() as f64) as f32,
         ))
     }
 
@@ -786,7 +786,7 @@ impl Overlay {
         let anchored = ANCHORED.contains(&kind.as_str()) && self.anchor > 0.0;
         let centered = CENTERED.contains(&kind.as_str());
         let origin_x = if anchored {
-            ((self.anchor as f32 - x) / UI_SCALE).clamp(0.0, w.max(0.0))
+            ((self.anchor as f32 - x) / crate::theme::scale()).clamp(0.0, w.max(0.0))
         } else if centered {
             w / 2.0
         } else {
@@ -839,7 +839,7 @@ impl Overlay {
             32.0
         } else {
             28.0
-        } / UI_SCALE;
+        } / crate::theme::scale();
         let cw = w - margin * 2.0;
         let ch = h - margin * 2.0;
         tree.set_pos(self.content, margin, margin);
@@ -877,15 +877,15 @@ impl Overlay {
         let current = (
             self.x.value(),
             self.y.value(),
-            self.width.value() * UI_SCALE,
-            self.height.value() * UI_SCALE,
+            self.width.value() * crate::theme::scale(),
+            self.height.value() * crate::theme::scale(),
         );
         let from = if self.x.is_running() || self.width.is_running() {
             (
                 current.0.min(tx),
                 current.1.min(ty),
-                (current.0 + current.2).max(tx + tw * UI_SCALE),
-                (current.1 + current.3).max(ty + th * UI_SCALE),
+                (current.0 + current.2).max(tx + tw * crate::theme::scale()),
+                (current.1 + current.3).max(ty + th * crate::theme::scale()),
             )
         } else {
             (

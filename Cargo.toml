@@ -15,6 +15,7 @@ publish = false
 platform = { path = "crates/platform" }
 ui = { path = "crates/ui" }
 services = { path = "crates/services" }
+config = { path = "crates/config" }
 smithay-client-toolkit = { version = "0.21.1", default-features = false, features = ["calloop", "xkbcommon"] }
 wayland-client = "0.31.15"
 wayland-protocols = { version = "0.32.13", features = ["client", "staging", "unstable"] }
@@ -27,6 +28,7 @@ resvg = { version = "0.49.0", default-features = false }
 jiff = "0.2.38"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+toml = { version = "1.1.8", default-features = false, features = ["parse", "serde", "std", "display"] }
 pipewire = "0.10.1"
 zbus = { version = "6.2.0", default-features = false, features = ["default-rt", "proxy", "service"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }

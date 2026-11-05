@@ -9,11 +9,11 @@ use ui::{
 };
 
 use super::{PanelAction, PanelData};
-use crate::theme::{self, FONT, ICONS};
+use crate::theme::{self};
 
 fn chip_style() -> ChipStyle {
     ChipStyle {
-        family: ICONS,
+        family: crate::theme::icons(),
         hover: theme::elevated(),
     }
 }
@@ -98,7 +98,7 @@ impl TrayPanel {
             tree,
             engine,
             root,
-            TextSpec::plain("", FONT, 14.0, theme::text()),
+            TextSpec::plain("", crate::theme::font(), 14.0, theme::text()),
         );
         let mut list_node = Node::new(0.0, 0.0, 0.0, 0.0);
         list_node.clip = true;
@@ -107,7 +107,12 @@ impl TrayPanel {
             tree,
             engine,
             list,
-            TextSpec::plain("no menu entries", FONT, 12.0, theme::muted()),
+            TextSpec::plain(
+                "no menu entries",
+                crate::theme::font(),
+                12.0,
+                theme::muted(),
+            ),
         );
         let mut panel = Self {
             root,
@@ -259,13 +264,13 @@ impl TrayPanel {
                 tree,
                 engine,
                 root,
-                TextSpec::plain(&data.label, FONT, 12.0, color),
+                TextSpec::plain(&data.label, crate::theme::font(), 12.0, color),
             );
             let right = Label::new(
                 tree,
                 engine,
                 root,
-                TextSpec::plain(&data.right, FONT, 12.0, theme::green()),
+                TextSpec::plain(&data.right, crate::theme::font(), 12.0, theme::green()),
             );
             let area = input.add(MouseArea::new(root));
             self.rows.push(Row {

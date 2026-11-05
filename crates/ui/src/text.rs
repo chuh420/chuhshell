@@ -124,11 +124,11 @@ fn font_files(family: &str) -> Vec<String> {
 }
 
 impl TextEngine {
-    pub fn new(families: &[&str]) -> Self {
+    pub fn new<S: AsRef<str>>(families: &[S]) -> Self {
         let mut db = fontdb::Database::new();
         let mut seen = HashSet::new();
         for family in families {
-            for file in font_files(family) {
+            for file in font_files(family.as_ref()) {
                 if seen.insert(file.clone())
                     && let Err(err) = db.load_font_file(&file)
                 {

@@ -2,24 +2,101 @@ use std::cell::Cell;
 
 use ui::Color;
 
-pub const UI_SCALE: f32 = 1.22;
-pub const FONT: &str = "Adwaita Sans";
-pub const ICONS: &str = "JetBrainsMono Nerd Font Mono";
-pub const ICON_FALLBACK: &str = "JetBrainsMonoNL Nerd Font";
 pub const FAST: f64 = 140.0;
 pub const NORMAL: f64 = 220.0;
 pub const SLOW: f64 = 340.0;
 
-pub const FONT_FAMILIES: &[&str] = &[
-    FONT,
-    ICONS,
-    "JetBrainsMonoNL Nerd Font:weight=80:slant=0",
+const EXTRA_FAMILIES: &[&str] = &[
     "Noto Sans",
     "Noto Sans Symbols",
     "Noto Sans Symbols 2",
     "Noto Sans CJK JP",
     "Noto Color Emoji",
 ];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fonts {
+    pub ui: &'static str,
+    pub icons: &'static str,
+    pub icon_fallback: &'static str,
+}
+
+thread_local! {
+    static FONTS: Cell<Fonts> = const {
+        Cell::new(Fonts {
+            ui: "Adwaita Sans",
+            icons: "JetBrainsMono Nerd Font Mono",
+            icon_fallback: "JetBrainsMonoNL Nerd Font",
+        })
+    };
+}
+
+fn intern(value: &str, current: &'static str) -> &'static str {
+    if value == current {
+        current
+    } else {
+        Box::leak(value.to_owned().into_boxed_str())
+    }
+}
+
+pub fn scale() -> f32 {
+    ui::widgets::ui_scale()
+}
+
+pub fn fonts() -> Fonts {
+    FONTS.with(Cell::get)
+}
+
+pub fn font() -> &'static str {
+    fonts().ui
+}
+
+pub fn icons() -> &'static str {
+    fonts().icons
+}
+
+pub fn icon_fallback() -> &'static str {
+    fonts().icon_fallback
+}
+
+pub fn font_families() -> Vec<String> {
+    let fonts = fonts();
+    let mut families = vec![
+        fonts.ui.to_string(),
+        fonts.icons.to_string(),
+        format!("{}:weight=80:slant=0", fonts.icon_fallback),
+    ];
+    families.extend(EXTRA_FAMILIES.iter().map(|family| family.to_string()));
+    families
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Changes {
+    pub scale: bool,
+    pub fonts: bool,
+}
+
+pub fn apply_config(config: &config::Config) -> Changes {
+    let scale = config.general.scale;
+    let scale_changed = (ui::widgets::ui_scale() - scale).abs() > f32::EPSILON;
+    if scale_changed {
+        ui::widgets::set_ui_scale(scale);
+    }
+    let current = fonts();
+    let next = Fonts {
+        ui: intern(&config.fonts.ui, current.ui),
+        icons: intern(&config.fonts.icons, current.icons),
+        icon_fallback: intern(&config.fonts.icon_fallback, current.icon_fallback),
+    };
+    let fonts_changed = next != current;
+    if fonts_changed {
+        FONTS.with(|cell| cell.set(next));
+    }
+    Changes {
+        scale: scale_changed,
+        fonts: fonts_changed,
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Palette {
@@ -167,6 +244,23 @@ mod tests {
             Palette::from_json(&SNAPSHOT.replace("#1d2021", "#zzzzzz")),
             None
         );
+    }
+
+    #[test]
+    fn config_sets_scale_and_fonts() {
+        let mut config = config::Config::default();
+        assert_eq!(apply_config(&config), Changes::default());
+        assert_eq!(scale(), 1.22);
+        config.general.scale = 1.5;
+        config.fonts.ui = "Inter".into();
+        let changes = apply_config(&config);
+        assert!(changes.scale && changes.fonts);
+        assert_eq!(scale(), 1.5);
+        assert_eq!(font(), "Inter");
+        assert_eq!(font_families()[0], "Inter");
+        assert_eq!(apply_config(&config), Changes::default());
+        apply_config(&config::Config::default());
+        assert_eq!(font(), "Adwaita Sans");
     }
 
     #[test]

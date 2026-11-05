@@ -293,6 +293,9 @@ impl App {
                 }
                 Err(_) => Err(String::new()),
             };
+            let result = result.and_then(|()| {
+                wallpapers::adopt_legacy_state().map_err(|err| format!("wallpaper state: {err}"))
+            });
             let _ = sender.send(ServiceEvent::WallApplied(result));
         });
         self.sync();

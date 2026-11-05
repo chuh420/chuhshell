@@ -28,8 +28,7 @@ impl ClipEntry {
 }
 
 pub fn cache_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_default();
-    PathBuf::from(home).join(".cache/quickshell/material/clipboard")
+    config::paths().cache_dir("clipboard")
 }
 
 fn python_lines(text: &str) -> Vec<&str> {

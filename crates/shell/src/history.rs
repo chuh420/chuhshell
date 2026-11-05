@@ -12,10 +12,7 @@ pub struct Point {
 }
 
 pub fn path() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
-    home.join(".local/state/quickshell/material/battery-history.json")
+    config::paths().state_file("battery-history.json")
 }
 
 fn js_number(value: f64) -> String {

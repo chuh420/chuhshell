@@ -10,7 +10,7 @@ use ui::{
 
 use crate::{
     state::{ShellState, osd_caption, osd_has_bar, osd_icon, osd_level},
-    theme::{self, FONT, ICONS, NORMAL, UI_SCALE},
+    theme::{self, NORMAL},
 };
 
 const WIDTH: f32 = 300.0;
@@ -35,8 +35,8 @@ pub fn layer_config(output: OutputId) -> LayerConfig {
         margin_right: 0,
         margin_bottom: 72,
         margin_left: 0,
-        width: (WIDTH * UI_SCALE) as u32,
-        height: (HEIGHT * UI_SCALE) as u32,
+        width: (WIDTH * crate::theme::scale()) as u32,
+        height: (HEIGHT * crate::theme::scale()) as u32,
         exclusive_zone: -1,
         keyboard: KeyboardMode::None,
         input: InputRegion::Empty,
@@ -88,7 +88,7 @@ fn bump() -> Sequence {
 }
 
 fn icon_spec(text: &str, color: Color) -> TextSpec {
-    TextSpec::plain(text, ICONS, 22.0, color)
+    TextSpec::plain(text, crate::theme::icons(), 22.0, color)
 }
 
 impl Osd {
@@ -107,7 +107,7 @@ impl Osd {
                 border_width: 1.0,
             },
         );
-        pill.scale = UI_SCALE;
+        pill.scale = crate::theme::scale();
         pill.origin = Some((0.0, 0.0));
         pill.opacity = 0.0;
         let pill = tree.add(root, pill);
@@ -155,7 +155,7 @@ impl Osd {
             row,
             "",
             "",
-            FONT,
+            crate::theme::font(),
             14.0,
             theme::text(),
             100000.0,
@@ -238,9 +238,9 @@ impl Osd {
             },
         );
         if self.has_bar {
-            self.caption.set_font(engine, ICONS, 12.0);
+            self.caption.set_font(engine, crate::theme::icons(), 12.0);
         } else {
-            self.caption.set_font(engine, FONT, 14.0);
+            self.caption.set_font(engine, crate::theme::font(), 14.0);
         }
         self.caption.set(&osd_caption(state), "");
         self.caption.flush(engine, now);

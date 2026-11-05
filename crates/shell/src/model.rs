@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 pub struct BarModel {
     pub panel: String,
     pub title: Option<String>,
@@ -75,7 +73,13 @@ impl BarModel {
 }
 
 pub fn format_clock(time: &jiff::Zoned) -> String {
-    time.strftime("%a, %-d %b  ·  %H:%M").to_string()
+    format_clock_with(time, &config::current().general.clock_format)
+}
+
+pub fn format_clock_with(time: &jiff::Zoned, format: &str) -> String {
+    jiff::fmt::strtime::format(format, time)
+        .or_else(|_| jiff::fmt::strtime::format(config::DEFAULT_CLOCK, time))
+        .unwrap_or_default()
 }
 
 pub fn battery_icon(level: u32, plugged: bool) -> &'static str {
@@ -104,13 +108,6 @@ pub fn network_icon(model: &BarModel) -> &'static str {
     }
 }
 
-pub fn rice_path(name: &str) -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
-    home.join(".config/rice").join(name)
-}
-
 pub fn bluetooth_shortcut(devices: &[(String, i32)]) -> String {
     devices
         .iter()
@@ -135,6 +132,8 @@ mod tests {
             .parse()
             .expect("valid time");
         assert_eq!(format_clock(&time), "Sat, 31 Oct  ·  14:05");
+        assert_eq!(format_clock_with(&time, "%H:%M:%S"), "14:05:00");
+        assert_eq!(format_clock_with(&time, "%H:%"), "Sat, 31 Oct  ·  14:05");
     }
 
     #[test]

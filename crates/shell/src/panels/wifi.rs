@@ -13,7 +13,7 @@ use super::{
     NetAction, PanelAction, PanelData, TooltipSpot,
     kit::{Scroller, chip, fit, icon_label, label, place_chip, place_label, rect, set_border},
 };
-use crate::theme::{self, FONT};
+use crate::theme::{self};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
@@ -155,7 +155,7 @@ fn input_box(
         input,
         engine,
         frame,
-        FONT,
+        crate::theme::font(),
         12.0,
         theme::text(),
         password,

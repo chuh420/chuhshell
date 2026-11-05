@@ -33,7 +33,6 @@ use crate::{
     overlay::{self, Overlay},
     panels::{PanelAction, PanelData},
     state::{BatteryAlert, ShellState},
-    theme::UI_SCALE,
     tooltip::Tooltips,
 };
 
@@ -108,6 +107,7 @@ pub struct App {
     pub(crate) handle: LoopHandle<'static, App>,
     pub(crate) scheduler: Scheduler<()>,
     pub(crate) events: Sender<ServiceEvent>,
+    pub(crate) config: crate::configctl::ConfigCtl,
     brightness_throttle: bool,
     brightness_running: bool,
     start: Instant,
@@ -115,8 +115,9 @@ pub struct App {
 }
 
 fn bar_config(output: OutputId) -> LayerConfig {
-    let top = (6.0 * UI_SCALE).round() as i32;
-    let side = (10.0 * UI_SCALE).round() as i32;
+    let top = (6.0 * crate::theme::scale()).round() as i32;
+    let side = (10.0 * crate::theme::scale()).round() as i32;
+    let height = (28.0 * crate::theme::scale()).ceil() as u32;
     LayerConfig {
         namespace: "material-bar".into(),
         layer: Layer::Top,
@@ -131,8 +132,8 @@ fn bar_config(output: OutputId) -> LayerConfig {
         margin_bottom: 0,
         margin_left: side,
         width: 0,
-        height: (28.0 * UI_SCALE).ceil() as u32,
-        exclusive_zone: 42 - top,
+        height,
+        exclusive_zone: height as i32,
         keyboard: KeyboardMode::None,
         input: InputRegion::Full,
         output: Some(output),
@@ -147,7 +148,7 @@ impl App {
         events: Sender<ServiceEvent>,
     ) -> Self {
         let theme_settings = crate::themectl::load_initial();
-        let mut engine = TextEngine::new(crate::theme::FONT_FAMILIES);
+        let mut engine = TextEngine::new(&crate::theme::font_families());
         let osd = Osd::new(&mut engine);
         let mut model = BarModel::placeholder();
         model.clock = format_clock(&clock::now());
@@ -186,6 +187,7 @@ impl App {
             handle,
             scheduler,
             events,
+            config: crate::configctl::ConfigCtl::default(),
             brightness_throttle: false,
             brightness_running: false,
             start: Instant::now(),
@@ -304,7 +306,10 @@ impl App {
     pub fn service(&mut self, event: ServiceEvent) {
         match event {
             ServiceEvent::Notification(event) => self.notification_event(event),
-            ServiceEvent::NotificationServer(handle) => self.notes.handle = Some(handle),
+            ServiceEvent::NotificationServer(handle) => {
+                self.notes.handle = Some(handle);
+                self.flush_config_error();
+            }
             ServiceEvent::Icon(id, pixmap) => self.icon_loaded(id, pixmap),
             ServiceEvent::Tray(event) => self.tray_event(event),
             ServiceEvent::TrayServer(handle) => self.tray_server(handle),
@@ -1247,6 +1252,31 @@ impl App {
         self.overlay.retheme(&mut self.engine, now);
         self.sync();
         crate::memory::trim();
+    }
+
+    pub(crate) fn rebuild_surfaces(&mut self) {
+        self.state.panel.clear();
+        self.overlay.panel.clear();
+        self.teardown_overlay();
+        if let Some(surface) = self.osd.detach() {
+            self.platform.destroy_surface(surface);
+        }
+        let outputs: Vec<OutputId> = self.bars.keys().copied().collect();
+        for output in outputs {
+            if let Some(bar) = self.bars.remove(&output) {
+                self.tooltips.drop_parent(&mut self.platform, bar.surface);
+                self.platform.destroy_surface(bar.surface);
+            }
+            let surface = self.platform.create_layer_surface(&bar_config(output));
+            self.bars.insert(
+                output,
+                BarSurface {
+                    surface,
+                    view: None,
+                },
+            );
+        }
+        self.retheme();
     }
 
     fn draw_bar(&mut self, surface: SurfaceId, full: bool) {

@@ -7,7 +7,7 @@ use ui::{
 };
 
 use super::kit::{icon_label, label, rect, set_border};
-use crate::theme::{self, FAST, FONT, NORMAL, SLOW};
+use crate::theme::{self, FAST, NORMAL, SLOW};
 
 pub const SEARCH_HEIGHT: f32 = 52.0;
 const SPACING: f32 = 5.0;
@@ -16,7 +16,7 @@ const MOVE: Millis = 170.0;
 const SCROLLBAR: Color = Color::rgb(0xb8b8b8);
 
 pub fn eyebrow(tree: &mut Tree, engine: &mut TextEngine, parent: NodeId, text: &str) -> Label {
-    let mut spec = TextSpec::plain(text, FONT, 9.0, theme::green());
+    let mut spec = TextSpec::plain(text, crate::theme::font(), 9.0, theme::green());
     if let Some(span) = spec.spans.first_mut() {
         span.letter_spacing = 1.0;
     }
@@ -49,7 +49,16 @@ impl SearchBox {
         set_border(tree, rect, theme::line(), 1.0);
         let icon = icon_label(tree, engine, rect, glyph, 18.0, theme::muted());
         let placeholder = label(tree, engine, rect, placeholder, 16.0, theme::muted());
-        let mut field = TextField::new(tree, input, engine, rect, FONT, 16.0, theme::text(), false);
+        let mut field = TextField::new(
+            tree,
+            input,
+            engine,
+            rect,
+            crate::theme::font(),
+            16.0,
+            theme::text(),
+            false,
+        );
         field.set_selection_color(tree, theme::line());
         field.set_focus(true, now);
         let mut border = Tween::new(theme::line(), NORMAL, Easing::Linear);

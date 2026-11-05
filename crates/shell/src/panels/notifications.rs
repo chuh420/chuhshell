@@ -14,12 +14,12 @@ use ui::{
 use super::{PanelAction, PanelData, TooltipSpot};
 use crate::{
     card::Card,
-    theme::{self, FONT, ICONS, SLOW},
+    theme::{self, SLOW},
 };
 
 fn chip_style() -> ChipStyle {
     ChipStyle {
-        family: ICONS,
+        family: crate::theme::icons(),
         hover: theme::elevated(),
     }
 }
@@ -66,7 +66,7 @@ impl NotificationsPanel {
             tree,
             engine,
             root,
-            TextSpec::plain("notifications", FONT, 18.0, theme::text()),
+            TextSpec::plain("notifications", crate::theme::font(), 18.0, theme::text()),
         );
         let mut dnd = Chip::new(
             tree,
@@ -95,7 +95,7 @@ impl NotificationsPanel {
             tree,
             engine,
             root,
-            TextSpec::plain("", FONT, 12.0, theme::muted()),
+            TextSpec::plain("", crate::theme::font(), 12.0, theme::muted()),
         );
         let mut list_node = Node::new(0.0, 0.0, 0.0, 0.0);
         list_node.clip = true;
@@ -109,13 +109,13 @@ impl NotificationsPanel {
             tree,
             engine,
             empty,
-            TextSpec::plain("󰂚", ICONS, 46.0, theme::line()),
+            TextSpec::plain("󰂚", crate::theme::icons(), 46.0, theme::line()),
         );
         let empty_label = Label::new(
             tree,
             engine,
             empty,
-            TextSpec::plain("all caught up", FONT, 12.0, theme::muted()),
+            TextSpec::plain("all caught up", crate::theme::font(), 12.0, theme::muted()),
         );
         let bar = tree.add(
             list,
@@ -138,7 +138,7 @@ impl NotificationsPanel {
             root,
             TextSpec::plain(
                 "click to open  ·  swipe or right click to dismiss",
-                FONT,
+                crate::theme::font(),
                 10.0,
                 theme::muted(),
             ),

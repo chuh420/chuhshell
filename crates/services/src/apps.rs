@@ -417,8 +417,7 @@ pub fn search(apps: &[AppEntry], query: &str) -> Vec<AppEntry> {
 }
 
 pub fn hidden_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_default();
-    PathBuf::from(home).join(".local/state/quickshell/material/hidden-applications.json")
+    config::paths().state_file("hidden-applications.json")
 }
 
 pub fn parse_hidden(text: &str) -> Vec<String> {

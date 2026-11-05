@@ -19,7 +19,7 @@ use super::{
 };
 use crate::{
     cursorctl::CursorData,
-    theme::{self, FAST, NORMAL, SLOW, UI_SCALE},
+    theme::{self, FAST, NORMAL, SLOW},
     wallctl::{PreviewKey, WallData},
 };
 
@@ -623,8 +623,8 @@ impl WallpapersPanel {
     pub fn pixmap_requests(&self) -> Vec<(String, u32, u32)> {
         let (fw, fh) = self.frame_size();
         let size = (
-            (fw * UI_SCALE).ceil().max(1.0) as u32,
-            (fh * UI_SCALE).ceil().max(1.0) as u32,
+            (fw * crate::theme::scale()).ceil().max(1.0) as u32,
+            (fh * crate::theme::scale()).ceil().max(1.0) as u32,
         );
         self.tiles
             .iter()

@@ -14,7 +14,7 @@ use super::{
     PanelAction, PanelData,
     kit::{chip, fit, label, place_chip, place_label, rect},
 };
-use crate::theme::{self, FAST, FONT, ICONS};
+use crate::theme::{self, FAST};
 
 const BASE: i32 = 600;
 const COUNT: i32 = 1201;
@@ -100,12 +100,17 @@ impl CalendarPanel {
         data: &PanelData,
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
-        let mut eyebrow_spec = TextSpec::plain("time / calendar", ICONS, 9.0, theme::green());
+        let mut eyebrow_spec = TextSpec::plain(
+            "time / calendar",
+            crate::theme::icons(),
+            9.0,
+            theme::green(),
+        );
         if let Some(span) = eyebrow_spec.spans.first_mut() {
             span.letter_spacing = 1.0;
         }
         let eyebrow = Label::new(tree, engine, root, eyebrow_spec);
-        let mut time_spec = TextSpec::plain(&data.time, FONT, 40.0, theme::text());
+        let mut time_spec = TextSpec::plain(&data.time, crate::theme::font(), 40.0, theme::text());
         if let Some(span) = time_spec.spans.first_mut() {
             span.weight = Weight::Light;
         }
@@ -118,7 +123,7 @@ impl CalendarPanel {
             root,
             &month_title(month_start(today_date, 0)),
             "",
-            FONT,
+            crate::theme::font(),
             15.0,
             theme::green(),
             100000.0,
@@ -261,7 +266,8 @@ impl CalendarPanel {
                 } else {
                     theme::text()
                 };
-                let mut spec = TextSpec::plain(date.day().to_string(), FONT, 12.0, color);
+                let mut spec =
+                    TextSpec::plain(date.day().to_string(), crate::theme::font(), 12.0, color);
                 if today && let Some(span) = spec.spans.first_mut() {
                     span.weight = Weight::DemiBold;
                 }

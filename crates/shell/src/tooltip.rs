@@ -8,14 +8,14 @@ use ui::{
 
 use crate::{
     bar::TooltipTarget,
-    theme::{self, FONT},
+    theme::{self},
 };
 
 const DELAY: Millis = 650.0;
 
 fn style() -> TooltipStyle {
     TooltipStyle {
-        family: FONT,
+        family: crate::theme::font(),
         text: theme::text(),
         surface: theme::surface(),
         line: theme::line(),

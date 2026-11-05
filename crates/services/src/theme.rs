@@ -83,7 +83,7 @@ pub fn root() -> PathBuf {
 }
 
 fn mode_path() -> PathBuf {
-    home().join(".local/state/rice/theme.json")
+    config::paths().state_file("theme.json")
 }
 
 fn palette_path(folder: &str) -> PathBuf {

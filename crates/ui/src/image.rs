@@ -4,18 +4,21 @@ use resvg::usvg;
 use tiny_skia::{Pixmap, Transform};
 
 pub fn load_svg(path: &Path) -> Option<Arc<usvg::Tree>> {
-    let data = match std::fs::read(path) {
-        Ok(data) => data,
+    match std::fs::read(path) {
+        Ok(data) => svg_from_data(&data, &path.display().to_string()),
         Err(err) => {
             log::warn!("svg {}: {err}", path.display());
-            return None;
+            None
         }
-    };
-    let data = stretch_view_box(&data);
+    }
+}
+
+pub fn svg_from_data(data: &[u8], name: &str) -> Option<Arc<usvg::Tree>> {
+    let data = stretch_view_box(data);
     match usvg::Tree::from_data(&data, &usvg::Options::default()) {
         Ok(tree) => Some(Arc::new(tree)),
         Err(err) => {
-            log::warn!("svg {}: {err}", path.display());
+            log::warn!("svg {name}: {err}");
             None
         }
     }
@@ -64,6 +67,10 @@ fn stretch_view_box(data: &[u8]) -> Vec<u8> {
     out.into_bytes()
 }
 
+pub fn render_svg_into(tree: &usvg::Tree, transform: Transform, pixmap: &mut Pixmap) {
+    resvg::render(tree, transform, &mut pixmap.as_mut());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,8 +92,4 @@ mod tests {
             "<svg preserveAspectRatio=\"none\"></svg>"
         );
     }
-}
-
-pub fn render_svg_into(tree: &usvg::Tree, transform: Transform, pixmap: &mut Pixmap) {
-    resvg::render(tree, transform, &mut pixmap.as_mut());
 }

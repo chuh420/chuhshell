@@ -491,7 +491,7 @@ mod tests {
 
     #[test]
     fn partial_render_matches_full_render() {
-        let mut engine = TextEngine::new(&[]);
+        let mut engine = TextEngine::new::<&str>(&[]);
         let (mut tree, content) = scene();
         let mut partial = Canvas::new(500, 400).unwrap_or_else(|| unreachable!());
         partial.render(&mut tree, &mut engine, &Damage::full(500, 400));

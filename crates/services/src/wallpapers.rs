@@ -37,15 +37,33 @@ pub struct State {
 }
 
 fn home() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default())
+    config::paths().home.clone()
 }
 
 pub fn folder() -> PathBuf {
-    home().join("Pictures/Wallpapers")
+    config::wallpapers_dir()
 }
 
 pub fn state_path() -> PathBuf {
+    config::paths().state_file("wallpaper.json")
+}
+
+fn legacy_state_path() -> PathBuf {
     home().join(".local/state/rice/wallpaper.json")
+}
+
+pub fn adopt_legacy_state() -> io::Result<()> {
+    let text = std::fs::read_to_string(legacy_state_path())?;
+    if parse_state(&text).is_none() {
+        return Err(io::Error::other("wallpapers.py wrote an invalid state"));
+    }
+    let path = state_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension("tmp");
+    std::fs::write(&temporary, text)?;
+    std::fs::rename(&temporary, &path)
 }
 
 pub fn default_wallpaper() -> PathBuf {
@@ -53,7 +71,7 @@ pub fn default_wallpaper() -> PathBuf {
 }
 
 pub fn preview_cache() -> PathBuf {
-    home().join(".cache/quickshell/material/wallpapers")
+    config::paths().cache_dir("wallpapers")
 }
 
 fn extension(path: &Path) -> String {

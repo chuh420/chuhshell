@@ -14,14 +14,14 @@ use ui::{
 
 use crate::{
     card::{Card, CardAction},
-    theme::{NORMAL, SLOW, UI_SCALE},
+    theme::{NORMAL, SLOW},
 };
 
 const WIDTH: f32 = 380.0;
 const SPACING: f32 = 8.0;
 
 pub fn window_width() -> u32 {
-    (WIDTH * UI_SCALE) as u32
+    (WIDTH * crate::theme::scale()) as u32
 }
 
 pub fn layer_config(output: OutputId, height: u32) -> LayerConfig {
@@ -75,7 +75,7 @@ impl Popups {
         let mut tree = Tree::new();
         let root = tree.root();
         let mut list = Node::new(0.0, 0.0, WIDTH, 1.0);
-        list.scale = UI_SCALE;
+        list.scale = crate::theme::scale();
         list.origin = Some((0.0, 0.0));
         let list = tree.add(root, list);
         Self {
@@ -121,7 +121,7 @@ impl Popups {
     }
 
     pub fn window_height(&self, screen_height: f32) -> u32 {
-        let height = (self.content_height * UI_SCALE + 20.0).min(screen_height - 80.0);
+        let height = (self.content_height * crate::theme::scale() + 20.0).min(screen_height - 80.0);
         height.max(1.0) as u32
     }
 
@@ -336,8 +336,8 @@ impl Popups {
         let rect = Rect::new(
             0,
             0,
-            (WIDTH * UI_SCALE).ceil() as i32,
-            ((self.content_height + 10.0).max(1.0) * UI_SCALE).ceil() as i32,
+            (WIDTH * crate::theme::scale()).ceil() as i32,
+            ((self.content_height + 10.0).max(1.0) * crate::theme::scale()).ceil() as i32,
         );
         if self.input_rect != Some(rect) {
             platform.set_input_rect(surface, Some(rect));

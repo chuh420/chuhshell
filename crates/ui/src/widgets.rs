@@ -7,7 +7,17 @@ use crate::{
     text::{Span, TextMetrics},
 };
 
-pub const UI_SCALE: f32 = 1.22;
+thread_local! {
+    static UI_SCALE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.22) };
+}
+
+pub fn ui_scale() -> f32 {
+    UI_SCALE.with(std::cell::Cell::get)
+}
+
+pub fn set_ui_scale(scale: f32) {
+    UI_SCALE.with(|cell| cell.set(scale));
+}
 const FAST: Millis = 140.0;
 const NORMAL: Millis = 220.0;
 const SLOW: Millis = 340.0;
@@ -829,11 +839,11 @@ pub struct TooltipView {
 
 impl TooltipView {
     pub fn padding() -> (f32, f32) {
-        ((10.0 * UI_SCALE).round(), (6.0 * UI_SCALE).round())
+        ((10.0 * ui_scale()).round(), (6.0 * ui_scale()).round())
     }
 
     pub fn spec(text: &str, style: &TooltipStyle) -> TextSpec {
-        TextSpec::plain(text, style.family, (11.0 * UI_SCALE).round(), style.text)
+        TextSpec::plain(text, style.family, (11.0 * ui_scale()).round(), style.text)
     }
 
     pub fn measure(engine: &mut TextEngine, text: &str, style: &TooltipStyle) -> (f32, f32) {

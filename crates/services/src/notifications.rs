@@ -336,9 +336,33 @@ impl Server {
 pub struct Handle {
     connection: Connection,
     store: Arc<Mutex<Store>>,
+    callback: Callback,
 }
 
 impl Handle {
+    pub fn post(&self, app_name: &str, summary: &str, body: &str, urgency: Urgency) -> u32 {
+        let Ok(mut store) = self.store.lock() else {
+            return 0;
+        };
+        store.next += 1;
+        let id = store.next;
+        let mut notification = parse(
+            id,
+            app_name.into(),
+            String::new(),
+            summary.into(),
+            body.into(),
+            Vec::new(),
+            &HashMap::new(),
+            -1,
+        );
+        notification.urgency = urgency;
+        store.alive.insert(id, notification.clone());
+        drop(store);
+        (self.callback)(Event::Added(notification));
+        id
+    }
+
     pub async fn close(&self, id: u32, reason: CloseReason) {
         let removed = self
             .store
@@ -372,14 +396,19 @@ impl Handle {
 
 pub async fn serve(callback: impl Fn(Event) + Send + Sync + 'static) -> zbus::Result<Handle> {
     let store = Arc::new(Mutex::new(Store::default()));
+    let callback: Callback = Arc::new(callback);
     let server = Server {
         store: store.clone(),
-        callback: Arc::new(callback),
+        callback: callback.clone(),
     };
     let connection = zbus::connection::Builder::session()
         .name(NAME)
         .serve_at(PATH, server)
         .build()
         .await?;
-    Ok(Handle { connection, store })
+    Ok(Handle {
+        connection,
+        store,
+        callback,
+    })
 }

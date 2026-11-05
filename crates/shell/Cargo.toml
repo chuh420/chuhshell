@@ -16,6 +16,7 @@ path = "src/main.rs"
 platform.workspace = true
 ui.workspace = true
 services.workspace = true
+config.workspace = true
 calloop.workspace = true
 log.workspace = true
 jiff.workspace = true

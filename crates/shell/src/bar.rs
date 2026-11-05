@@ -11,16 +11,17 @@ use ui::{
 };
 
 use crate::{
-    model::{BarModel, battery_icon, bluetooth_shortcut, network_icon, rice_path},
-    theme::{self, FAST, FONT, ICONS, NORMAL, SLOW, UI_SCALE},
+    model::{BarModel, battery_icon, bluetooth_shortcut, network_icon},
+    theme::{self, FAST, NORMAL, SLOW},
 };
 
 fn chip_style() -> ChipStyle {
     ChipStyle {
-        family: ICONS,
+        family: crate::theme::icons(),
         hover: theme::elevated(),
     }
 }
+const KEYBOARD_ICON: &[u8] = include_bytes!("../assets/keyboard-bar.svg");
 const SLOT: f32 = 25.0;
 const GAP: f32 = 3.0;
 
@@ -156,7 +157,7 @@ impl Workspaces {
                 0.0,
                 0.0,
                 0.0,
-                2.0 / UI_SCALE,
+                2.0 / crate::theme::scale(),
                 RectPaint {
                     color: theme::green(),
                     radius: 1.0,
@@ -338,8 +339,9 @@ impl Workspaces {
         tree.set_pos(self.highlight, left, 0.0);
         tree.set_size(self.highlight, width, 22.0);
         tree.set_opacity(self.highlight, self.highlight_opacity.value());
-        let marker_width = (10.0 / UI_SCALE).max(14.0 / UI_SCALE - (width - SLOT) * 0.15);
-        let marker_height = 2.0 / UI_SCALE;
+        let marker_width = (10.0 / crate::theme::scale())
+            .max(14.0 / crate::theme::scale() - (width - SLOT) * 0.15);
+        let marker_height = 2.0 / crate::theme::scale();
         tree.set_pos(
             self.marker,
             center(width, marker_width),
@@ -453,7 +455,7 @@ impl TrayIcon {
             rect.root,
             Node::new(center(23.0, 17.0), center(22.0, 17.0), 17.0, 17.0),
         );
-        let spec = TextSpec::plain("󰀻", ICONS, 16.0, theme::muted());
+        let spec = TextSpec::plain("󰀻", crate::theme::icons(), 16.0, theme::muted());
         let metrics = engine.measure(&spec, 1.0);
         let glyph = tree.add(
             rect.root,
@@ -517,8 +519,8 @@ struct Resources {
 fn resource_spec(icon: &str, value: &str, color: Color) -> TextSpec {
     TextSpec {
         spans: vec![
-            ui::Span::new(icon, ICONS, 12.0),
-            ui::Span::new(format!(" {value}"), ICONS, 10.0),
+            ui::Span::new(icon, crate::theme::icons(), 12.0),
+            ui::Span::new(format!(" {value}"), crate::theme::icons(), 10.0),
         ],
         color,
         elide_width: None,
@@ -638,7 +640,7 @@ impl Keyboard {
             row,
             label,
             "",
-            ICONS,
+            crate::theme::icons(),
             10.0,
             theme::text(),
             100000.0,
@@ -691,8 +693,8 @@ impl Bar {
     ) -> Self {
         let mut tree = Tree::new();
         let mut input = Input::new();
-        let body_width = width as f32 / UI_SCALE;
-        let body_height = height as f32 / UI_SCALE;
+        let body_width = width as f32 / crate::theme::scale();
+        let body_height = height as f32 / crate::theme::scale();
         let mut body = Node::rect(
             0.0,
             0.0,
@@ -705,7 +707,7 @@ impl Bar {
                 border_width: 1.0,
             },
         );
-        body.scale = UI_SCALE;
+        body.scale = crate::theme::scale();
         body.origin = Some((0.0, 0.0));
         body.opacity = 0.0;
         let root = tree.root();
@@ -730,7 +732,7 @@ impl Bar {
             left_row,
             &title_text,
             "none",
-            FONT,
+            crate::theme::font(),
             10.0,
             theme::muted(),
             max_width,
@@ -751,7 +753,7 @@ impl Bar {
             &mut input,
             engine,
             right_row,
-            ui::image::load_svg(&rice_path("icons/keyboard-bar.svg")),
+            ui::image::svg_from_data(KEYBOARD_ICON, "keyboard-bar.svg"),
             &model.keyboard_label,
         );
         let network = chip(
@@ -888,12 +890,13 @@ impl Bar {
 
     pub fn apply(&mut self, engine: &mut TextEngine, model: &BarModel, now: Millis, initial: bool) {
         self.panel = model.panel.clone();
-        let mut computed: Vec<i32> = vec![1, 2, 3, 4, 5];
+        let fixed = config::current().bar.workspaces as i32;
+        let mut computed: Vec<i32> = (1..=fixed).collect();
         let mut extra: Vec<i32> = model
             .workspaces
             .iter()
             .copied()
-            .filter(|id| *id > 5)
+            .filter(|id| *id > fixed)
             .collect();
         extra.sort_unstable();
         computed.extend(extra);
@@ -1140,7 +1143,7 @@ impl Bar {
         let width = self.tree.get(node)?.width;
         let mut point = ui::tiny_skia::Point::from_xy(width / 2.0, 0.0);
         self.tree.device_transform(node).map_point(&mut point);
-        Some(point.x as f64 + (10.0 * UI_SCALE).round() as f64)
+        Some(point.x as f64 + (10.0 * crate::theme::scale()).round() as f64)
     }
 
     fn open(&self, panel: &'static str, area: AreaId) -> Option<BarAction> {
@@ -1412,11 +1415,11 @@ fn title_text(model: &BarModel) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::FONT_FAMILIES;
+    use crate::theme::font_families;
 
     #[test]
     fn launcher_tooltip_anchor_matches_qt_positioner() {
-        let mut engine = TextEngine::new(FONT_FAMILIES);
+        let mut engine = TextEngine::new(&font_families());
         let model = BarModel::placeholder();
         let mut bar = Bar::new(&mut engine, 1896, 35, &model, 0.0);
         bar.tick(1000.0);
@@ -1437,7 +1440,7 @@ mod tests {
 
     #[test]
     fn clock_has_no_tooltip() {
-        let mut engine = TextEngine::new(FONT_FAMILIES);
+        let mut engine = TextEngine::new(&font_families());
         let model = BarModel::placeholder();
         let mut bar = Bar::new(&mut engine, 1896, 35, &model, 0.0);
         bar.tick(1000.0);

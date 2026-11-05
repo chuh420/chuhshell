@@ -12,11 +12,11 @@ use ui::{
     widgets::{Chip, ChipStyle, Label},
 };
 
-use crate::theme::{self, FAST, FONT, ICONS, NORMAL, SLOW, UI_SCALE};
+use crate::theme::{self, FAST, NORMAL, SLOW};
 
 fn chip_style() -> ChipStyle {
     ChipStyle {
-        family: ICONS,
+        family: crate::theme::icons(),
         hover: theme::elevated(),
     }
 }
@@ -163,9 +163,9 @@ impl Card {
             tree,
             engine,
             icon_box,
-            TextSpec::plain("󰂚", ICONS, 18.0, theme::yellow()),
+            TextSpec::plain("󰂚", crate::theme::icons(), 18.0, theme::yellow()),
         );
-        let mut app_spec = TextSpec::plain("", FONT, 9.0, theme::green());
+        let mut app_spec = TextSpec::plain("", crate::theme::font(), 9.0, theme::green());
         if let Some(span) = app_spec.spans.first_mut() {
             span.letter_spacing = 0.6;
         }
@@ -174,15 +174,15 @@ impl Card {
             tree,
             engine,
             body,
-            TextSpec::plain("", FONT, 9.0, theme::muted()),
+            TextSpec::plain("", crate::theme::font(), 9.0, theme::muted()),
         );
         let close = Label::new(
             tree,
             engine,
             body,
-            TextSpec::plain("×", FONT, 13.0, theme::muted()),
+            TextSpec::plain("×", crate::theme::font(), 13.0, theme::muted()),
         );
-        let mut summary_spec = TextSpec::plain("", FONT, 13.0, theme::text());
+        let mut summary_spec = TextSpec::plain("", crate::theme::font(), 13.0, theme::text());
         if let Some(span) = summary_spec.spans.first_mut() {
             span.weight = Weight::Medium;
         }
@@ -191,7 +191,7 @@ impl Card {
             tree,
             engine,
             body,
-            TextSpec::plain("", FONT, 11.0, theme::muted()),
+            TextSpec::plain("", crate::theme::font(), 11.0, theme::muted()),
         );
         let bar = tree.add(
             body,
@@ -281,7 +281,7 @@ impl Card {
         self.summary.set_text(engine, &notification.summary);
         let body = strip_images(&notification.body);
         let spec = TextSpec {
-            spans: styled_spans(&body, FONT, 11.0, theme::green()),
+            spans: styled_spans(&body, crate::theme::font(), 11.0, theme::green()),
             color: theme::muted(),
             elide_width: None,
             wrap_width: None,
@@ -381,7 +381,7 @@ impl Card {
     pub fn icon_size(&self) -> u32 {
         let has_image = self.notification.image.is_some();
         let logical = if has_image { 38.0 } else { 26.0 };
-        (logical * UI_SCALE).ceil() as u32
+        (logical * crate::theme::scale()).ceil() as u32
     }
 
     pub fn restart_timer(&mut self, now: Millis) {

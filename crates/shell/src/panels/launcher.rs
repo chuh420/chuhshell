@@ -16,7 +16,7 @@ use super::{
     kit::{chip, icon_label, label, place_chip, place_label, rect},
     picker::{PickList, PickStyle, SEARCH_HEIGHT, SearchBox, eyebrow},
 };
-use crate::theme::{self, FONT, ICON_FALLBACK, NORMAL};
+use crate::theme::{self, NORMAL};
 
 const ROW_HEIGHT: f32 = 56.0;
 const CACHE_BUFFER: f32 = 320.0;
@@ -57,10 +57,14 @@ fn private_use(c: char) -> bool {
 }
 
 pub fn fallback_spec(text: &str, size: f32, color: Color) -> TextSpec {
-    let mut spec = TextSpec::plain("", FONT, size, color);
+    let mut spec = TextSpec::plain("", crate::theme::font(), size, color);
     let mut spans: Vec<ui::Span> = Vec::new();
     for c in text.chars() {
-        let family = if private_use(c) { ICON_FALLBACK } else { FONT };
+        let family = if private_use(c) {
+            crate::theme::icon_fallback()
+        } else {
+            crate::theme::font()
+        };
         match spans.last_mut() {
             Some(span) if span.family == family => span.text.push(c),
             _ => spans.push(ui::Span::new(c.to_string(), family, size)),
@@ -538,7 +542,11 @@ mod tests {
             .collect();
         assert_eq!(
             parts,
-            vec![("a ", FONT), ("󰈉", ICON_FALLBACK), (" b", FONT)]
+            vec![
+                ("a ", crate::theme::font()),
+                ("󰈉", crate::theme::icon_fallback()),
+                (" b", crate::theme::font())
+            ]
         );
     }
 }

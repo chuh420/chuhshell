@@ -1,0 +1,44 @@
+# chuhshell config: ~/.config/chuhshell/config.toml
+# every key is optional; the shell reloads this file when it changes
+
+[general]
+scale = 1.22
+# terminal = "kitty"
+clock_format = "%a, %-d %b  ·  %H:%M"
+# wallpapers_dir = "~/Pictures/Wallpapers"
+
+[fonts]
+ui = "Adwaita Sans"
+icons = "JetBrainsMono Nerd Font Mono"
+icon_fallback = "JetBrainsMonoNL Nerd Font"
+
+[bar]
+workspaces = 5
+
+[launcher]
+pinned = ["kitty", "zen", "dolphin", "pavucontrol"]
+
+[keyboard.labels]
+English = "EN"
+Russian = "RU"
+Kazakh = "KZ"
+German = "DE"
+French = "FR"
+
+[theme]
+name = "gruvbox"
+# auto = false
+# scheme = "vibrant"
+
+[theme.colors]
+# bg = "#282828"
+# green = "#a9b665"
+
+[commands]
+# lock = "hyprlock"
+# screenshot = "grim -g \"$(slurp)\" - | wl-copy"
+# mixer = "pavucontrol"
+
+[hooks]
+# wallpaper_changed = "~/.local/bin/wallpaper-sync"
+# theme_changed = "~/.local/bin/theme-reload"

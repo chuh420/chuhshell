@@ -235,6 +235,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "config"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "toml",
+]
+
+[[package]]
 name = "cookie-factory"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1333,6 +1341,7 @@ dependencies = [
 name = "services"
 version = "0.1.0"
 dependencies = [
+ "config",
  "futures-util",
  "inotify",
  "jiff",
@@ -1360,6 +1369,7 @@ name = "shell"
 version = "0.1.0"
 dependencies = [
  "calloop",
+ "config",
  "freedesktop-icons",
  "image",
  "jiff",

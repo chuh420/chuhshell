@@ -13,7 +13,7 @@ use super::{
     NetAction, PanelAction, PanelData, TooltipSpot,
     kit::{Scroller, chip, fit, icon_label, label, place_chip, place_label, rect, set_border},
 };
-use crate::theme::{self, FONT};
+use crate::theme::{self};
 
 pub fn device_icon(name: &str) -> &'static str {
     if name.starts_with("audio-head") {
@@ -225,7 +225,7 @@ impl BluetoothPanel {
             input,
             engine,
             pin_frame,
-            FONT,
+            crate::theme::font(),
             12.0,
             theme::text(),
             false,
@@ -368,7 +368,7 @@ impl BluetoothPanel {
                 input,
                 engine,
                 editor,
-                FONT,
+                crate::theme::font(),
                 12.0,
                 theme::text(),
                 false,

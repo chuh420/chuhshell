@@ -12,7 +12,7 @@ use super::{
     PanelAction, PanelData, TooltipSpot,
     kit::{chip, icon_label, label, place_chip, place_label, rect},
 };
-use crate::theme::{self, FONT, NORMAL};
+use crate::theme::{self, NORMAL};
 
 struct Card {
     root: NodeId,
@@ -114,7 +114,7 @@ impl SystemPanel {
         let card = |tree: &mut Tree, engine: &mut TextEngine, cpu: bool| {
             let root = rect(tree, root, theme::surface(), 14.0);
             let color = if cpu { theme::green() } else { theme::blue() };
-            let mut value_spec = TextSpec::plain("", FONT, 24.0, theme::text());
+            let mut value_spec = TextSpec::plain("", crate::theme::font(), 24.0, theme::text());
             if let Some(span) = value_spec.spans.first_mut() {
                 span.weight = Weight::Light;
             }

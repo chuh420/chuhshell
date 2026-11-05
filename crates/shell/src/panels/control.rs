@@ -8,11 +8,11 @@ use ui::{
 };
 
 use super::{PanelAction, PanelData, TooltipSpot};
-use crate::theme::{self, FAST, FONT, ICONS, NORMAL};
+use crate::theme::{self, FAST, NORMAL};
 
 fn chip_style() -> ChipStyle {
     ChipStyle {
-        family: ICONS,
+        family: crate::theme::icons(),
         hover: theme::elevated(),
     }
 }
@@ -137,10 +137,30 @@ impl Tile {
         } else {
             ("󰂯", theme::yellow())
         };
-        let icon = label(tree, engine, root, text(glyph, ICONS, 22.0, ink));
-        let state = label(tree, engine, root, text("", FONT, 12.0, theme::muted()));
-        let name = label(tree, engine, root, text("", FONT, 14.0, theme::text()));
-        let status = label(tree, engine, root, text("", FONT, 10.0, theme::muted()));
+        let icon = label(
+            tree,
+            engine,
+            root,
+            text(glyph, crate::theme::icons(), 22.0, ink),
+        );
+        let state = label(
+            tree,
+            engine,
+            root,
+            text("", crate::theme::font(), 12.0, theme::muted()),
+        );
+        let name = label(
+            tree,
+            engine,
+            root,
+            text("", crate::theme::font(), 14.0, theme::text()),
+        );
+        let status = label(
+            tree,
+            engine,
+            root,
+            text("", crate::theme::font(), 10.0, theme::muted()),
+        );
         let mut area = MouseArea::new(root);
         area.buttons = Buttons::LEFT_RIGHT;
         let area = input.add(area);
@@ -319,8 +339,18 @@ impl SwitchRow {
         hint: &str,
     ) -> Self {
         let row = card(tree, parent, theme::surface(), 13.0);
-        let icon = label(tree, engine, row, text(glyph, ICONS, 18.0, theme::muted()));
-        let label = label(tree, engine, row, text(caption, FONT, 12.0, theme::text()));
+        let icon = label(
+            tree,
+            engine,
+            row,
+            text(glyph, crate::theme::icons(), 18.0, theme::muted()),
+        );
+        let label = label(
+            tree,
+            engine,
+            row,
+            text(caption, crate::theme::font(), 12.0, theme::text()),
+        );
         let chip = chip(tree, input, engine, row, "off", theme::muted(), None, hint);
         Self {
             row,
@@ -453,12 +483,17 @@ impl ControlPanel {
         data: &PanelData,
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
-        let mut header_spec = text("desktop / control", ICONS, 9.0, theme::green());
+        let mut header_spec = text(
+            "desktop / control",
+            crate::theme::icons(),
+            9.0,
+            theme::green(),
+        );
         if let Some(span) = header_spec.spans.first_mut() {
             span.letter_spacing = 1.0;
         }
         let header = label(tree, engine, root, header_spec);
-        let mut time_spec = text("", FONT, 40.0, theme::text());
+        let mut time_spec = text("", crate::theme::font(), 40.0, theme::text());
         if let Some(span) = time_spec.spans.first_mut() {
             span.weight = Weight::Light;
         }
@@ -473,7 +508,12 @@ impl ControlPanel {
             Some(22.0),
             "Super + Ctrl + L",
         );
-        let date = label(tree, engine, root, text("", FONT, 12.0, theme::muted()));
+        let date = label(
+            tree,
+            engine,
+            root,
+            text("", crate::theme::font(), 12.0, theme::muted()),
+        );
         let tiles = [
             Tile::new(tree, input, engine, root, true),
             Tile::new(tree, input, engine, root, false),
@@ -483,13 +523,13 @@ impl ControlPanel {
             tree,
             engine,
             volume_card,
-            text("󰕾", ICONS, 18.0, theme::green()),
+            text("󰕾", crate::theme::icons(), 18.0, theme::green()),
         );
         let volume_label = label(
             tree,
             engine,
             volume_card,
-            text("volume", FONT, 12.0, theme::text()),
+            text("volume", crate::theme::font(), 12.0, theme::text()),
         );
         let volume_chip = chip(
             tree,
@@ -516,19 +556,19 @@ impl ControlPanel {
             tree,
             engine,
             bright_card,
-            text("󰃟", ICONS, 18.0, theme::yellow()),
+            text("󰃟", crate::theme::icons(), 18.0, theme::yellow()),
         );
         let bright_label = label(
             tree,
             engine,
             bright_card,
-            text("brightness", FONT, 12.0, theme::text()),
+            text("brightness", crate::theme::font(), 12.0, theme::text()),
         );
         let bright_value = label(
             tree,
             engine,
             bright_card,
-            text("", ICONS, 12.0, theme::yellow()),
+            text("", crate::theme::icons(), 12.0, theme::yellow()),
         );
         let mut bright_slider = Slider::new(
             tree,

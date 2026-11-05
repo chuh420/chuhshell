@@ -15,7 +15,7 @@ use super::{
 };
 use crate::{
     history::LIMIT,
-    theme::{self, FONT},
+    theme::{self},
 };
 
 const PROFILES: [(&str, &str, &str); 3] = [
@@ -167,7 +167,7 @@ impl BatteryPanel {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
         let title = label(tree, engine, root, "battery", 18.0, theme::text());
         let state = label(tree, engine, root, "", 12.0, theme::green());
-        let mut level_spec = TextSpec::plain("", FONT, 42.0, theme::text());
+        let mut level_spec = TextSpec::plain("", crate::theme::font(), 42.0, theme::text());
         if let Some(span) = level_spec.spans.first_mut() {
             span.weight = Weight::Light;
         }

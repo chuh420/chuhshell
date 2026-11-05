@@ -108,7 +108,7 @@ pub fn folder() -> PathBuf {
 }
 
 pub fn state_path() -> PathBuf {
-    home().join(".local/state/rice/cursor.json")
+    config::paths().state_file("cursor.json")
 }
 
 pub fn lua_path() -> PathBuf {
@@ -120,7 +120,7 @@ pub fn icons_dir() -> PathBuf {
 }
 
 pub fn preview_cache() -> PathBuf {
-    home().join(".cache/quickshell/material/cursors")
+    config::paths().cache_dir("cursors")
 }
 
 fn revision(path: &Path) -> Option<String> {

@@ -6,11 +6,11 @@ use ui::{
     widgets::{Chip, ChipStyle, Label},
 };
 
-use crate::theme::{self, FONT, ICONS};
+use crate::theme::{self};
 
 pub fn chip_style() -> ChipStyle {
     ChipStyle {
-        family: ICONS,
+        family: crate::theme::icons(),
         hover: theme::elevated(),
     }
 }
@@ -29,7 +29,7 @@ pub fn label(
         tree,
         engine,
         parent,
-        TextSpec::plain(text, FONT, size, color),
+        TextSpec::plain(text, crate::theme::font(), size, color),
     )
 }
 
@@ -45,7 +45,7 @@ pub fn icon_label(
         tree,
         engine,
         parent,
-        TextSpec::plain(text, ICONS, size, color),
+        TextSpec::plain(text, crate::theme::icons(), size, color),
     )
 }
 
