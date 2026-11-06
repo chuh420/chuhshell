@@ -370,10 +370,13 @@ down() {
     ip netns del "$STA_NS" 2>/dev/null || true
     ip netns del "$AP_NS" 2>/dev/null || true
     if lsmod | command grep -q '^mac80211_hwsim'; then
-        for _ in $(seq 20); do
+        for _ in $(seq 100); do
             modprobe -r mac80211_hwsim 2>/dev/null && break
             sleep 0.2
         done
+        if lsmod | command grep -q '^mac80211_hwsim'; then
+            log "could not unload mac80211_hwsim; run 'sudo modprobe -r mac80211_hwsim'"
+        fi
     fi
     rm -rf "$LAB"
     log "down"
