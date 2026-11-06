@@ -702,7 +702,7 @@ impl AsFd for Watcher {
 mod tests {
     use super::*;
 
-    fn entry(id: &str, name: &str, generic: &str, comment: &str) -> AppEntry {
+    pub(super) fn entry(id: &str, name: &str, generic: &str, comment: &str) -> AppEntry {
         AppEntry {
             id: id.into(),
             name: name.into(),
@@ -828,5 +828,88 @@ mod tests {
     fn dbus_object_path() {
         assert_eq!(object_path("org.telegram.desktop"), "/org/telegram/desktop");
         assert_eq!(object_path("org.gnome.Zenity"), "/org/gnome/Zenity");
+    }
+}
+
+#[cfg(test)]
+mod properties {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn quote(arg: &str) -> String {
+        format!("'{}'", arg.replace('\'', "'\\''"))
+    }
+
+    proptest! {
+        #[test]
+        fn quoted_arguments_split_back(args in prop::collection::vec("\\PC{0,12}", 1..6)) {
+            let command = args.iter().map(|arg| quote(arg)).collect::<Vec<_>>().join(" ");
+            prop_assert_eq!(shell_split(&command), Some(args));
+        }
+
+        #[test]
+        fn plain_words_split_on_blanks(words in prop::collection::vec("[A-Za-z0-9_./=:-]{1,10}", 0..6), gaps in prop::collection::vec("[ \t]{1,3}", 6)) {
+            let mut command = String::new();
+            for (word, gap) in words.iter().zip(&gaps) {
+                command.push_str(word);
+                command.push_str(gap);
+            }
+            prop_assert_eq!(shell_split(&command), Some(words));
+        }
+
+        #[test]
+        fn any_command_splits_or_fails(command in "\\PC*") {
+            let _ = shell_split(&command);
+        }
+
+        #[test]
+        fn field_codes_expand_or_fail(tokens in prop::collection::vec("([a-z/]{0,4}%[%a-zA-Z]?){0,3}[a-z]{0,3}", 0..5), icon in proptest::option::of("\\PC{0,6}"), name in "\\PC{0,8}") {
+            if let Ok(args) = expand_exec(&tokens, icon.as_deref(), &name, "/x.desktop") {
+                prop_assert!(!args.is_empty() && !args[0].is_empty());
+            }
+        }
+
+        #[test]
+        fn desktop_entries_parse_or_skip(text in "(\\[(Desktop Entry|Desktop Action x|x)\\]\n|[A-Za-z\\[\\]@_]{0,12}=\\PC{0,16}\n|#\\PC{0,8}\n|\\PC{0,10}\n){0,12}") {
+            if let Some(entry) = Entry::parse(&text) {
+                let _ = entry.localized("Name", &["ru_RU".into(), "ru".into()]);
+                let _ = entry.list("Categories");
+                let _ = entry.boolean("NoDisplay");
+            }
+        }
+
+        #[test]
+        fn unescape_keeps_plain_text(text in "[^\\\\]{0,40}") {
+            prop_assert_eq!(unescape(&text), text);
+        }
+
+        #[test]
+        fn hidden_list_round_trips(items in prop::collection::vec("\\PC{0,16}", 0..6)) {
+            let normalized: Vec<String> = items
+                .iter()
+                .map(|item| if item.ends_with(".desktop") { item.clone() } else { format!("{item}.desktop") })
+                .collect();
+            prop_assert_eq!(parse_hidden(&format_hidden(&normalized)), normalized);
+        }
+
+        #[test]
+        fn hidden_list_survives_garbage(text in "\\PC*") {
+            let _ = parse_hidden(&text);
+        }
+
+        #[test]
+        fn search_finds_its_own_name(name in "\\PC{1,16}", query_start in 0usize..16, query_len in 0usize..16) {
+            let app = entry("x.desktop", &name, "", "");
+            let folded = casefold(&name);
+            let chars: Vec<char> = folded.chars().collect();
+            let start = query_start.min(chars.len());
+            let end = (start + query_len).min(chars.len());
+            let query: String = chars[start..end].iter().collect();
+            prop_assert_eq!(search(std::slice::from_ref(&app), &query).len(), 1);
+        }
+    }
+
+    fn entry(id: &str, name: &str, generic: &str, comment: &str) -> AppEntry {
+        super::tests::entry(id, name, generic, comment)
     }
 }

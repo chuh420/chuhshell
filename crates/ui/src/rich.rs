@@ -235,3 +235,46 @@ mod tests {
         assert_eq!(spans[0].size, 11.0);
     }
 }
+
+#[cfg(test)]
+mod properties {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn text(spans: &[Span]) -> String {
+        spans.iter().map(|span| span.text.as_str()).collect()
+    }
+
+    proptest! {
+        #[test]
+        fn any_markup_renders(input in "\\PC*") {
+            let spans = styled_spans(&input, "Sans", 11.0, Color::rgb(0));
+            prop_assert!(spans.iter().all(|span| !span.text.is_empty()));
+        }
+
+        #[test]
+        fn tag_soup_renders(input in "(<(/?)(b|i|u|a|br|p|strong|em|x)( href=\"[^\"]{0,8}\")?>|&[a-z#0-9x]{0,8};?|[a-z ]{0,4})*") {
+            let _ = styled_spans(&input, "Sans", 11.0, Color::rgb(0));
+        }
+
+        #[test]
+        fn plain_words_pass_through(words in proptest::collection::vec("[A-Za-z0-9.,!?]{1,10}", 0..8)) {
+            let input = words.join(" ");
+            prop_assert_eq!(text(&styled_spans(&input, "Sans", 11.0, Color::rgb(0))), input);
+        }
+
+        #[test]
+        fn escaped_text_round_trips(input in "[^\\s]{1,30}") {
+            let escaped = input.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+            prop_assert_eq!(text(&styled_spans(&escaped, "Sans", 11.0, Color::rgb(0))), input);
+        }
+
+        #[test]
+        fn collapse_is_idempotent(input in "\\PC*") {
+            let once = collapse_whitespace(&input);
+            prop_assert_eq!(collapse_whitespace(&once), once.clone());
+            let chip: String = chip_spans(&input, "Sans", 11.0, 14.0).iter().map(|span| span.text.as_str()).collect();
+            prop_assert_eq!(chip, once);
+        }
+    }
+}

@@ -2,6 +2,9 @@ pub mod hyprland;
 pub mod niri;
 pub mod sway;
 
+#[cfg(test)]
+mod properties;
+
 use std::{io, sync::OnceLock, thread, time::Duration};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
