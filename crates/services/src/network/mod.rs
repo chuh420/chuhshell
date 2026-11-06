@@ -19,6 +19,7 @@ const IWD: &str = "net.connman.iwd";
 const BLUEZ: &str = "org.bluez";
 const WIFI_AGENT: &str = "/quickshell/wifi_agent";
 const BLUETOOTH_AGENT: &str = "/quickshell/bluetooth_agent";
+const OWNER_CHANGED: &str = "org.freedesktop.DBus";
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WifiNetwork {
@@ -134,6 +135,35 @@ pub enum Backend {
     NetworkManager,
 }
 
+pub fn iwd_signal_matters(
+    member: &str,
+    interfaces: &[&str],
+    changed: &[&str],
+    panel: bool,
+) -> bool {
+    let scan_only = |name: &&str| {
+        matches!(
+            *name,
+            "net.connman.iwd.Network" | "net.connman.iwd.BasicServiceSet"
+        ) || name.starts_with("org.freedesktop.DBus.")
+    };
+    match member {
+        "InterfacesAdded" | "InterfacesRemoved" => panel || !interfaces.iter().all(scan_only),
+        "PropertiesChanged" => match interfaces.first().copied().unwrap_or_default() {
+            "net.connman.iwd.Station" => panel || changed.iter().any(|key| *key != "Scanning"),
+            "net.connman.iwd.Network" => {
+                panel
+                    || changed
+                        .iter()
+                        .any(|key| matches!(*key, "Connected" | "KnownNetwork"))
+            }
+            "net.connman.iwd.BasicServiceSet" => panel,
+            _ => true,
+        },
+        _ => true,
+    }
+}
+
 pub fn choose_backend(networkmanager: bool, iwd: bool) -> Backend {
     if networkmanager {
         Backend::NetworkManager
@@ -148,6 +178,11 @@ pub fn choose_backend(networkmanager: bool, iwd: bool) -> Backend {
 struct Inner {
     backend: Backend,
     nm_agent: bool,
+    iwd_agent: bool,
+    panel: bool,
+    nm_scan: Option<(Instant, i64)>,
+    nm_saved: HashMap<String, Option<nm::Saved>>,
+    pending_path: String,
     busy: bool,
     message: String,
     last_wifi: Option<WifiState>,
@@ -250,6 +285,7 @@ fn airplane_mode() -> bool {
 
 fn error_text(error: &zbus::Error) -> String {
     match error {
+        zbus::Error::Failure(message) => message.clone(),
         zbus::Error::MethodError(name, message, _) => match message {
             Some(message) => format!("{name}: {message}"),
             None => name.to_string(),
@@ -316,7 +352,14 @@ struct WifiAgent {
 
 #[interface(name = "net.connman.iwd.Agent")]
 impl WifiAgent {
-    async fn request_passphrase(&self, network: OwnedObjectPath) -> Result<String, WifiAgentError> {
+    async fn request_passphrase(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        network: OwnedObjectPath,
+    ) -> Result<String, WifiAgentError> {
+        if !self.handle.sent_by(&header, IWD).await {
+            return Err(WifiAgentError::Canceled("Not iwd".into()));
+        }
         let name = self
             .handle
             .property(IWD, network.as_str(), "net.connman.iwd.Network", "Name")
@@ -334,7 +377,10 @@ impl WifiAgent {
         }
     }
 
-    async fn cancel(&self, _reason: &str) {
+    async fn cancel(&self, #[zbus(header)] header: zbus::message::Header<'_>, _reason: &str) {
+        if !self.handle.sent_by(&header, IWD).await {
+            return;
+        }
         if let Ok(mut inner) = self.handle.inner.lock() {
             inner.wifi_pending = None;
         }
@@ -351,11 +397,15 @@ struct BluetoothAgent {
 impl BluetoothAgent {
     async fn ask(
         &self,
+        header: &zbus::message::Header<'_>,
         mode: &str,
         device: &OwnedObjectPath,
         value: String,
         wait: bool,
     ) -> Result<String, BluetoothAgentError> {
+        if !self.handle.sent_by(header, BLUEZ).await {
+            return Err(BluetoothAgentError::Rejected("Not BlueZ".into()));
+        }
         let name = self
             .handle
             .property(BLUEZ, device.as_str(), "org.bluez.Device1", "Alias")
@@ -386,23 +436,31 @@ impl BluetoothAgent {
 impl BluetoothAgent {
     async fn request_confirmation(
         &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
         device: OwnedObjectPath,
         passkey: u32,
     ) -> Result<(), BluetoothAgentError> {
-        self.ask("confirm", &device, format!("{passkey:06}"), true)
+        self.ask(&header, "confirm", &device, format!("{passkey:06}"), true)
             .await
             .map(|_| ())
     }
 
     async fn request_pin_code(
         &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
         device: OwnedObjectPath,
     ) -> Result<String, BluetoothAgentError> {
-        self.ask("pin", &device, String::new(), true).await
+        self.ask(&header, "pin", &device, String::new(), true).await
     }
 
-    async fn request_passkey(&self, device: OwnedObjectPath) -> Result<u32, BluetoothAgentError> {
-        let value = self.ask("passkey", &device, String::new(), true).await?;
+    async fn request_passkey(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        device: OwnedObjectPath,
+    ) -> Result<u32, BluetoothAgentError> {
+        let value = self
+            .ask(&header, "passkey", &device, String::new(), true)
+            .await?;
         value
             .parse()
             .map_err(|_| BluetoothAgentError::Rejected("Invalid passkey".into()))
@@ -410,46 +468,98 @@ impl BluetoothAgent {
 
     async fn request_authorization(
         &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
         device: OwnedObjectPath,
     ) -> Result<(), BluetoothAgentError> {
-        self.ask("authorize", &device, String::new(), true)
+        self.ask(&header, "authorize", &device, String::new(), true)
             .await
             .map(|_| ())
     }
 
     async fn authorize_service(
         &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
         device: OwnedObjectPath,
         _uuid: &str,
     ) -> Result<(), BluetoothAgentError> {
-        self.ask("authorize", &device, String::new(), true)
+        self.ask(&header, "authorize", &device, String::new(), true)
             .await
             .map(|_| ())
     }
 
-    async fn display_pin_code(&self, device: OwnedObjectPath, pin: &str) {
-        let _ = self.ask("display", &device, pin.to_string(), false).await;
-    }
-
-    async fn display_passkey(&self, device: OwnedObjectPath, passkey: u32, _entered: u16) {
+    async fn display_pin_code(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        device: OwnedObjectPath,
+        pin: &str,
+    ) {
         let _ = self
-            .ask("display", &device, format!("{passkey:06}"), false)
+            .ask(&header, "display", &device, pin.to_string(), false)
             .await;
     }
 
-    async fn cancel(&self) {
+    async fn display_passkey(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        device: OwnedObjectPath,
+        passkey: u32,
+        _entered: u16,
+    ) {
+        let _ = self
+            .ask(&header, "display", &device, format!("{passkey:06}"), false)
+            .await;
+    }
+
+    async fn cancel(&self, #[zbus(header)] header: zbus::message::Header<'_>) {
+        if !self.handle.sent_by(&header, BLUEZ).await {
+            return;
+        }
         if let Ok(mut inner) = self.handle.inner.lock() {
             inner.bluetooth_pending = None;
         }
         (self.handle.callback)(Event::BluetoothPrompt(BluetoothPrompt::default()));
     }
 
-    async fn release(&self) {
-        self.cancel().await;
+    async fn release(&self, #[zbus(header)] header: zbus::message::Header<'_>) {
+        self.cancel(header).await;
     }
 }
 
 impl Handle {
+    async fn owner(&self, service: &str) -> Option<String> {
+        self.call(
+            "org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+            "GetNameOwner",
+            &(service,),
+        )
+        .await
+        .ok()?
+        .body()
+        .deserialize::<String>()
+        .ok()
+    }
+
+    async fn sent_by(&self, header: &zbus::message::Header<'_>, service: &str) -> bool {
+        let Some(sender) = header.sender() else {
+            return false;
+        };
+        self.owner(service)
+            .await
+            .is_some_and(|owner| owner == sender.as_str())
+    }
+
+    pub fn set_panel(&self, open: bool) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.panel = open;
+        }
+    }
+
+    pub fn unique_name(&self) -> Option<String> {
+        self.connection.unique_name().map(|name| name.to_string())
+    }
+
     fn emit(&self, event: Event) {
         (self.callback)(event);
     }
@@ -524,14 +634,27 @@ impl Handle {
     fn station(
         managed: &Managed,
     ) -> Option<(String, &HashMap<zbus::names::OwnedInterfaceName, Props>)> {
-        managed
+        let mut stations: Vec<(String, &HashMap<zbus::names::OwnedInterfaceName, Props>)> = managed
             .iter()
-            .find(|(_, interfaces)| {
+            .filter(|(_, interfaces)| {
                 interfaces
                     .keys()
                     .any(|name| name.as_str() == "net.connman.iwd.Device")
             })
             .map(|(path, interfaces)| (path.to_string(), interfaces))
+            .collect();
+        let connected = |interfaces: &HashMap<zbus::names::OwnedInterfaceName, Props>| {
+            interfaces
+                .iter()
+                .find(|(name, _)| name.as_str() == "net.connman.iwd.Station")
+                .is_some_and(|(_, props)| text(props, "State") == "connected")
+        };
+        stations.sort_by(|a, b| {
+            connected(b.1)
+                .cmp(&connected(a.1))
+                .then_with(|| (a.0.len(), &a.0).cmp(&(b.0.len(), &b.0)))
+        });
+        stations.into_iter().next()
     }
 
     async fn iwd_read_wifi(&self) -> Result<WifiState, String> {
@@ -684,21 +807,52 @@ impl Handle {
                     log::info!("wifi backend: {backend:?}");
                 }
                 inner.backend = backend;
-                let register = backend == Backend::NetworkManager && !inner.nm_agent;
-                if register {
-                    inner.nm_agent = true;
-                }
-                register
+                let flag = match backend {
+                    Backend::NetworkManager => Some(&mut inner.nm_agent),
+                    Backend::Iwd => Some(&mut inner.iwd_agent),
+                    Backend::None => None,
+                };
+                flag.is_some_and(|registered| !std::mem::replace(registered, true))
             }
             Err(_) => false,
         };
-        if register && let Err(err) = self.nm_register_agent().await {
-            log::warn!("networkmanager agent: {err}");
-            if let Ok(mut inner) = self.inner.lock() {
-                inner.nm_agent = false;
+        if register {
+            let result = match backend {
+                Backend::NetworkManager => self.nm_register_agent().await,
+                Backend::Iwd => self.iwd_register_agent().await,
+                Backend::None => Ok(()),
+            };
+            match result {
+                Ok(()) => log::info!("wifi agent registered with {backend:?}"),
+                Err(err) => {
+                    log::warn!("wifi agent for {backend:?}: {}", error_text(&err));
+                    if let Ok(mut inner) = self.inner.lock() {
+                        inner.nm_agent &= backend != Backend::NetworkManager;
+                        inner.iwd_agent &= backend != Backend::Iwd;
+                        inner.message = error_text(&err);
+                    }
+                }
             }
         }
         backend
+    }
+
+    async fn iwd_register_agent(&self) -> zbus::Result<()> {
+        let path = zbus::ObjectPath::try_from(WIFI_AGENT)?;
+        match self
+            .call(
+                IWD,
+                "/net/connman/iwd",
+                "net.connman.iwd.AgentManager",
+                "RegisterAgent",
+                &(path,),
+            )
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(zbus::Error::MethodError(name, _, _)) if name.ends_with(".AlreadyExists") => Ok(()),
+            Err(err) => Err(err),
+        }
     }
 
     fn backend(&self) -> Backend {
@@ -784,8 +938,9 @@ impl Handle {
             connected: true,
             ..WifiDetails::default()
         };
+        let mut addressed = false;
         if self.backend() == Backend::NetworkManager {
-            self.nm_diagnostics(&mut details).await;
+            addressed = self.nm_diagnostics(&mut details).await;
         } else if let Ok(managed) = self.managed(IWD).await
             && let Some((path, _)) = Self::station(&managed)
             && let Ok(reply) = self
@@ -823,7 +978,12 @@ impl Handle {
             .ok()
             .and_then(|inner| inner.addresses_checked)
             .is_none_or(|checked| now.duration_since(checked).as_secs_f64() > 10.0);
-        if stale {
+        if addressed {
+            if let Ok(mut inner) = self.inner.lock() {
+                inner.addresses = (details.ip.clone(), details.gateway.clone());
+                inner.addresses_checked = Some(now);
+            }
+        } else if stale {
             let found = addresses(&device);
             if let Ok(mut inner) = self.inner.lock() {
                 inner.addresses = found;
@@ -863,7 +1023,7 @@ impl Handle {
 
     async fn station_path(&self) -> Result<String, String> {
         match self.detect_backend().await {
-            Backend::NetworkManager => return self.nm_device().await.map(|(path, _)| path),
+            Backend::NetworkManager => return self.nm_device().await,
             Backend::None => return Err("No Wi-Fi service found".into()),
             Backend::Iwd => {}
         }
@@ -902,16 +1062,31 @@ impl Handle {
             if handle.backend() == Backend::NetworkManager {
                 return handle.nm_power(enabled).await;
             }
-            handle
-                .set_property(
-                    IWD,
-                    &path,
-                    "net.connman.iwd.Device",
-                    "Powered",
-                    Variant::Bool(enabled),
-                )
-                .await
-                .map(|_| false)
+            let managed = handle.managed(IWD).await?;
+            let mut devices: Vec<String> = managed
+                .iter()
+                .filter(|(_, interfaces)| {
+                    interfaces
+                        .keys()
+                        .any(|name| name.as_str() == "net.connman.iwd.Device")
+                })
+                .map(|(device, _)| device.to_string())
+                .collect();
+            if devices.is_empty() {
+                devices.push(path);
+            }
+            for device in devices {
+                handle
+                    .set_property(
+                        IWD,
+                        &device,
+                        "net.connman.iwd.Device",
+                        "Powered",
+                        Variant::Bool(enabled),
+                    )
+                    .await?;
+            }
+            Ok(false)
         })
         .await;
     }
@@ -1021,6 +1196,7 @@ impl Handle {
     pub fn password(&self, password: String) {
         let pending = self.inner.lock().ok().and_then(|mut inner| {
             inner.message.clear();
+            inner.pending_path.clear();
             inner.wifi_pending.take()
         });
         if let Some(sender) = pending {
@@ -1032,6 +1208,7 @@ impl Handle {
     pub fn cancel(&self) {
         let pending = self.inner.lock().ok().and_then(|mut inner| {
             inner.message.clear();
+            inner.pending_path.clear();
             inner.wifi_pending.take()
         });
         if pending.is_some() {
@@ -1414,6 +1591,71 @@ impl Handle {
         }
     }
 
+    fn nm_signal(&self, message: &zbus::Message, member: &str) -> bool {
+        let header = message.header();
+        let path = header.path().map(|p| p.as_str()).unwrap_or_default();
+        match member {
+            "Updated" => self.nm_forget_cached(Some(path)),
+            "ConnectionRemoved" => {
+                let removed = message.body().deserialize::<OwnedObjectPath>().ok();
+                self.nm_forget_cached(removed.as_ref().map(|path| path.as_str()));
+            }
+            _ => {}
+        }
+        let (interface, changed) = if member == "PropertiesChanged" {
+            match message.body().deserialize::<(String, Props, Vec<String>)>() {
+                Ok((interface, changed, invalidated)) => (
+                    interface,
+                    changed.into_keys().chain(invalidated).collect::<Vec<_>>(),
+                ),
+                Err(_) => return false,
+            }
+        } else {
+            (
+                header
+                    .interface()
+                    .map(|i| i.as_str().to_string())
+                    .unwrap_or_default(),
+                Vec::new(),
+            )
+        };
+        let changed: Vec<&str> = changed.iter().map(String::as_str).collect();
+        let (panel, scanning) = self
+            .inner
+            .lock()
+            .map(|inner| (inner.panel, inner.nm_scan.is_some()))
+            .unwrap_or_default();
+        nm::signal_matters(member, path, &interface, &changed, panel, scanning)
+    }
+
+    fn iwd_signal(&self, message: &zbus::Message, member: &str) -> bool {
+        let body = message.body();
+        let (interfaces, changed): (Vec<String>, Vec<String>) = match member {
+            "InterfacesAdded" => {
+                match body.deserialize::<(OwnedObjectPath, HashMap<String, Props>)>() {
+                    Ok((_, added)) => (added.into_keys().collect(), Vec::new()),
+                    Err(_) => return true,
+                }
+            }
+            "InterfacesRemoved" => match body.deserialize::<(OwnedObjectPath, Vec<String>)>() {
+                Ok((_, removed)) => (removed, Vec::new()),
+                Err(_) => return true,
+            },
+            "PropertiesChanged" => match body.deserialize::<(String, Props, Vec<String>)>() {
+                Ok((interface, changed, invalidated)) => (
+                    vec![interface],
+                    changed.into_keys().chain(invalidated).collect(),
+                ),
+                Err(_) => return true,
+            },
+            _ => return true,
+        };
+        let interfaces: Vec<&str> = interfaces.iter().map(String::as_str).collect();
+        let changed: Vec<&str> = changed.iter().map(String::as_str).collect();
+        let panel = self.inner.lock().map(|inner| inner.panel).unwrap_or(true);
+        iwd_signal_matters(member, &interfaces, &changed, panel)
+    }
+
     pub async fn watch(&self) -> zbus::Result<()> {
         let mut streams = Vec::new();
         for (sender, member) in [
@@ -1424,6 +1666,7 @@ impl Handle {
             (nm::NM, "StateChanged"),
             (nm::NM, "NewConnection"),
             (nm::NM, "ConnectionRemoved"),
+            (nm::NM, "Updated"),
             (nm::NM, "AccessPointAdded"),
             (nm::NM, "AccessPointRemoved"),
             (BLUEZ, "PropertiesChanged"),
@@ -1440,57 +1683,100 @@ impl Handle {
                 MessageStream::for_match_rule(rule, &self.connection, None).await?,
             ));
         }
-        let owner_rule = MatchRule::builder()
-            .msg_type(Type::Signal)
-            .sender("org.freedesktop.DBus")
-            .member("NameOwnerChanged")
-            .arg(0, IWD)
-            .build()?;
-        streams.push((
-            IWD,
-            MessageStream::for_match_rule(owner_rule, &self.connection, None).await?,
-        ));
-        let nm_owner_rule = MatchRule::builder()
-            .msg_type(Type::Signal)
-            .sender("org.freedesktop.DBus")
-            .member("NameOwnerChanged")
-            .arg(0, nm::NM)
-            .build()?;
-        streams.push((
-            nm::NM,
-            MessageStream::for_match_rule(nm_owner_rule, &self.connection, None).await?,
-        ));
+        for service in [IWD, nm::NM, BLUEZ] {
+            let rule = MatchRule::builder()
+                .msg_type(Type::Signal)
+                .sender("org.freedesktop.DBus")
+                .member("NameOwnerChanged")
+                .arg(0, service)
+                .build()?;
+            streams.push((
+                OWNER_CHANGED,
+                MessageStream::for_match_rule(rule, &self.connection, None).await?,
+            ));
+        }
+        let mut owners: HashMap<&'static str, String> = HashMap::new();
+        for service in [IWD, nm::NM, BLUEZ] {
+            owners.insert(service, self.owner(service).await.unwrap_or_default());
+        }
         let tagged = streams
             .into_iter()
             .map(|(service, stream)| StreamExt::map(stream, move |message| (service, message)));
         let mut merged = futures_util::stream::select_all(tagged);
         while let Some((service, message)) = merged.next().await {
-            if message.is_err() {
+            let Ok(message) = message else {
+                continue;
+            };
+            let header = message.header();
+            if service == OWNER_CHANGED {
+                let Ok((name, _, owner)) = message.body().deserialize::<(String, String, String)>()
+                else {
+                    continue;
+                };
+                let Some(service) = [IWD, nm::NM, BLUEZ].into_iter().find(|s| *s == name) else {
+                    continue;
+                };
+                owners.insert(service, owner);
+                if service == BLUEZ {
+                    self.emit(Event::BluetoothChanged);
+                    continue;
+                }
+                if let Ok(mut inner) = self.inner.lock() {
+                    if service == nm::NM {
+                        inner.nm_agent = false;
+                        inner.nm_saved.clear();
+                        inner.nm_scan = None;
+                    } else {
+                        inner.iwd_agent = false;
+                    }
+                }
+                self.emit(Event::WifiChanged);
                 continue;
             }
-            if service == nm::NM
-                && message.as_ref().is_ok_and(|message| {
-                    message
-                        .header()
-                        .member()
-                        .is_some_and(|m| m == "NameOwnerChanged")
-                })
-                && let Ok(mut inner) = self.inner.lock()
-            {
-                inner.nm_agent = false;
+            let sender = header
+                .sender()
+                .map(|name| name.as_str())
+                .unwrap_or_default();
+            if owners.get(service).is_none_or(|owner| owner != sender) {
+                continue;
             }
-            self.emit(if service == IWD || service == nm::NM {
-                Event::WifiChanged
-            } else {
-                Event::BluetoothChanged
-            });
+            if service == BLUEZ {
+                self.emit(Event::BluetoothChanged);
+                continue;
+            }
+            let member = header.member().map(|m| m.as_str()).unwrap_or_default();
+            if service == nm::NM && !self.nm_signal(&message, member) {
+                continue;
+            }
+            if service == IWD && !self.iwd_signal(&message, member) {
+                continue;
+            }
+            self.emit(Event::WifiChanged);
         }
         Ok(())
     }
 }
 
 pub async fn start(callback: impl Fn(Event) + Send + Sync + 'static) -> zbus::Result<Handle> {
-    let connection = Connection::system().await?;
+    let address = std::env::var("CHUHSHELL_NETWORK_BUS").ok();
+    start_on(
+        address.as_deref().filter(|address| !address.is_empty()),
+        callback,
+    )
+    .await
+}
+
+pub async fn start_on(
+    address: Option<&str>,
+    callback: impl Fn(Event) + Send + Sync + 'static,
+) -> zbus::Result<Handle> {
+    let connection = match address {
+        Some(address) => {
+            log::info!("network bus: {address}");
+            zbus::connection::Builder::address(address).build().await?
+        }
+        None => Connection::system().await?,
+    };
     let handle = Handle {
         connection: connection.clone(),
         inner: Arc::new(Mutex::new(Inner::default())),
@@ -1545,27 +1831,81 @@ pub async fn start(callback: impl Fn(Event) + Send + Sync + 'static) -> zbus::Re
             )
             .await;
     }
-    let wifi_path = zbus::ObjectPath::try_from(WIFI_AGENT)?;
-    if handle.detect_backend().await == Backend::Iwd
-        && let Err(error) = handle
-            .call(
-                IWD,
-                "/net/connman/iwd",
-                "net.connman.iwd.AgentManager",
-                "RegisterAgent",
-                &(wifi_path,),
-            )
-            .await
-        && let Ok(mut inner) = handle.inner.lock()
-    {
-        inner.message = error_text(&error);
-    }
+    handle.detect_backend().await;
     Ok(handle)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn iwd_scan_noise_waits_for_the_panel() {
+        let station = ["net.connman.iwd.Station"];
+        let network = ["net.connman.iwd.Network"];
+        assert!(!iwd_signal_matters(
+            "PropertiesChanged",
+            &station,
+            &["Scanning"],
+            false
+        ));
+        assert!(iwd_signal_matters(
+            "PropertiesChanged",
+            &station,
+            &["Scanning"],
+            true
+        ));
+        assert!(iwd_signal_matters(
+            "PropertiesChanged",
+            &station,
+            &["State", "Scanning"],
+            false
+        ));
+        assert!(!iwd_signal_matters(
+            "PropertiesChanged",
+            &network,
+            &["ExtendedServiceSet"],
+            false
+        ));
+        assert!(iwd_signal_matters(
+            "PropertiesChanged",
+            &network,
+            &["Connected"],
+            false
+        ));
+        assert!(iwd_signal_matters(
+            "PropertiesChanged",
+            &["net.connman.iwd.Device"],
+            &["Powered"],
+            false
+        ));
+        assert!(iwd_signal_matters(
+            "PropertiesChanged",
+            &["net.connman.iwd.KnownNetwork"],
+            &["AutoConnect"],
+            false
+        ));
+        assert!(!iwd_signal_matters("InterfacesAdded", &network, &[], false));
+        assert!(iwd_signal_matters("InterfacesAdded", &network, &[], true));
+        assert!(!iwd_signal_matters(
+            "InterfacesRemoved",
+            &["net.connman.iwd.Network", "net.connman.iwd.BasicServiceSet"],
+            &[],
+            false
+        ));
+        assert!(iwd_signal_matters(
+            "InterfacesAdded",
+            &["net.connman.iwd.KnownNetwork"],
+            &[],
+            false
+        ));
+        assert!(iwd_signal_matters(
+            "InterfacesRemoved",
+            &["net.connman.iwd.Station"],
+            &[],
+            false
+        ));
+    }
 
     #[test]
     fn backend_prefers_networkmanager() {

@@ -1,0 +1,416 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+LAB=/run/chuhshell-lab
+BUS="unix:path=$LAB/bus"
+AP_NS=chlab-ap
+STA_NS=chlab-sta
+PASSWORD=labpass123
+
+usage() {
+    cat <<EOF
+usage: netlab COMMAND
+
+  up [nm|iwd]     create hwsim radios, access points and a private system bus
+  down            stop everything and unload mac80211_hwsim
+  status          show daemons and the bus address
+  use nm|iwd      run NetworkManager or iwd on the station radios
+  stop            stop the station daemon (NetworkManager or iwd)
+  restart         restart the station daemon
+  reset nm|iwd    forget every saved network and start the station daemon fresh
+  bus             print the bus address
+
+access points on one channel, password $PASSWORD:
+  lab-open, lab-wpa2, lab-sae (WPA3 only), lab-mixed (WPA2/WPA3),
+  lab-hidden (hidden, WPA2), lab-hidden-open (hidden, open)
+EOF
+}
+
+need_root() {
+    if [[ $EUID -ne 0 ]]; then
+        exec sudo -n "$0" "$@"
+    fi
+}
+
+log() {
+    printf 'netlab: %s\n' "$*" >&2
+}
+
+running() {
+    local pidfile="$LAB/$1.pid"
+    [[ -f $pidfile ]] && [[ -d /proc/$(<"$pidfile") ]]
+}
+
+spawn() {
+    local name=$1
+    shift
+    setsid "$@" >"$LAB/$name.log" 2>&1 </dev/null &
+    echo $! >"$LAB/$name.pid"
+}
+
+halt() {
+    local name=$1 pidfile="$LAB/$1.pid"
+    [[ -f $pidfile ]] || return 0
+    local pid
+    pid=$(<"$pidfile")
+    if kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null || true
+        for _ in $(seq 50); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.1
+        done
+        kill -9 "$pid" 2>/dev/null || true
+    fi
+    rm -f "$pidfile"
+}
+
+wait_for() {
+    local what=$1
+    shift
+    for _ in $(seq 100); do
+        if "$@" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.1
+    done
+    log "timed out waiting for $what"
+    return 1
+}
+
+hwsim_phys() {
+    local phy
+    for phy in /sys/class/ieee80211/*; do
+        [[ -e $phy ]] || continue
+        if readlink -f "$phy/device" | command grep -q hwsim; then
+            basename "$phy"
+        fi
+    done
+}
+
+in_sta() {
+    ip netns exec "$STA_NS" "$@"
+}
+
+in_ap() {
+    ip netns exec "$AP_NS" "$@"
+}
+
+station_interfaces() {
+    in_sta iw dev | awk '$1 == "Interface" {print $2}'
+}
+
+ensure_station_interfaces() {
+    local index=0 phy
+    for phy in $(in_sta ls /sys/class/ieee80211); do
+        if ! in_sta iw phy "$phy" info >/dev/null 2>&1; then
+            continue
+        fi
+        if [[ -z $(in_sta iw dev | awk -v p="phy#${phy#phy}" '/^phy#/ {cur = $1} $1 == "Interface" && cur == p {found = 1} END {print found}') ]]; then
+            in_sta iw phy "$phy" interface add "sta$index" type managed
+        fi
+        index=$((index + 1))
+    done
+    local iface
+    for iface in $(station_interfaces); do
+        in_sta ip link set "$iface" up || true
+    done
+}
+
+write_configs() {
+    mkdir -p "$LAB"/{nm,nm-lib,nm-run,iwd,iwd-conf,hostapd}
+    cat >"$LAB/bus.conf" <<EOF
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>system</type>
+  <listen>unix:path=$LAB/bus</listen>
+  <auth>EXTERNAL</auth>
+  <policy context="default">
+    <allow user="*"/>
+    <allow own="*"/>
+    <allow send_destination="*"/>
+    <allow send_type="method_call"/>
+    <allow send_type="signal"/>
+    <allow receive_sender="*"/>
+    <allow receive_type="method_call"/>
+    <allow receive_type="signal"/>
+  </policy>
+</busconfig>
+EOF
+    cat >"$LAB/NetworkManager.conf" <<EOF
+[main]
+auth-polkit=false
+dns=none
+rc-manager=unmanaged
+plugins=keyfile
+dhcp=internal
+systemd-resolved=false
+
+[keyfile]
+path=$LAB/nm/system-connections
+
+[connectivity]
+enabled=false
+
+[device]
+wifi.scan-rand-mac-address=no
+wifi.backend=wpa_supplicant
+
+[logging]
+level=INFO
+EOF
+    cat >"$LAB/iwd-conf/main.conf" <<EOF
+[General]
+EnableNetworkConfiguration=true
+
+[Network]
+NameResolvingService=none
+EOF
+    cat >"$LAB/hostapd.conf" <<EOF
+interface=ap0
+driver=nl80211
+ctrl_interface=$LAB/hostapd
+hw_mode=g
+channel=1
+ssid=lab-open
+
+bss=ap1
+bssid=02:aa:00:00:00:01
+ssid=lab-wpa2
+wpa=2
+wpa_key_mgmt=WPA-PSK
+rsn_pairwise=CCMP
+wpa_passphrase=$PASSWORD
+
+bss=ap2
+bssid=02:aa:00:00:00:02
+ssid=lab-sae
+wpa=2
+wpa_key_mgmt=SAE
+rsn_pairwise=CCMP
+sae_password=$PASSWORD
+ieee80211w=2
+
+bss=ap3
+bssid=02:aa:00:00:00:03
+ssid=lab-mixed
+wpa=2
+wpa_key_mgmt=WPA-PSK SAE
+rsn_pairwise=CCMP
+wpa_passphrase=$PASSWORD
+ieee80211w=1
+
+bss=ap4
+bssid=02:aa:00:00:00:04
+ssid=lab-hidden
+ignore_broadcast_ssid=1
+wpa=2
+wpa_key_mgmt=WPA-PSK
+rsn_pairwise=CCMP
+wpa_passphrase=$PASSWORD
+
+bss=ap5
+bssid=02:aa:00:00:00:05
+ssid=lab-hidden-open
+ignore_broadcast_ssid=1
+EOF
+}
+
+start_radios() {
+    if lsmod | command grep -q '^mac80211_hwsim'; then
+        log "mac80211_hwsim is already loaded; run 'netlab down' first"
+        exit 1
+    fi
+    ip netns add "$AP_NS"
+    ip netns add "$STA_NS"
+    modprobe mac80211_hwsim radios=3
+    wait_for "hwsim radios" test "$(hwsim_phys | wc -l)" -eq 3
+    local phys
+    mapfile -t phys < <(hwsim_phys | sort -V)
+    iw phy "${phys[0]}" set netns name "$AP_NS"
+    iw phy "${phys[1]}" set netns name "$STA_NS"
+    iw phy "${phys[2]}" set netns name "$STA_NS"
+    in_ap ip link set lo up
+    in_sta ip link set lo up
+    local iface
+    for iface in $(in_ap iw dev | awk '$1 == "Interface" {print $2}'); do
+        in_ap iw dev "$iface" del
+    done
+    for iface in $(station_interfaces); do
+        in_sta iw dev "$iface" del
+    done
+    local ap_phy
+    ap_phy=$(in_ap ls /sys/class/ieee80211 | head -1)
+    in_ap iw phy "$ap_phy" interface add ap0 type managed
+    in_ap ip link set ap0 address 02:aa:00:00:00:00
+    ensure_station_interfaces
+}
+
+start_access_points() {
+    spawn hostapd ip netns exec "$AP_NS" hostapd "$LAB/hostapd.conf"
+    wait_for "hostapd" in_ap ip link show ap5
+    local index
+    for index in 0 1 2 3 4 5; do
+        in_ap ip addr replace "10.77.$index.1/24" dev "ap$index"
+    done
+    local args=(--keep-in-foreground --no-resolv --no-hosts --port=0 --bind-dynamic
+        --dhcp-authoritative --dhcp-leasefile="$LAB/dnsmasq.leases" --pid-file=)
+    for index in 0 1 2 3 4 5; do
+        args+=(--interface="ap$index" --dhcp-range="10.77.$index.10,10.77.$index.50,1h")
+    done
+    spawn dnsmasq ip netns exec "$AP_NS" dnsmasq "${args[@]}"
+}
+
+start_bus() {
+    spawn bus dbus-daemon --config-file="$LAB/bus.conf" --nofork --nopidfile
+    wait_for "bus socket" test -S "$LAB/bus"
+    chmod 666 "$LAB/bus"
+}
+
+bus_has() {
+    DBUS_SYSTEM_BUS_ADDRESS=$BUS busctl --system --no-pager call org.freedesktop.DBus \
+        /org/freedesktop/DBus org.freedesktop.DBus NameHasOwner s "$1" | command grep -q true
+}
+
+start_nm() {
+    ensure_station_interfaces
+    if ! running wpa_supplicant; then
+        spawn wpa_supplicant ip netns exec "$STA_NS" \
+            env DBUS_SYSTEM_BUS_ADDRESS="$BUS" wpa_supplicant -u -s -O "$LAB/wpa"
+        wait_for "wpa_supplicant" bus_has fi.w1.wpa_supplicant1
+    fi
+    spawn nm ip netns exec "$STA_NS" env DBUS_SYSTEM_BUS_ADDRESS="$BUS" \
+        unshare --mount --propagation private sh -c "
+            mount --bind '$LAB/nm-lib' /var/lib/NetworkManager &&
+            mount -t tmpfs none /run/udev &&
+            mount -o remount,bind,ro /sys &&
+            mount --bind /dev/null /dev/rfkill &&
+            mkdir -p /run/NetworkManager && mount --bind '$LAB/nm-run' /run/NetworkManager &&
+            exec NetworkManager --no-daemon --config='$LAB/NetworkManager.conf' \
+                --state-file='$LAB/nm/NetworkManager.state' --pid-file='$LAB/nm/pid'"
+    wait_for "NetworkManager" bus_has org.freedesktop.NetworkManager
+    echo nm >"$LAB/mode"
+}
+
+start_iwd() {
+    ensure_station_interfaces
+    spawn iwd ip netns exec "$STA_NS" env DBUS_SYSTEM_BUS_ADDRESS="$BUS" \
+        STATE_DIRECTORY="$LAB/iwd" CONFIGURATION_DIRECTORY="$LAB/iwd-conf" \
+        /usr/lib/iwd/iwd
+    wait_for "iwd" bus_has net.connman.iwd
+    echo iwd >"$LAB/mode"
+}
+
+stop_station() {
+    halt nm
+    halt iwd
+    for _ in $(seq 50); do
+        bus_has org.freedesktop.NetworkManager || bus_has net.connman.iwd || break
+        sleep 0.1
+    done
+}
+
+use() {
+    case ${1:-} in
+    nm)
+        stop_station
+        start_nm
+        ;;
+    iwd)
+        stop_station
+        halt wpa_supplicant
+        start_iwd
+        ;;
+    *)
+        usage
+        exit 2
+        ;;
+    esac
+}
+
+reset() {
+    stop_station
+    halt wpa_supplicant
+    halt dnsmasq
+    halt hostapd
+    start_access_points
+    rm -rf "$LAB"/nm/system-connections "$LAB"/nm/NetworkManager.state "$LAB"/nm-lib/* "$LAB"/iwd/*
+    local iface
+    for iface in $(station_interfaces); do
+        in_sta ip addr flush dev "$iface" || true
+    done
+    use "${1:-nm}"
+}
+
+up() {
+    local mode=${1:-nm}
+    if [[ -d $LAB ]] && running bus; then
+        log "already up"
+        use "$mode"
+        return
+    fi
+    trap 'log "setup failed, cleaning up"; down' ERR
+    mkdir -p "$LAB"
+    write_configs
+    start_radios
+    start_access_points
+    start_bus
+    use "$mode"
+    trap - ERR
+    log "up ($mode), bus $BUS"
+}
+
+down() {
+    halt nm
+    halt iwd
+    halt wpa_supplicant
+    halt dnsmasq
+    halt hostapd
+    halt bus
+    ip netns del "$STA_NS" 2>/dev/null || true
+    ip netns del "$AP_NS" 2>/dev/null || true
+    if lsmod | command grep -q '^mac80211_hwsim'; then
+        for _ in $(seq 20); do
+            modprobe -r mac80211_hwsim 2>/dev/null && break
+            sleep 0.2
+        done
+    fi
+    rm -rf "$LAB"
+    log "down"
+}
+
+status() {
+    local name
+    for name in bus hostapd dnsmasq wpa_supplicant nm iwd; do
+        if running "$name"; then
+            printf '%-15s running (%s)\n' "$name" "$(<"$LAB/$name.pid")"
+        else
+            printf '%-15s stopped\n' "$name"
+        fi
+    done
+    [[ -f $LAB/mode ]] && printf 'mode           %s\n' "$(<"$LAB/mode")"
+    printf 'bus            %s\n' "$BUS"
+}
+
+command=${1:-}
+case $command in
+up | down | use | stop | restart | reset)
+    need_root "$@"
+    ;;
+esac
+
+case $command in
+up) up "${2:-nm}" ;;
+down) down ;;
+status) status ;;
+use) use "${2:-}" ;;
+stop) stop_station ;;
+restart) use "$(cat "$LAB/mode")" ;;
+reset) reset "${2:-nm}" ;;
+bus) echo "$BUS" ;;
+-h | --help | help | "") usage ;;
+*)
+    usage
+    exit 2
+    ;;
+esac
