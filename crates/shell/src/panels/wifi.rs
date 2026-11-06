@@ -530,13 +530,12 @@ impl WifiPanel {
         };
         self.status.set_text(engine, &status);
         if let Some(details) = &data.wifi_details {
-            self.band.set_text(
-                engine,
-                &format!(
-                    "{} · ch {} · {}",
-                    details.band, details.channel, details.mode
-                ),
-            );
+            let mut band = format!("{} · ch {}", details.band, details.channel);
+            if !details.mode.is_empty() {
+                band.push_str(" · ");
+                band.push_str(&details.mode);
+            }
+            self.band.set_text(engine, &band);
             self.rssi.set_text(
                 engine,
                 &format!("{} dBm · {}", details.rssi, quality(details.rssi)),

@@ -60,3 +60,14 @@ impl<T> Future for Receiver<T> {
         Poll::Pending
     }
 }
+
+pub fn sleep(duration: std::time::Duration) -> Receiver<()> {
+    let (sender, receiver) = channel();
+    let _ = std::thread::Builder::new()
+        .name("sleep".into())
+        .spawn(move || {
+            std::thread::sleep(duration);
+            sender.send(());
+        });
+    receiver
+}

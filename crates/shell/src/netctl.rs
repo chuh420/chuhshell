@@ -191,6 +191,9 @@ impl App {
             self.net_action(NetAction::BtScan(false));
         }
         let wifi = panel == "wifi";
+        if let Some(handle) = &self.net.handle {
+            handle.set_panel(wifi);
+        }
         if wifi && !self.net.wifi_panel {
             self.net.wifi_panel = true;
             self.net_task(|handle| async move {
