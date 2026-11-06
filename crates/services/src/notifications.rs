@@ -72,6 +72,17 @@ struct Store {
     alive: HashMap<u32, Notification>,
 }
 
+impl Store {
+    fn allocate(&mut self) -> u32 {
+        loop {
+            self.next = self.next.wrapping_add(1).max(1);
+            if !self.alive.contains_key(&self.next) {
+                return self.next;
+            }
+        }
+    }
+}
+
 type Callback = Arc<dyn Fn(Event) + Send + Sync>;
 
 struct Server {
@@ -127,25 +138,58 @@ fn image_data(value: &Variant<'_>) -> Option<Image> {
     if fields.len() < 7 {
         return None;
     }
-    let width = u32::try_from(int(&fields[0])?).ok()?;
-    let height = u32::try_from(int(&fields[1])?).ok()?;
-    let stride = usize::try_from(int(&fields[2])?).ok()?;
-    let alpha = boolean(&fields[3])?;
-    let channels = usize::try_from(int(&fields[5])?).ok()?;
     let data: Vec<u8> = Vec::<u8>::try_from(fields[6].clone()).ok()?;
-    if width == 0 || height == 0 || channels < 3 {
+    pixels(
+        int(&fields[0])?,
+        int(&fields[1])?,
+        int(&fields[2])?,
+        boolean(&fields[3])?,
+        int(&fields[5])?,
+        &data,
+    )
+}
+
+pub const MAX_IMAGE_SIDE: u32 = 2048;
+
+pub fn pixels(
+    width: i64,
+    height: i64,
+    stride: i64,
+    alpha: bool,
+    channels: i64,
+    data: &[u8],
+) -> Option<Image> {
+    let width = u32::try_from(width).ok()?;
+    let height = u32::try_from(height).ok()?;
+    let stride = usize::try_from(stride).ok()?;
+    let channels = usize::try_from(channels).ok()?;
+    if width == 0
+        || height == 0
+        || width > MAX_IMAGE_SIDE
+        || height > MAX_IMAGE_SIDE
+        || !(3..=4).contains(&channels)
+    {
+        return None;
+    }
+    let row = (width as usize).checked_mul(channels)?;
+    if stride < row {
+        return None;
+    }
+    let needed = (height as usize - 1)
+        .checked_mul(stride)?
+        .checked_add(row)?;
+    if data.len() < needed {
         return None;
     }
     let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
     for y in 0..height as usize {
-        for x in 0..width as usize {
-            let i = y * stride + x * channels;
-            let pixel = data.get(i..i + channels)?;
+        let line = &data[y * stride..y * stride + row];
+        for pixel in line.chunks_exact(channels) {
             rgba.extend_from_slice(&[
                 pixel[0],
                 pixel[1],
                 pixel[2],
-                if alpha && channels >= 4 {
+                if alpha && channels == 4 {
                     pixel[3]
                 } else {
                     255
@@ -158,6 +202,19 @@ fn image_data(value: &Variant<'_>) -> Option<Image> {
         height,
         rgba: Arc::new(rgba),
     })
+}
+
+pub const MAX_SUMMARY: usize = 1024;
+pub const MAX_BODY: usize = 16 * 1024;
+pub const MAX_NAME: usize = 256;
+pub const MAX_ACTIONS: usize = 16;
+
+pub fn clip(mut text: String, limit: usize) -> String {
+    if let Some((index, _)) = text.char_indices().nth(limit) {
+        text.truncate(index);
+        text.push('…');
+    }
+    text
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -193,16 +250,17 @@ fn parse(
         .unwrap_or_default();
     Notification {
         id,
-        app_name,
-        app_icon,
-        summary,
-        body,
+        app_name: clip(app_name, MAX_NAME),
+        app_icon: clip(app_icon, 4 * MAX_NAME),
+        summary: clip(summary, MAX_SUMMARY),
+        body: clip(body, MAX_BODY),
         actions: actions
             .chunks(2)
             .filter(|pair| pair.len() == 2)
+            .take(MAX_ACTIONS)
             .map(|pair| Action {
-                identifier: pair[0].clone(),
-                text: pair[1].clone(),
+                identifier: clip(pair[0].clone(), MAX_NAME),
+                text: clip(pair[1].clone(), MAX_NAME),
             })
             .collect(),
         urgency,
@@ -270,8 +328,7 @@ impl Server {
             });
             return replaces_id;
         }
-        store.next += 1;
-        let id = store.next;
+        let id = store.allocate();
         let notification = parse(
             id,
             app_name,
@@ -351,8 +408,7 @@ impl Handle {
         let Ok(mut store) = self.store.lock() else {
             return 0;
         };
-        store.next += 1;
-        let id = store.next;
+        let id = store.allocate();
         let mut notification = parse(
             id,
             app_name.into(),
@@ -402,20 +458,78 @@ impl Handle {
 }
 
 pub async fn serve(callback: impl Fn(Event) + Send + Sync + 'static) -> zbus::Result<Handle> {
+    serve_on(None, callback).await
+}
+
+pub async fn serve_on(
+    address: Option<&str>,
+    callback: impl Fn(Event) + Send + Sync + 'static,
+) -> zbus::Result<Handle> {
     let store = Arc::new(Mutex::new(Store::default()));
     let callback: Callback = Arc::new(callback);
     let server = Server {
         store: store.clone(),
         callback: callback.clone(),
     };
-    let connection = zbus::connection::Builder::session()
-        .name(NAME)
-        .serve_at(PATH, server)
-        .build()
-        .await?;
+    let builder = match address {
+        Some(address) => zbus::connection::Builder::address(address),
+        None => zbus::connection::Builder::session(),
+    };
+    let connection = builder.name(NAME).serve_at(PATH, server).build().await?;
     Ok(Handle {
         connection,
         store,
         callback,
     })
+}
+
+#[cfg(test)]
+mod properties {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn clip_keeps_char_boundaries(text in "\\PC{0,64}", limit in 0usize..40) {
+            let clipped = clip(text.clone(), limit);
+            if text.chars().count() <= limit {
+                prop_assert_eq!(clipped, text);
+            } else {
+                prop_assert_eq!(clipped.chars().count(), limit + 1);
+                prop_assert!(clipped.ends_with('…'));
+            }
+        }
+
+        #[test]
+        fn image_data_never_overreads(
+            width in prop_oneof![-2i64..40, Just(i64::MAX), Just(1i64 << 32), Just(100_000)],
+            height in prop_oneof![-2i64..40, Just(i64::MAX), Just(1i64 << 32), Just(100_000)],
+            stride in prop_oneof![-2i64..200, Just(i64::MAX), Just(usize::MAX as i64)],
+            alpha in any::<bool>(),
+            channels in prop_oneof![-1i64..8, Just(i64::MAX)],
+            data in prop::collection::vec(any::<u8>(), 0..4096),
+        ) {
+            if let Some(Image::Pixels { width: w, height: h, rgba }) = pixels(width, height, stride, alpha, channels, &data) {
+                prop_assert_eq!(rgba.len(), w as usize * h as usize * 4);
+                prop_assert!(w <= MAX_IMAGE_SIDE && h <= MAX_IMAGE_SIDE);
+                prop_assert!((h as usize - 1) * stride as usize + w as usize * channels as usize <= data.len());
+            }
+        }
+
+        #[test]
+        fn exact_images_decode(width in 1u32..24, height in 1u32..24, pad in 0usize..8, alpha in any::<bool>()) {
+            let channels = if alpha { 4 } else { 3 };
+            let stride = width as usize * channels + pad;
+            let data: Vec<u8> = (0..stride * height as usize).map(|i| i as u8).collect();
+            let image = pixels(width as i64, height as i64, stride as i64, alpha, channels as i64, &data);
+            let Some(Image::Pixels { rgba, .. }) = image else {
+                return Err(TestCaseError::fail("image refused"));
+            };
+            let last = (height as usize - 1) * stride + (width as usize - 1) * channels;
+            let tail = &rgba[rgba.len() - 4..];
+            prop_assert_eq!(&tail[..3], &data[last..last + 3]);
+            prop_assert_eq!(tail[3], if alpha { data[last + 3] } else { 255 });
+            prop_assert!(pixels(width as i64, height as i64, stride as i64, alpha, channels as i64, &data[..data.len() - pad - 1]).is_none());
+        }
+    }
 }
