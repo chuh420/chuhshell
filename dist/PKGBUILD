@@ -6,7 +6,7 @@ pkgdesc='A Wayland desktop shell for Hyprland, niri and sway'
 arch=('x86_64' 'aarch64')
 url='https://github.com/chuh420/chuhshell'
 license=('MIT OR Apache-2.0')
-depends=('gcc-libs' 'glibc' 'libpipewire' 'libxkbcommon' 'wireplumber')
+depends=('gcc-libs' 'glibc' 'libpipewire' 'libxkbcommon' 'ttf-font' 'wireplumber')
 makedepends=('cargo' 'clang' 'git')
 optdepends=(
   'upower: battery chip and panel'
