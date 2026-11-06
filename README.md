@@ -12,7 +12,7 @@ chuhshell is in beta. I built it for my own desktop and then moved every persona
 
 - Hyprland is my daily driver and the best tested.
 - niri and sway were only checked in a nested session: the shell starts, picks the compositor, draws the bar and follows workspaces and window titles. I have not used them for real work.
-- the NetworkManager backend is covered by unit tests only and has not run on real hardware, so expect it to break first.
+- I tested the NetworkManager backend against real NetworkManager 1.58 on virtual radios (see [development](#development)): open, WPA2, WPA3, mixed WPA2/WPA3 and hidden networks, wrong passwords, daemon restarts. I have not used it on real hardware yet.
 
 ## features
 
@@ -52,7 +52,7 @@ chuhshell is in beta. I built it for my own desktop and then moved every persona
 | | supported | picked by |
 | --- | --- | --- |
 | compositor | Hyprland, niri, sway | `HYPRLAND_INSTANCE_SIGNATURE`, `NIRI_SOCKET` or `SWAYSOCK` |
-| Wi-Fi | iwd, NetworkManager | the service that owns its name on the system bus; NetworkManager wins when both run |
+| Wi-Fi | iwd, NetworkManager (open, WEP, WPA2, WPA3, OWE, saved enterprise profiles) | the service that owns its name on the system bus; NetworkManager wins when both run |
 
 Hyprland shows a fixed number of workspaces plus any busy ones above it. niri and sway show their real workspace list. under another compositor the bar runs without workspaces and window titles.
 
@@ -92,6 +92,14 @@ optional, each one turns on a feature:
 suspend, reboot and power off go through logind.
 
 ## install
+
+on Arch, build the package from `dist/PKGBUILD`:
+
+```sh
+cd dist && makepkg -si
+```
+
+the package installs the binary to `/usr/bin` and the unit to `/usr/lib/systemd/user`. by hand:
 
 ```sh
 cargo build --release
@@ -210,6 +218,28 @@ in the launcher, `Ctrl + H` hides the selected app and `Ctrl + Shift + H` shows 
 | `shell` | the binary: shell state, surfaces, panels and IPC |
 
 calloop drives everything on one thread. zbus futures run on its executor, and image decoding and file scans go to a small worker pool. the shell repaints only damaged regions after frame callbacks and frees surfaces you close.
+
+## development
+
+```sh
+cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+the tests include property tests for the parsers and a notification server test on a private D-Bus session bus, so you need `dbus-daemon`.
+
+`tools/netlab` builds a Wi-Fi lab out of `mac80211_hwsim` radios: hostapd serves `lab-open`, `lab-wpa2`, `lab-sae`, `lab-mixed`, `lab-hidden` and `lab-hidden-open` in one network namespace, and NetworkManager or iwd runs in another with its own system bus. your own Wi-Fi keeps working. it needs root, `hostapd`, `dnsmasq`, `networkmanager` and `iwd`.
+
+```sh
+tools/netlab up nm
+cargo test -p services --test network_lab -- --ignored --test-threads=1
+tools/netlab down
+```
+
+to see the lab in the shell, start it with `CHUHSHELL_NETWORK_BUS=unix:path=/run/chuhshell-lab/bus`. only the Wi-Fi and Bluetooth service use that bus.
+
+`cargo test -p shell --test ipc_stress -- --ignored` hammers the socket of the running shell with silent clients, slow clients, oversized and broken requests.
 
 ## license
 
