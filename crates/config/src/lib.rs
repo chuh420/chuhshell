@@ -165,3 +165,53 @@ mod tests {
         assert_eq!(defaults.label("German (no dead keys)"), "DE");
     }
 }
+
+#[cfg(test)]
+mod properties {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn any_text_parses_or_reports(text in "\\PC*") {
+            let _ = parse(&text);
+        }
+
+        #[test]
+        fn toml_like_text_parses_or_reports(
+            section in "\\[(general|fonts|bar|theme|theme\\.colors|keyboard\\.labels|commands|hooks|launcher|x)\\]",
+            key in "[a-z_]{1,12}",
+            value in prop_oneof![
+                "-?[0-9]{1,6}(\\.[0-9]{1,3})?",
+                "\"[^\"\\\\\n]{0,20}\"",
+                "(true|false)",
+                "\\[\\]",
+            ],
+        ) {
+            let _ = parse(&format!("{section}\n{key} = {value}\n"));
+        }
+
+        #[test]
+        fn accepted_configs_are_valid(scale in proptest::num::f64::ANY, workspaces in any::<i64>()) {
+            if let Ok(config) = parse(&format!("[general]\nscale = {scale:?}\n[bar]\nworkspaces = {workspaces}\n")) {
+                prop_assert!((0.5..=4.0).contains(&config.general.scale));
+                prop_assert!((1..=20).contains(&config.bar.workspaces));
+            }
+        }
+
+        #[test]
+        fn hex_colors(value in "\\PC{0,9}") {
+            if let Some(color) = parse_hex(&value) {
+                prop_assert!(color <= 0xff_ffff);
+                prop_assert_eq!(format!("#{color:06x}"), value.to_ascii_lowercase());
+            }
+        }
+
+        #[test]
+        fn keyboard_labels_never_panic(layout in "\\PC{0,40}") {
+            let keyboard = Keyboard::default();
+            let label = keyboard.label(&layout);
+            prop_assert!(label.chars().count() <= 6 || keyboard.labels.values().any(|value| *value == label));
+        }
+    }
+}
