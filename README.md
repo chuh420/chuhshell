@@ -227,12 +227,12 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-the tests include property tests for the parsers and a notification server test on a private D-Bus session bus, so you need `dbus-daemon`.
+the tests include property tests for the parsers and a notification server test on a private D-Bus session bus, so you need `dbus-daemon`. GitHub Actions runs the same three commands in an Arch container on every push and pull request.
 
-`tools/netlab` builds a Wi-Fi lab out of `mac80211_hwsim` radios: hostapd serves `lab-open`, `lab-wpa2`, `lab-sae`, `lab-mixed`, `lab-hidden` and `lab-hidden-open` in one network namespace, and NetworkManager or iwd runs in another with its own system bus. your own Wi-Fi keeps working. it needs root, `hostapd`, `dnsmasq`, `networkmanager` and `iwd`.
+`tools/netlab` builds a Wi-Fi lab out of `mac80211_hwsim` radios: hostapd serves `lab-open`, `lab-wpa2`, `lab-sae`, `lab-mixed`, `lab-hidden` and `lab-hidden-open` in one network namespace, and NetworkManager or iwd runs in another with its own system bus. your own Wi-Fi keeps working, and only the user who started the lab can reach its bus. it needs root, `hostapd`, `dnsmasq`, `networkmanager` and `iwd`.
 
 ```sh
-tools/netlab up nm
+tools/netlab up nm    # or: tools/netlab up iwd
 cargo test -p services --test network_lab -- --ignored --test-threads=1
 tools/netlab down
 ```

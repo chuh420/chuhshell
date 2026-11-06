@@ -217,7 +217,7 @@ EOF
 }
 
 start_radios() {
-    if lsmod | command grep -q '^mac80211_hwsim'; then
+    if [[ -d /sys/module/mac80211_hwsim ]]; then
         log "mac80211_hwsim is already loaded; run 'netlab down' first"
         exit 1
     fi
@@ -264,7 +264,8 @@ start_access_points() {
 start_bus() {
     spawn bus dbus-daemon --config-file="$LAB/bus.conf" --nofork --nopidfile
     wait_for "bus socket" test -S "$LAB/bus"
-    chmod 666 "$LAB/bus"
+    chown "${SUDO_UID:-0}" "$LAB/bus"
+    chmod 600 "$LAB/bus"
 }
 
 bus_has() {
@@ -367,17 +368,17 @@ down() {
     halt dnsmasq
     halt hostapd
     halt bus
-    ip netns del "$STA_NS" 2>/dev/null || true
-    ip netns del "$AP_NS" 2>/dev/null || true
-    if lsmod | command grep -q '^mac80211_hwsim'; then
+    if [[ -d /sys/module/mac80211_hwsim ]]; then
         for _ in $(seq 100); do
             modprobe -r mac80211_hwsim 2>/dev/null && break
             sleep 0.2
         done
-        if lsmod | command grep -q '^mac80211_hwsim'; then
+        if [[ -d /sys/module/mac80211_hwsim ]]; then
             log "could not unload mac80211_hwsim; run 'sudo modprobe -r mac80211_hwsim'"
         fi
     fi
+    ip netns del "$STA_NS" 2>/dev/null || true
+    ip netns del "$AP_NS" 2>/dev/null || true
     rm -rf "$LAB"
     log "down"
 }
