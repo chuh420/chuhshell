@@ -302,15 +302,9 @@ impl App {
         let result = self.handle.insert_source(source, |_, listener, app| {
             loop {
                 match listener.accept() {
-                    Ok((stream, _)) => match ipc::read_request(&stream) {
-                        Ok(args) => {
-                            let reply = app.ipc(&args);
-                            ipc::write_reply(&stream, reply);
-                        }
-                        Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => {}
-                        Err(err) => log::warn!("ipc: {err}"),
-                    },
+                    Ok((stream, _)) => app.accept_ipc(stream),
                     Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
                     Err(err) => {
                         log::warn!("ipc accept: {err}");
                         break;
@@ -321,6 +315,53 @@ impl App {
         });
         if let Err(err) = result {
             log::error!("ipc: {err}");
+        }
+    }
+
+    fn accept_ipc(&self, stream: std::os::unix::net::UnixStream) {
+        if let Err(err) = stream.set_nonblocking(true) {
+            log::warn!("ipc: {err}");
+            return;
+        }
+        let mut buffer = Vec::new();
+        let source = Generic::new(stream, Interest::READ, Mode::Level);
+        let result = self.handle.insert_source(source, move |_, stream, app| {
+            let stream: &std::os::unix::net::UnixStream = stream;
+            let mut chunk = [0u8; 4096];
+            loop {
+                let read = match std::io::Read::read(&mut &*stream, &mut chunk) {
+                    Ok(0) => {
+                        if !buffer.is_empty() {
+                            log::warn!("ipc: request ended without a newline");
+                        }
+                        return Ok(PostAction::Remove);
+                    }
+                    Ok(read) => read,
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        return Ok(PostAction::Continue);
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(err) => {
+                        log::warn!("ipc: {err}");
+                        return Ok(PostAction::Remove);
+                    }
+                };
+                let reply = match ipc::feed(&mut buffer, &chunk[..read]) {
+                    ipc::Feed::More => continue,
+                    ipc::Feed::Request(args) => app.ipc(&args),
+                    ipc::Feed::Invalid => Reply::Error("bad request".into()),
+                    ipc::Feed::TooLong => Reply::Error("request too long".into()),
+                };
+                ipc::write_reply(stream, reply);
+                return Ok(PostAction::Remove);
+            }
+        });
+        match result {
+            Ok(token) => self.add_timer(ipc::REQUEST_TIMEOUT, move |app| {
+                app.handle.remove(token);
+                None
+            }),
+            Err(err) => log::warn!("ipc: {err}"),
         }
     }
 
