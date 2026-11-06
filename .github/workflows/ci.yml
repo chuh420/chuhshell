@@ -10,7 +10,7 @@ jobs:
     container: archlinux:latest
     steps:
       - name: install packages
-        run: pacman -Syu --noconfirm --needed rust clang pipewire libxkbcommon pkgconf git
+        run: pacman -Syu --noconfirm --needed rust clang pipewire libxkbcommon pkgconf git dbus
       - uses: actions/checkout@v4
       - uses: actions/cache@v4
         with:
