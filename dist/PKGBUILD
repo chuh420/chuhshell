@@ -1,0 +1,73 @@
+pkgname=chuhshell-git
+_name=chuhshell
+pkgver=0.1.0.r0.g0000000
+pkgrel=1
+pkgdesc='A Wayland desktop shell for Hyprland, niri and sway'
+arch=('x86_64' 'aarch64')
+url='https://github.com/chuh420/chuhshell'
+license=('MIT OR Apache-2.0')
+depends=('gcc-libs' 'glibc' 'libpipewire' 'libxkbcommon' 'wireplumber')
+makedepends=('cargo' 'clang' 'git')
+optdepends=(
+  'upower: battery chip and panel'
+  'power-profiles-daemon: power profiles'
+  'iwd: Wi-Fi panel'
+  'networkmanager: Wi-Fi panel'
+  'bluez: Bluetooth panel'
+  'brightnessctl: brightness slider and keys'
+  'cliphist: clipboard panel'
+  'wl-clipboard: clipboard panel and screenshots'
+  'imagemagick: wallpaper previews'
+  'ffmpeg: posters for live wallpapers'
+  'mpvpaper: live wallpapers'
+  'matugen: colors from the wallpaper'
+  'hyprlock: lock screen on Hyprland'
+  'swaylock: lock screen on sway and niri'
+  'grim: screenshots'
+  'slurp: screenshots of a region'
+  'pavucontrol: the default mixer'
+  'ttf-jetbrains-mono-nerd: default icon font'
+  'adwaita-fonts: default interface font'
+)
+provides=("$_name")
+conflicts=("$_name")
+options=('!lto')
+source=("$_name::git+$url.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$_name"
+  printf '%s.r%s.g%s' \
+    "$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)" \
+    "$(git rev-list --count HEAD)" \
+    "$(git rev-parse --short=7 HEAD)"
+}
+
+prepare() {
+  cd "$_name"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$_name"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release
+}
+
+check() {
+  cd "$_name"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo test --frozen --workspace
+}
+
+package() {
+  cd "$_name"
+  install -Dm755 target/release/chuhshell "$pkgdir/usr/bin/chuhshell"
+  sed 's|%h/.local/bin/chuhshell|/usr/bin/chuhshell|' dist/chuhshell.service |
+    install -Dm644 /dev/stdin "$pkgdir/usr/lib/systemd/user/chuhshell.service"
+  install -Dm644 LICENSE-MIT "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+  install -Dm644 LICENSE-APACHE "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}
