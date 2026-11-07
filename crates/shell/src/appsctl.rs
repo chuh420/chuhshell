@@ -20,6 +20,7 @@ pub struct Apps {
     pub catalog: Vec<AppEntry>,
     pub results: Arc<Vec<AppEntry>>,
     pub hidden: Vec<String>,
+    pub pinned: Vec<String>,
     pub query: String,
     pub icons: HashMap<String, AppIcon>,
     pending: HashSet<String>,
@@ -30,6 +31,7 @@ pub struct Apps {
 impl App {
     pub fn start_apps(&mut self) {
         self.apps.hidden = apps::load_hidden();
+        self.apps.pinned = apps::load_pinned();
         self.scan_apps();
         let watcher = match Watcher::new() {
             Ok(watcher) => watcher,
@@ -89,7 +91,12 @@ impl App {
     }
 
     fn respond_apps(&mut self) {
-        let results = apps::search(&self.apps.catalog, &self.apps.query);
+        let pinned = apps::load_pinned();
+        if pinned != self.apps.pinned {
+            self.apps.pinned = pinned;
+        }
+        let mut results = apps::search(&self.apps.catalog, &self.apps.query);
+        apps::pin_first(&mut results, &self.apps.pinned);
         if *self.apps.results != results {
             self.apps.results = Arc::new(results);
         }
@@ -114,6 +121,19 @@ impl App {
         }
         if let Err(err) = apps::save_hidden(&self.apps.hidden) {
             log::warn!("hidden applications: {err}");
+        }
+        self.respond_apps();
+    }
+
+    pub fn toggle_application_pinned(&mut self, id: &str) {
+        let mut pinned = apps::load_pinned();
+        if pinned.iter().any(|item| item == id) {
+            pinned.retain(|item| item != id);
+        } else {
+            pinned.push(id.to_string());
+        }
+        if let Err(err) = apps::save_pinned(&pinned) {
+            log::warn!("pinned applications: {err}");
         }
         self.respond_apps();
     }

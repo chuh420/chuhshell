@@ -438,10 +438,44 @@ pub fn parse_hidden(text: &str) -> Vec<String> {
     }
 }
 
-pub fn load_hidden() -> Vec<String> {
-    std::fs::read_to_string(hidden_path())
+pub fn pinned_path() -> PathBuf {
+    config::paths().state_file("pinned-applications.json")
+}
+
+fn load_ids(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
         .map(|text| parse_hidden(&text))
         .unwrap_or_default()
+}
+
+fn save_ids(path: &Path, ids: &[String]) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension("tmp");
+    std::fs::write(&temporary, format_hidden(ids))?;
+    std::fs::rename(&temporary, path)
+}
+
+pub fn load_hidden() -> Vec<String> {
+    load_ids(&hidden_path())
+}
+
+pub fn load_pinned() -> Vec<String> {
+    load_ids(&pinned_path())
+}
+
+pub fn save_pinned(pinned: &[String]) -> io::Result<()> {
+    save_ids(&pinned_path(), pinned)
+}
+
+pub fn pin_first(apps: &mut [AppEntry], pinned: &[String]) {
+    apps.sort_by_key(|app| {
+        pinned
+            .iter()
+            .position(|id| *id == app.id)
+            .unwrap_or(usize::MAX)
+    });
 }
 
 pub fn format_hidden(hidden: &[String]) -> String {
@@ -453,13 +487,7 @@ pub fn format_hidden(hidden: &[String]) -> String {
 }
 
 pub fn save_hidden(hidden: &[String]) -> io::Result<()> {
-    let path = hidden_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let temporary = path.with_extension("tmp");
-    std::fs::write(&temporary, format_hidden(hidden))?;
-    std::fs::rename(&temporary, &path)
+    save_ids(&hidden_path(), hidden)
 }
 
 pub fn expand_exec(
@@ -745,6 +773,20 @@ mod tests {
         sort(&mut apps, &[]);
         let names: Vec<_> = apps.iter().map(|app| app.name.as_str()).collect();
         assert_eq!(names, ["Audacity", "Blender", "kitty", "Zen Browser"]);
+    }
+
+    #[test]
+    fn pinned_apps_come_first_in_pin_order() {
+        let mut apps = vec![
+            entry("a.desktop", "Alpha", "", ""),
+            entry("b.desktop", "Beta", "", ""),
+            entry("c.desktop", "Gamma", "", ""),
+            entry("d.desktop", "Delta", "", ""),
+        ];
+        let pinned = ["d.desktop", "gone.desktop", "b.desktop"].map(String::from);
+        pin_first(&mut apps, &pinned);
+        let names: Vec<_> = apps.iter().map(|app| app.name.as_str()).collect();
+        assert_eq!(names, ["Delta", "Beta", "Alpha", "Gamma"]);
     }
 
     #[test]
