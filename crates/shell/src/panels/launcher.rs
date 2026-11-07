@@ -29,8 +29,10 @@ struct Row {
     name: Label,
     sub: Label,
     eye: Label,
+    pin: Label,
     arrow: Label,
     hidden: bool,
+    pinned: bool,
     icon_set: bool,
 }
 
@@ -47,6 +49,7 @@ pub struct LauncherPanel {
     footer: Label,
     apps: Arc<Vec<AppEntry>>,
     hidden: Vec<String>,
+    pinned: Vec<String>,
     show_hidden: bool,
     restore: Option<(String, i32)>,
     icons: HashMap<String, AppIcon>,
@@ -128,6 +131,7 @@ impl LauncherPanel {
             footer,
             apps: data.apps.clone(),
             hidden: data.hidden.clone(),
+            pinned: data.pinned.clone(),
             show_hidden: false,
             restore: None,
             icons: HashMap::new(),
@@ -176,8 +180,10 @@ impl LauncherPanel {
         };
         let sub = label(tree, engine, content, subtitle, 10.0, theme::muted());
         let eye = icon_label(tree, engine, content, "󰈈", 18.0, theme::muted());
+        let pin = icon_label(tree, engine, content, "󰐃", 16.0, theme::green());
         let arrow = label(tree, engine, content, "↵", 12.0, theme::green());
         let hidden = self.hidden.contains(&app.id);
+        let pinned = self.pinned.contains(&app.id);
         tree.set_opacity(content, if hidden { 0.55 } else { 1.0 });
         Row {
             app,
@@ -187,8 +193,10 @@ impl LauncherPanel {
             name,
             sub,
             eye,
+            pin,
             arrow,
             hidden,
+            pinned,
             icon_set: false,
         }
     }
@@ -224,8 +232,11 @@ impl LauncherPanel {
 
     fn update_footer(&mut self, engine: &mut TextEngine) {
         let hidden = self.current_row().is_some_and(|row| row.hidden);
+        let pinned = self.current_row().is_some_and(|row| row.pinned);
         let text = format!(
-            "↑ ↓  select       ↵  launch       󰈉  ctrl+h  {}       󰈈  ctrl+shift+h  {}       esc  close",
+            "↑ ↓  select       ↵  launch       {}  ctrl+p  {}       󰈉  ctrl+h  {}       󰈈  ctrl+shift+h  {}       esc  close",
+            if pinned { "󰐄" } else { "󰐃" },
+            if pinned { "unpin" } else { "pin" },
             if hidden { "unhide" } else { "hide" },
             if self.show_hidden {
                 "hide hidden"
@@ -246,10 +257,12 @@ impl LauncherPanel {
         now: Millis,
     ) {
         let changed = !Arc::ptr_eq(&self.apps, &data.apps) && *self.apps != *data.apps
-            || self.hidden != data.hidden;
+            || self.hidden != data.hidden
+            || self.pinned != data.pinned;
         self.apps = data.apps.clone();
         if changed {
             self.hidden = data.hidden.clone();
+            self.pinned = data.pinned.clone();
             self.reset(tree, input, engine, now);
             self.update_footer(engine);
         }
@@ -366,9 +379,17 @@ impl LauncherPanel {
         if row.hidden {
             let ew = row.eye.implicit_width();
             let eh = row.eye.implicit_height().ceil();
-            let ex = ax - 13.0 - ew;
+            let ex = right - 13.0 - ew;
             row.eye.place(tree, ex, (ch - eh) / 2.0, ew, eh);
             right = ex;
+        }
+        tree.set_visible(row.pin.node, row.pinned);
+        if row.pinned {
+            let pw = row.pin.implicit_width();
+            let ph = row.pin.implicit_height().ceil();
+            let px = right - 13.0 - pw;
+            row.pin.place(tree, px, (ch - ph) / 2.0, pw, ph);
+            right = px;
         }
         let x = 28.0 + 13.0;
         let available = (right - 13.0 - 13.0 - x).max(0.0);
@@ -432,6 +453,13 @@ impl LauncherPanel {
                         actions.push(PanelAction::Close);
                     }
                 }
+                InputEvent::Click(area, MouseButton::Right) => {
+                    if let Some(index) = self.list.row_at(area) {
+                        self.list.set_current(index as i32, now);
+                        self.toggle_pinned(&mut actions);
+                        self.update_footer(engine);
+                    }
+                }
                 _ => {}
             }
         }
@@ -456,6 +484,15 @@ impl LauncherPanel {
         let id = row.app.id.clone();
         self.restore = Some((id.clone(), self.list.current()));
         actions.push(PanelAction::ToggleHidden(id));
+    }
+
+    fn toggle_pinned(&mut self, actions: &mut Vec<PanelAction>) {
+        let Some(row) = self.current_row() else {
+            return;
+        };
+        let id = row.app.id.clone();
+        self.restore = Some((id.clone(), self.list.current()));
+        actions.push(PanelAction::TogglePinned(id));
     }
 
     fn toggle_show_hidden(
@@ -494,6 +531,11 @@ impl LauncherPanel {
                     } else {
                         self.toggle_hidden(&mut actions);
                     }
+                }
+            }
+            0x70 | 0x50 if ctrl_only && !mods.shift => {
+                if !event.repeat {
+                    self.toggle_pinned(&mut actions);
                 }
             }
             keys::PAGE_DOWN => self.list.step(6, now),

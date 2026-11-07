@@ -170,7 +170,7 @@ commands and hooks run through `sh -c`.
 | path | content |
 | --- | --- |
 | `~/.config/chuhshell/config.toml` | config |
-| `~/.local/state/chuhshell/` | wallpaper, theme mode, cursor, hidden apps, battery history |
+| `~/.local/state/chuhshell/` | wallpaper, theme mode, cursor, hidden and pinned apps, battery history |
 | `~/.local/state/chuhshell/theme/` | matugen output in `auto/`, your static snapshots, and `current` linking to one of them |
 | `~/.cache/chuhshell/` | previews, posters, clipboard thumbnails |
 
@@ -205,7 +205,7 @@ bind("XF86AudioRaiseVolume", hl.dsp.exec_cmd("chuhshell msg volumeUp"), { locked
 bind("Print", hl.dsp.exec_cmd("chuhshell msg screenshot"))
 ```
 
-in the launcher, `Ctrl + H` hides the selected app and `Ctrl + Shift + H` shows hidden ones. the wallpaper gallery reads your wallpapers folder and its `live wallpapers` subfolder; cursor themes go in `cursors` inside it. live wallpapers pause while the active workspace has windows or the screen is locked.
+in the launcher, `Ctrl + P` or a right click pins the selected app to the top or unpins it, `Ctrl + H` hides it and `Ctrl + Shift + H` shows hidden ones. pinned apps carry a pin icon. the wallpaper gallery reads your wallpapers folder and its `live wallpapers` subfolder; cursor themes go in `cursors` inside it. live wallpapers pause while the active workspace has windows or the screen is locked.
 
 ## how it works
 
