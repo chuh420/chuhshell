@@ -28,8 +28,18 @@ impl std::error::Error for Error {}
 static PATHS: OnceLock<Paths> = OnceLock::new();
 static CURRENT: RwLock<Option<Arc<Config>>> = RwLock::new(None);
 
+static APP: OnceLock<String> = OnceLock::new();
+
+pub fn set_app(name: &str) -> bool {
+    APP.set(name.to_string()).is_ok() && PATHS.get().is_none()
+}
+
+pub fn app() -> &'static str {
+    APP.get().map(String::as_str).unwrap_or(paths::DEFAULT_APP)
+}
+
 pub fn paths() -> &'static Paths {
-    PATHS.get_or_init(Paths::from_env)
+    PATHS.get_or_init(|| Paths::from_env_for(app()))
 }
 
 pub fn current() -> Arc<Config> {

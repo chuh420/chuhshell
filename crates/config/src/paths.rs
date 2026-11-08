@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const APP: &str = "chuhshell";
+pub const DEFAULT_APP: &str = "chuhshell";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Paths {
@@ -41,13 +41,26 @@ pub fn expand_home(path: &Path, home: &Path) -> PathBuf {
 
 impl Paths {
     pub fn from_env() -> Self {
-        Self::resolve(
+        Self::from_env_for(DEFAULT_APP)
+    }
+
+    pub fn from_env_for(app: &str) -> Self {
+        Self::resolve_for(
+            app,
             |key| std::env::var_os(key),
             |path| std::fs::read_to_string(path).ok(),
         )
     }
 
     pub fn resolve(
+        env: impl Fn(&str) -> Option<OsString>,
+        read: impl Fn(&Path) -> Option<String>,
+    ) -> Self {
+        Self::resolve_for(DEFAULT_APP, env, read)
+    }
+
+    pub fn resolve_for(
+        app: &str,
         env: impl Fn(&str) -> Option<OsString>,
         read: impl Fn(&Path) -> Option<String>,
     ) -> Self {
@@ -59,9 +72,9 @@ impl Paths {
             .and_then(|text| pictures_dir(&text, &home))
             .unwrap_or_else(|| home.join("Pictures"));
         Self {
-            config: config_home.join(APP),
-            state: base("XDG_STATE_HOME", ".local/state").join(APP),
-            cache: base("XDG_CACHE_HOME", ".cache").join(APP),
+            config: config_home.join(app),
+            state: base("XDG_STATE_HOME", ".local/state").join(app),
+            cache: base("XDG_CACHE_HOME", ".cache").join(app),
             runtime: absolute(env("XDG_RUNTIME_DIR")),
             wallpapers: pictures.join("Wallpapers"),
             home,
@@ -109,6 +122,17 @@ mod tests {
             paths.config_file(),
             PathBuf::from("/home/a/.config/chuhshell/config.toml")
         );
+    }
+
+    #[test]
+    fn app_name_sets_folders() {
+        let paths = Paths::resolve_for("chuhshellm", env(&[("HOME", "/home/a")]), |_| None);
+        assert_eq!(paths.config, PathBuf::from("/home/a/.config/chuhshellm"));
+        assert_eq!(
+            paths.state,
+            PathBuf::from("/home/a/.local/state/chuhshellm")
+        );
+        assert_eq!(paths.cache, PathBuf::from("/home/a/.cache/chuhshellm"));
     }
 
     #[test]
