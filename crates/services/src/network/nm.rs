@@ -262,6 +262,16 @@ pub fn signal_matters(
     }
 }
 
+pub fn manages_wifi(objects: &Managed) -> bool {
+    objects.values().any(|interfaces| {
+        interfaces.iter().any(|(name, props)| {
+            name.as_str() == DEVICE
+                && prop(props, "DeviceType").and_then(int) == Some(DEVICE_TYPE_WIFI)
+                && prop(props, "Managed").and_then(boolean) == Some(true)
+        })
+    })
+}
+
 pub fn pick_device(objects: &Managed) -> Option<(String, &Props, Option<&Props>)> {
     let mut devices: Vec<(String, &Props, Option<&Props>)> = objects
         .iter()
@@ -558,7 +568,7 @@ struct Snapshot {
 }
 
 impl Handle {
-    async fn nm_objects(&self) -> zbus::Result<Managed> {
+    pub(super) async fn nm_objects(&self) -> zbus::Result<Managed> {
         let reply = self
             .call(
                 NM,
@@ -1542,6 +1552,18 @@ mod tests {
                 wifi("/", "wlan0"),
             ),
         ]);
+        assert!(!manages_wifi(&objects));
+        let managed: Managed = HashMap::from([object(
+            "/org/freedesktop/NetworkManager/Devices/3",
+            vec![(
+                DEVICE,
+                props(vec![
+                    ("DeviceType", OwnedVariant::from(2u32)),
+                    ("Managed", OwnedVariant::from(true)),
+                ]),
+            )],
+        )]);
+        assert!(manages_wifi(&managed));
         let (path, _, wireless) = pick_device(&objects).expect("device");
         assert_eq!(path, "/org/freedesktop/NetworkManager/Devices/9");
         assert!(wireless.is_some());
