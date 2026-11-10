@@ -16,12 +16,13 @@ chuhshell is in beta. I built it for my own desktop and then moved every persona
 
 ## features
 
-- **bar**: workspaces, active window title, clock, CPU and RAM, keyboard layout, Wi-Fi, Bluetooth, volume, battery, tray and a keep awake toggle.
+- **bar**: workspaces, active window title, clock, CPU and RAM, keyboard layout, Wi-Fi, VPN, Bluetooth, volume, battery, tray and a keep awake toggle.
 - **control center**: network and Bluetooth tiles, volume and brightness sliders, keep awake, shortcuts to notifications, clipboard, screenshots, wallpapers and the power menu.
 - **launcher**: Unicode search over desktop entries, pinned and hidden apps, terminal entries in your terminal, every app in its own `app.slice` scope.
 - **notifications**: a full `org.freedesktop.Notifications` server with actions, images, markup, history and do not disturb.
 - **tray**: StatusNotifierItem host with dbusmenu submenus.
 - **Wi-Fi and Bluetooth**: iwd or NetworkManager, and BlueZ, with scan, connect, forget, a password agent and pairing prompts.
+- **VPN**: Proton VPN through its `protonvpn` CLI: connect to the fastest or a chosen country, favorites, recent countries, traffic and the NetShield, kill switch and accelerator settings.
 - **audio**: PipeWire output and input with device selection.
 - **battery**: UPower details, level and power history, power profiles.
 - **clipboard**: cliphist history with image thumbnails.
@@ -56,7 +57,7 @@ chuhshell is in beta. I built it for my own desktop and then moved every persona
 
 Hyprland shows a fixed number of workspaces plus any busy ones above it. niri and sway show their real workspace list. under another compositor the bar runs without workspaces and window titles.
 
-chuhshell hides a chip or panel when its service is missing: no UPower battery, no BlueZ adapter, no Wi-Fi service, no backlight or `brightnessctl`, no `cliphist`, no power-profiles-daemon, no matugen. each missing tool gets one line in the log.
+chuhshell hides a chip or panel when its service is missing: no UPower battery, no BlueZ adapter, no Wi-Fi service, no backlight or `brightnessctl`, no `cliphist`, no power-profiles-daemon, no matugen, no `protonvpn`. each missing tool gets one line in the log.
 
 ## requirements
 
@@ -161,6 +162,10 @@ mixer = "pavucontrol"
 [hooks]
 wallpaper_changed = "~/bin/wallpaper-sync"   # $1 = shown image (a poster for videos), $2 = selected file
 theme_changed = "~/bin/theme-reload"         # $1 = auto or static
+
+[vpn]
+home = "KZ"                        # your country, left out of "fastest"; default: from the time zone
+exclude = ["RU"]                   # countries "fastest" skips
 ```
 
 commands and hooks run through `sh -c`.
@@ -170,7 +175,7 @@ commands and hooks run through `sh -c`.
 | path | content |
 | --- | --- |
 | `~/.config/chuhshell/config.toml` | config |
-| `~/.local/state/chuhshell/` | wallpaper, theme mode, cursor, hidden and pinned apps, battery history |
+| `~/.local/state/chuhshell/` | wallpaper, theme mode, cursor, hidden and pinned apps, battery history, VPN favorites and recent countries |
 | `~/.local/state/chuhshell/theme/` | matugen output in `auto/`, your static snapshots, and `current` linking to one of them |
 | `~/.cache/chuhshell/` | previews, posters, clipboard thumbnails |
 
@@ -185,7 +190,9 @@ running `chuhshell` with no arguments starts the shell. a second instance exits 
 | command | action |
 | --- | --- |
 | `launcher`, `menu`, `calendar`, `wallpapers`, `clipboard`, `power` | open a centered panel |
-| `wifi`, `bluetooth`, `audio`, `battery`, `system`, `notifications` | open an anchored panel |
+| `wifi`, `vpn`, `bluetooth`, `audio`, `battery`, `system`, `notifications` | open an anchored panel |
+| `vpn toggle`, `vpn connect [COUNTRY]`, `vpn disconnect` | switch the VPN; `connect` without a country code picks the fastest |
+| `vpn status` | print the VPN state as JSON |
 | `close` | close the open panel |
 | `awake`, `dnd` | toggle keep awake or do not disturb |
 | `volumeUp`, `volumeDown`, `volumeMute`, `micMute` | change audio and show the OSD |
@@ -214,10 +221,10 @@ in the launcher, `Ctrl + P` or a right click pins the selected app to the top or
 | `config` | XDG paths and the TOML config |
 | `platform` | Wayland: outputs, layer surfaces, subsurfaces, popups, shm buffers, damage, input, cursor shape, idle inhibit |
 | `ui` | toolkit: node tree, layout, tiny-skia painting, cosmic-text text, animations ported from Qt easing and springs, widgets |
-| `services` | compositors, PipeWire, UPower, iwd, NetworkManager, BlueZ, logind, notifications, tray, apps, clipboard, wallpapers, themes |
+| `services` | compositors, PipeWire, UPower, iwd, NetworkManager, BlueZ, logind, notifications, tray, apps, clipboard, wallpapers, themes, Proton VPN |
 | `shell` | the binary: shell state, surfaces, panels and IPC |
 
-calloop drives everything on one thread. zbus futures run on its executor, and image decoding and file scans go to a small worker pool. the shell repaints only damaged regions after frame callbacks and frees surfaces you close.
+calloop drives everything on one thread. zbus futures run on its executor, and each image decode or file scan runs on its own short-lived thread. the shell repaints only damaged regions after frame callbacks and frees surfaces you close.
 
 ## development
 

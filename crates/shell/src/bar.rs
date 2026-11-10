@@ -1048,7 +1048,6 @@ impl Bar {
         self.sync(now);
     }
 
-    #[allow(dead_code)]
     pub fn ring_bell(&mut self, now: Millis) {
         self.bell_ring.restart(now);
     }

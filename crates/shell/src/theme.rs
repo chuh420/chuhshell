@@ -294,10 +294,6 @@ pub fn bg() -> Color {
     palette().bg
 }
 
-pub fn dim() -> Color {
-    palette().dim
-}
-
 pub fn surface() -> Color {
     palette().surface
 }

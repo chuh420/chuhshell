@@ -19,7 +19,6 @@ config = { path = "crates/config" }
 smithay-client-toolkit = { version = "0.21.1", default-features = false, features = ["calloop", "xkbcommon"] }
 wayland-client = "0.31.15"
 wayland-protocols = { version = "0.32.13", features = ["client", "staging", "unstable"] }
-wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
 calloop = { version = "0.14.5", features = ["signals", "executor"] }
 calloop-wayland-source = "0.4.1"
 tiny-skia = { version = "0.12.0", default-features = false, features = ["std", "simd"] }

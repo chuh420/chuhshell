@@ -20,7 +20,6 @@ mod popups;
 mod powerctl;
 mod sessionctl;
 mod state;
-#[allow(dead_code)]
 mod theme;
 mod themectl;
 mod tooltip;
