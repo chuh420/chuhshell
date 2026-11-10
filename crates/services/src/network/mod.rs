@@ -270,6 +270,20 @@ fn interface<'a>(managed: &'a Managed, path: &str, name: &str) -> Option<&'a Pro
         .map(|(_, props)| props)
 }
 
+pub fn rfkill_event(block: bool) -> [u8; 8] {
+    const TYPE_ALL: u8 = 0;
+    const OP_CHANGE_ALL: u8 = 3;
+    [0, 0, 0, 0, TYPE_ALL, OP_CHANGE_ALL, u8::from(block), 0]
+}
+
+fn rfkill_all(block: bool) -> std::io::Result<()> {
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/rfkill")?
+        .write_all(&rfkill_event(block))
+}
+
 fn airplane_mode() -> bool {
     let Ok(entries) = std::fs::read_dir("/sys/class/rfkill") else {
         return false;
@@ -1229,15 +1243,8 @@ impl Handle {
         if let Ok(mut inner) = self.inner.lock() {
             inner.message.clear();
         }
-        let result = Command::new("rfkill")
-            .args([if enabled { "block" } else { "unblock" }, "all"])
-            .status();
-        match result {
-            Ok(status) if status.success() => {}
-            Ok(status) => {
-                self.set_busy(false, Some(format!("rfkill exited with {status}")));
-            }
-            Err(err) => self.set_busy(false, Some(err.to_string())),
+        if let Err(err) = rfkill_all(enabled) {
+            self.set_busy(false, Some(format!("rfkill: {err}")));
         }
         self.emit(Event::WifiChanged);
         self.refresh_bluetooth().await;
@@ -1913,6 +1920,12 @@ mod tests {
             &[],
             false
         ));
+    }
+
+    #[test]
+    fn rfkill_events_change_all_radios() {
+        assert_eq!(rfkill_event(true), [0, 0, 0, 0, 0, 3, 1, 0]);
+        assert_eq!(rfkill_event(false), [0, 0, 0, 0, 0, 3, 0, 0]);
     }
 
     #[test]

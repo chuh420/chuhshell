@@ -45,12 +45,7 @@ pub struct Player {
     stopped: bool,
 }
 
-unsafe extern "C" {
-    fn kill(pid: i32, signal: i32) -> i32;
-}
-
-const SIGCONT: i32 = 18;
-const SIGSTOP: i32 = 19;
+use crate::programs::{Signal, signal};
 
 impl Player {
     pub fn start(video: &str) -> Option<Player> {
@@ -87,17 +82,19 @@ impl Player {
         if paused == self.stopped || !self.running() {
             return;
         }
-        let signal = if paused { SIGSTOP } else { SIGCONT };
-        if unsafe { kill(self.child.id() as i32, signal) } == 0 {
+        let wanted = if paused {
+            Signal::Stop
+        } else {
+            Signal::Continue
+        };
+        if signal(self.child.id() as i32, wanted).is_ok() {
             self.stopped = paused;
         }
     }
 
     pub fn stop(mut self) {
         if self.stopped {
-            unsafe {
-                kill(self.child.id() as i32, SIGCONT);
-            }
+            let _ = signal(self.child.id() as i32, Signal::Continue);
         }
         let _ = self.child.kill();
         let _ = self.child.wait();

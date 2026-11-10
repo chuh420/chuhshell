@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
     os::unix::fs::MetadataExt,
-    process::Command,
     sync::{Arc, Mutex},
 };
 
@@ -474,13 +473,10 @@ impl Handle {
             log::warn!("tray quit: could not uniquely identify the tray application");
             return;
         }
-        match Command::new("kill")
-            .arg("-TERM")
-            .arg(pids[0].to_string())
-            .status()
+        if let Err(err) =
+            crate::programs::signal(pids[0] as i32, crate::programs::Signal::Terminate)
         {
-            Ok(_) => {}
-            Err(err) => log::warn!("tray quit: {err}"),
+            log::warn!("tray quit: {err}");
         }
     }
 

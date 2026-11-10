@@ -87,22 +87,20 @@ impl App {
             self.apps.pending.clear();
         }
         self.apps.catalog = catalog;
+        self.reload_app_lists();
         self.respond_apps();
     }
 
+    fn reload_app_lists(&mut self) {
+        self.apps.pinned = apps::load_pinned();
+        self.apps.hidden = apps::load_hidden();
+    }
+
     fn respond_apps(&mut self) {
-        let pinned = apps::load_pinned();
-        if pinned != self.apps.pinned {
-            self.apps.pinned = pinned;
-        }
         let mut results = apps::search(&self.apps.catalog, &self.apps.query);
         apps::pin_first(&mut results, &self.apps.pinned);
         if *self.apps.results != results {
             self.apps.results = Arc::new(results);
-        }
-        let hidden = apps::load_hidden();
-        if hidden != self.apps.hidden {
-            self.apps.hidden = hidden;
         }
         self.sync();
         self.request_app_icons();
@@ -126,13 +124,12 @@ impl App {
     }
 
     pub fn toggle_application_pinned(&mut self, id: &str) {
-        let mut pinned = apps::load_pinned();
-        if pinned.iter().any(|item| item == id) {
-            pinned.retain(|item| item != id);
+        if self.apps.pinned.iter().any(|item| item == id) {
+            self.apps.pinned.retain(|item| item != id);
         } else {
-            pinned.push(id.to_string());
+            self.apps.pinned.push(id.to_string());
         }
-        if let Err(err) = apps::save_pinned(&pinned) {
+        if let Err(err) = apps::save_pinned(&self.apps.pinned) {
             log::warn!("pinned applications: {err}");
         }
         self.respond_apps();
@@ -158,6 +155,7 @@ impl App {
 
     pub fn apps_panel_changed(&mut self, panel: &str) {
         if panel == "launcher" {
+            self.reload_app_lists();
             self.search_applications("");
         } else {
             self.apps.icons.clear();

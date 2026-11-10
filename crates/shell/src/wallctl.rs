@@ -46,6 +46,7 @@ pub struct Walls {
     pub previews: Arc<HashMap<PreviewKey, String>>,
     pub pixmaps: HashMap<String, Option<Arc<Pixmap>>>,
     pending: std::collections::HashSet<String>,
+    arrived: Vec<(PreviewKey, String)>,
     scanning: bool,
     gallery: Option<mpsc::Sender<Vec<PreviewKey>>>,
     watcher: Option<StateWatcher>,
@@ -333,10 +334,23 @@ impl App {
         if picture.is_empty() {
             return;
         }
-        let mut previews = (*self.walls.previews).clone();
-        previews.insert((path, revision), picture);
-        self.walls.previews = Arc::new(previews);
-        self.sync();
+        let first = self.walls.arrived.is_empty();
+        self.walls.arrived.push(((path, revision), picture));
+        if first {
+            self.add_timer(std::time::Duration::from_millis(40), |app| {
+                app.flush_previews();
+                None
+            });
+        }
+    }
+
+    fn flush_previews(&mut self) {
+        let arrived = std::mem::take(&mut self.walls.arrived);
+        if arrived.is_empty() {
+            return;
+        }
+        Arc::make_mut(&mut self.walls.previews).extend(arrived);
+        self.sync_overlay();
         self.request_preview_pixmaps();
     }
 

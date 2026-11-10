@@ -596,13 +596,13 @@ impl App {
     }
 
     pub(crate) fn kill_process(&self, pid: i32, force: bool) {
-        let signal = if force { "-KILL" } else { "-TERM" };
-        match Command::new("kill")
-            .args([signal, &pid.to_string()])
-            .spawn()
-        {
-            Ok(child) => reap(child),
-            Err(err) => log::warn!("kill {pid}: {err}"),
+        let signal = if force {
+            services::programs::Signal::Kill
+        } else {
+            services::programs::Signal::Terminate
+        };
+        if let Err(err) = services::programs::signal(pid, signal) {
+            log::warn!("kill {pid}: {err}");
         }
     }
 
@@ -983,10 +983,12 @@ impl App {
         }
     }
 
-    fn sync_overlay(&mut self) {
+    pub(crate) fn sync_overlay(&mut self) {
         let now = self.now();
-        let data = self.panel_data();
-        self.overlay.set_data(&mut self.engine, &data, now);
+        if !self.state.panel.is_empty() || !self.overlay.panel.is_empty() {
+            let data = self.panel_data();
+            self.overlay.set_data(&mut self.engine, &data, now);
+        }
         self.overlay.anchor = self.state.panel_anchor;
         if self.overlay.panel != self.state.panel {
             let panel = self.state.panel.clone();
