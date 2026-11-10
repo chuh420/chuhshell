@@ -152,6 +152,18 @@ mod tests {
     }
 
     #[test]
+    fn vpn_codes_are_validated() {
+        let config = parse("[vpn]\nhome = \"KZ\"\nexclude = [\"RU\", \"by\"]\n");
+        let Ok(config) = config else {
+            panic!("vpn section rejected");
+        };
+        assert_eq!(config.vpn.home.as_deref(), Some("KZ"));
+        assert_eq!(config.vpn.exclude, vec!["RU", "by"]);
+        assert!(parse("[vpn]\nexclude = [\"Russia\"]\n").is_err());
+        assert!(parse("[vpn]\nhome = \"K1\"\n").is_err());
+    }
+
+    #[test]
     fn keyboard_labels_prefer_longest_match() {
         let config = parse("[keyboard.labels]\nEnglish = \"EN\"\n\"English (US)\" = \"US\"\n");
         let Ok(config) = config else {

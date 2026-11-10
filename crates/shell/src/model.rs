@@ -6,6 +6,7 @@ pub struct Availability {
     pub clipboard: bool,
     pub screenshot: bool,
     pub profiles: bool,
+    pub vpn: bool,
 }
 
 impl Default for Availability {
@@ -17,6 +18,7 @@ impl Default for Availability {
             clipboard: true,
             screenshot: true,
             profiles: true,
+            vpn: true,
         }
     }
 }
@@ -27,6 +29,7 @@ impl Availability {
             "wifi" => self.wifi,
             "bluetooth" => self.bluetooth,
             "clipboard" => self.clipboard,
+            "vpn" => self.vpn,
             _ => true,
         }
     }
@@ -50,6 +53,8 @@ pub struct BarModel {
     pub wifi_strength: f64,
     pub bluetooth_powered: bool,
     pub bluetooth_connected: Vec<(String, i32)>,
+    pub vpn: crate::vpnctl::VpnState,
+    pub vpn_tooltip: String,
     pub muted: bool,
     pub volume: u32,
     pub battery_present: bool,
@@ -81,6 +86,8 @@ impl Default for BarModel {
             wifi_strength: 0.0,
             bluetooth_powered: false,
             bluetooth_connected: Vec::new(),
+            vpn: crate::vpnctl::VpnState::Off,
+            vpn_tooltip: String::new(),
             muted: false,
             volume: 0,
             battery_present: false,

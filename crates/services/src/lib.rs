@@ -16,4 +16,5 @@ pub mod system;
 pub mod theme;
 pub mod tray;
 pub mod upower;
+pub mod vpn;
 pub mod wallpapers;

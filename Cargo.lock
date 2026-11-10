@@ -1438,6 +1438,7 @@ dependencies = [
  "log",
  "platform",
  "proptest",
+ "serde",
  "serde_json",
  "services",
  "ui",

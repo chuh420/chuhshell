@@ -45,6 +45,7 @@ pub enum BarAction {
     ToggleMute,
     Volume(i32),
     ToggleDnd,
+    ToggleVpn,
 }
 
 pub struct TooltipTarget {
@@ -668,11 +669,13 @@ pub struct Bar {
     resources: Resources,
     keyboard: Keyboard,
     network: Chip,
+    vpn: Chip,
     bluetooth: Chip,
     audio: Chip,
     battery: Chip,
     battery_visible: bool,
     network_visible: bool,
+    vpn_visible: bool,
     bluetooth_visible: bool,
     battery_plugged: Option<bool>,
     battery_pulse: Sequence,
@@ -767,6 +770,15 @@ impl Bar {
             theme::green(),
             "",
         );
+        let vpn = chip(
+            &mut tree,
+            &mut input,
+            engine,
+            right_row,
+            "󰒙",
+            theme::muted(),
+            "",
+        );
         let bluetooth = chip(
             &mut tree,
             &mut input,
@@ -842,11 +854,13 @@ impl Bar {
             resources,
             keyboard,
             network,
+            vpn,
             bluetooth,
             audio,
             battery,
             battery_visible: false,
             network_visible: true,
+            vpn_visible: false,
             bluetooth_visible: true,
             battery_plugged: None,
             battery_pulse: Sequence::new(
@@ -929,6 +943,16 @@ impl Bar {
                 theme::muted()
             },
         );
+        let (vpn_icon, vpn_ink) = match model.vpn {
+            crate::vpnctl::VpnState::On => ("󰕥", theme::green()),
+            crate::vpnctl::VpnState::Connecting | crate::vpnctl::VpnState::Disconnecting => {
+                ("󰞀", theme::yellow())
+            }
+            crate::vpnctl::VpnState::Off => ("󰒙", theme::muted()),
+        };
+        set(&mut self.vpn, engine, vpn_icon, vpn_ink);
+        self.vpn.shortcut = model.vpn_tooltip.clone();
+        self.vpn_visible = model.available.vpn;
         let bluetooth_icon = if !model.bluetooth_connected.is_empty() {
             "󰂱"
         } else if model.bluetooth_powered {
@@ -1010,6 +1034,7 @@ impl Bar {
         self.launcher.selected = self.panel == "launcher";
         self.clock.selected = self.panel == "calendar";
         self.network.selected = self.panel == "wifi";
+        self.vpn.selected = self.panel == "vpn";
         self.bluetooth.selected = self.panel == "bluetooth";
         self.audio.selected = self.panel == "audio";
         self.battery.selected = self.panel == "battery";
@@ -1028,11 +1053,12 @@ impl Bar {
         self.bell_ring.restart(now);
     }
 
-    fn chips_mut(&mut self) -> [&mut Chip; 9] {
+    fn chips_mut(&mut self) -> [&mut Chip; 10] {
         [
             &mut self.launcher,
             &mut self.clock,
             &mut self.network,
+            &mut self.vpn,
             &mut self.bluetooth,
             &mut self.audio,
             &mut self.battery,
@@ -1070,11 +1096,12 @@ impl Bar {
         }
     }
 
-    fn chips(&self) -> [&Chip; 9] {
+    fn chips(&self) -> [&Chip; 10] {
         [
             &self.launcher,
             &self.clock,
             &self.network,
+            &self.vpn,
             &self.bluetooth,
             &self.audio,
             &self.battery,
@@ -1090,6 +1117,7 @@ impl Bar {
             &mut self.launcher,
             &mut self.clock,
             &mut self.network,
+            &mut self.vpn,
             &mut self.bluetooth,
             &mut self.audio,
             &mut self.battery,
@@ -1185,6 +1213,13 @@ impl Bar {
         if area == self.network.area && !right {
             return self.open("wifi", area);
         }
+        if area == self.vpn.area {
+            return if right {
+                Some(BarAction::ToggleVpn)
+            } else {
+                self.open("vpn", area)
+            };
+        }
         if area == self.bluetooth.area && !right {
             return self.open("bluetooth", area);
         }
@@ -1276,6 +1311,7 @@ impl Bar {
             Resources,
             Keyboard,
             Network,
+            Vpn,
             Bluetooth,
             Audio,
             Battery,
@@ -1299,6 +1335,9 @@ impl Bar {
                 Slot::Network,
                 Item::new(self.network.implicit_width(), 22.0),
             ));
+        }
+        if self.vpn_visible {
+            slots.push((Slot::Vpn, Item::new(self.vpn.implicit_width(), 22.0)));
         }
         if self.bluetooth_visible {
             slots.push((
@@ -1332,6 +1371,7 @@ impl Bar {
         tree.set_size(self.right_row, right.width, right.height);
         tree.set_visible(self.battery.root, self.battery_visible);
         tree.set_visible(self.network.root, self.network_visible);
+        tree.set_visible(self.vpn.root, self.vpn_visible);
         tree.set_visible(self.bluetooth.root, self.bluetooth_visible);
         tree.set_visible(self.paused.root, self.paused_visible);
         for ((slot, item), (x, y)) in slots.iter().zip(right.positions.iter().copied()) {
@@ -1341,6 +1381,7 @@ impl Bar {
                 Slot::Resources => tree.set_pos(self.resources.rect.root, x, y),
                 Slot::Keyboard => tree.set_pos(self.keyboard.rect.root, x, y),
                 Slot::Network => self.network.place(tree, x, y, width),
+                Slot::Vpn => self.vpn.place(tree, x, y, width),
                 Slot::Bluetooth => self.bluetooth.place(tree, x, y, width),
                 Slot::Audio => self.audio.place(tree, x, y, width),
                 Slot::Battery => self.battery.place(tree, x, y, width),
@@ -1394,6 +1435,7 @@ impl Bar {
             &mut self.launcher,
             &mut self.clock,
             &mut self.network,
+            &mut self.vpn,
             &mut self.bluetooth,
             &mut self.audio,
             &mut self.battery,

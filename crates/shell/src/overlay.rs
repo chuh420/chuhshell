@@ -14,14 +14,15 @@ use crate::{
         PanelAction, PanelData, audio::AudioPanel, battery::BatteryPanel,
         bluetooth::BluetoothPanel, calendar::CalendarPanel, clipboard::ClipboardPanel,
         control::ControlPanel, launcher::LauncherPanel, notifications::NotificationsPanel,
-        power::PowerPanel, system::SystemPanel, tray::TrayPanel, wallpapers::WallpapersPanel,
-        wifi::WifiPanel,
+        power::PowerPanel, system::SystemPanel, tray::TrayPanel, vpn::VpnPanel,
+        wallpapers::WallpapersPanel, wifi::WifiPanel,
     },
     theme::{self, NORMAL, SLOW},
 };
 
-pub const ANCHORED: [&str; 8] = [
+pub const ANCHORED: [&str; 9] = [
     "wifi",
+    "vpn",
     "bluetooth",
     "audio",
     "battery",
@@ -31,8 +32,9 @@ pub const ANCHORED: [&str; 8] = [
     "notifications",
 ];
 pub const CENTERED: [&str; 4] = ["launcher", "wallpapers", "clipboard", "power"];
-const MODULE: [&str; 7] = [
+const MODULE: [&str; 8] = [
     "wifi",
+    "vpn",
     "bluetooth",
     "audio",
     "battery",
@@ -77,6 +79,7 @@ pub fn panel_height(p: &str, available: f64, tray_tall: bool, wifi_prompt: bool)
             }
         }
         "bluetooth" => 600.0,
+        "vpn" => 800.0,
         "tray" => {
             if tray_tall {
                 460.0
@@ -152,6 +155,7 @@ enum View {
     Notifications(Box<NotificationsPanel>),
     Tray(Box<TrayPanel>),
     Wifi(Box<WifiPanel>),
+    Vpn(Box<VpnPanel>),
     Bluetooth(Box<BluetoothPanel>),
     Launcher(Box<LauncherPanel>),
     Clipboard(Box<ClipboardPanel>),
@@ -372,6 +376,7 @@ impl Overlay {
             View::Notifications(panel) => (panel.areas(), Some(panel.root)),
             View::Tray(panel) => (panel.areas(), Some(panel.root)),
             View::Wifi(panel) => (panel.areas(), Some(panel.root)),
+            View::Vpn(panel) => (panel.areas(), Some(panel.root)),
             View::Bluetooth(panel) => (panel.areas(), Some(panel.root)),
             View::Launcher(panel) => (panel.areas(), Some(panel.root)),
             View::Clipboard(panel) => (panel.areas(), Some(panel.root)),
@@ -410,6 +415,16 @@ impl Overlay {
                 now,
             );
             self.view = View::Wifi(Box::new(panel));
+        } else if name == "vpn" {
+            let panel = VpnPanel::new(
+                &mut self.tree,
+                &mut self.input,
+                engine,
+                self.content,
+                &self.data,
+                now,
+            );
+            self.view = View::Vpn(Box::new(panel));
         } else if name == "bluetooth" {
             let panel = BluetoothPanel::new(
                 &mut self.tree,
@@ -553,6 +568,7 @@ impl Overlay {
                 self.queued.extend(actions);
             }
             View::Wifi(panel) => panel.sync(&mut self.tree, &mut self.input, engine, data, now),
+            View::Vpn(panel) => panel.sync(&mut self.tree, &mut self.input, engine, data, now),
             View::Bluetooth(panel) => {
                 panel.sync(&mut self.tree, &mut self.input, engine, data, now)
             }
@@ -648,6 +664,7 @@ impl Overlay {
     pub fn next_deadline(&self) -> Option<Millis> {
         let blink = match &self.view {
             View::Wifi(panel) => panel.next_deadline(self.last_now),
+            View::Vpn(panel) => panel.next_deadline(self.last_now),
             View::Bluetooth(panel) => panel.next_deadline(self.last_now),
             View::Launcher(panel) => panel.next_deadline(self.last_now),
             View::Clipboard(panel) => panel.next_deadline(self.last_now),
@@ -857,6 +874,7 @@ impl Overlay {
             View::Notifications(panel) => panel.layout(tree, engine, cw, ch),
             View::Tray(panel) => panel.layout(tree, cw, ch),
             View::Wifi(panel) => panel.layout(tree, engine, cw, ch),
+            View::Vpn(panel) => panel.layout(tree, engine, cw, ch),
             View::Bluetooth(panel) => panel.layout(tree, engine, cw, ch),
             View::Launcher(panel) => panel.layout(tree, engine, cw, ch),
             View::Clipboard(panel) => panel.layout(tree, engine, cw, ch),
@@ -938,6 +956,7 @@ impl Overlay {
             }
             View::Tray(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
             View::Wifi(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
+            View::Vpn(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
             View::Bluetooth(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
             View::Launcher(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
             View::Clipboard(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
@@ -1046,6 +1065,14 @@ impl Overlay {
                 pointer,
                 now,
             )),
+            View::Vpn(panel) => actions.extend(panel.handle(
+                &mut self.tree,
+                &mut self.input,
+                engine,
+                events,
+                pointer,
+                now,
+            )),
             View::Bluetooth(panel) => actions.extend(panel.handle(
                 &mut self.tree,
                 &mut self.input,
@@ -1119,6 +1146,7 @@ impl Overlay {
                 }
                 View::Notifications(panel) => panel.motion(&self.input, lx),
                 View::Wifi(panel) => panel.motion(&mut self.tree, engine, &self.input, lx, ly),
+                View::Vpn(panel) => panel.motion(&mut self.tree, engine, &self.input, lx, ly),
                 View::Bluetooth(panel) => panel.motion(&mut self.tree, engine, &self.input, lx, ly),
                 View::Launcher(panel) => panel.motion(&mut self.tree, engine, &self.input, lx, ly),
                 View::Clipboard(panel) => panel.motion(&mut self.tree, engine, &self.input, lx, ly),
@@ -1144,6 +1172,7 @@ impl Overlay {
         let now = self.last_now;
         let (consumed, actions) = match &mut self.view {
             View::Wifi(panel) => panel.key(&mut self.tree, engine, event, now),
+            View::Vpn(panel) => panel.key(&mut self.tree, &mut self.input, engine, event, now),
             View::Bluetooth(panel) => {
                 panel.key(&mut self.tree, &mut self.input, engine, event, now)
             }
@@ -1179,6 +1208,7 @@ impl Overlay {
             View::Control(panel) => panel.tooltip(&self.input)?,
             View::Notifications(panel) => panel.tooltip(&self.input)?,
             View::Wifi(panel) => panel.tooltip(&self.input)?,
+            View::Vpn(panel) => panel.tooltip(&self.input)?,
             View::Bluetooth(panel) => panel.tooltip(&self.input)?,
             View::Battery(panel) => panel.tooltip(&self.input)?,
             View::Audio(panel) => panel.tooltip(&self.input)?,

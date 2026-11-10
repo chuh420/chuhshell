@@ -25,6 +25,7 @@ mod theme;
 mod themectl;
 mod tooltip;
 mod trayctl;
+mod vpnctl;
 mod wallctl;
 mod wallpaper;
 

@@ -15,6 +15,7 @@ pub struct Config {
     pub theme: Theme,
     pub commands: Commands,
     pub hooks: Hooks,
+    pub vpn: Vpn,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -179,6 +180,17 @@ pub struct Hooks {
     pub theme_changed: Option<String>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Vpn {
+    pub home: Option<String>,
+    pub exclude: Vec<String>,
+}
+
+fn country_code(value: &str) -> bool {
+    value.len() == 2 && value.chars().all(|c| c.is_ascii_alphabetic())
+}
+
 pub fn parse_hex(value: &str) -> Option<u32> {
     let digits = value.strip_prefix('#')?;
     if digits.len() != 6 || !digits.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -234,6 +246,20 @@ impl Config {
                 .is_some_and(|value| value.trim().is_empty())
             {
                 errors.push(format!("{key}: empty"));
+            }
+        }
+        if let Some(home) = &self.vpn.home
+            && !country_code(home)
+        {
+            errors.push(format!(
+                "vpn.home: \"{home}\" is not a two-letter country code"
+            ));
+        }
+        for code in &self.vpn.exclude {
+            if !country_code(code) {
+                errors.push(format!(
+                    "vpn.exclude: \"{code}\" is not a two-letter country code"
+                ));
             }
         }
         errors

@@ -56,6 +56,8 @@ pub enum ServiceEvent {
     ClipList(u64, Vec<services::clipboard::ClipEntry>),
     ClipThumb(u64, String, Option<std::sync::Arc<ui::tiny_skia::Pixmap>>),
     WallList(services::wallpapers::Listing),
+    VpnCatalog(Result<std::sync::Arc<services::vpn::Catalog>, String>),
+    VpnDone(crate::vpnctl::VpnJob, Result<String, String>),
     Profiles(services::upower::Profiles),
     WallApplied(Result<services::wallpapers::State, String>),
     CursorList(Vec<crate::cursorctl::CursorItem>),
@@ -89,6 +91,7 @@ pub struct App {
     pub(crate) notes: crate::notify::Notifications,
     pub(crate) tray: crate::trayctl::Tray,
     pub(crate) net: crate::netctl::Net,
+    pub(crate) vpn: crate::vpnctl::Vpn,
     pub(crate) apps: crate::appsctl::Apps,
     pub(crate) clip: crate::clipctl::Clip,
     pub(crate) walls: crate::wallctl::Walls,
@@ -171,6 +174,7 @@ impl App {
             notes: crate::notify::Notifications::default(),
             tray: crate::trayctl::Tray::default(),
             net: crate::netctl::Net::default(),
+            vpn: crate::vpnctl::Vpn::default(),
             apps: crate::appsctl::Apps::default(),
             clip: crate::clipctl::Clip::default(),
             walls: crate::wallctl::Walls::default(),
@@ -215,6 +219,7 @@ impl App {
         if !self.available.screenshot {
             services::programs::warn_missing("grim, slurp or wl-copy", "screenshots");
         }
+        self.start_vpn();
     }
 
     pub fn start_services(&mut self) {
@@ -393,6 +398,8 @@ impl App {
                 self.clip_thumb_loaded(generation, id, pixmap)
             }
             ServiceEvent::WallList(listing) => self.wallpapers_listed(listing),
+            ServiceEvent::VpnCatalog(result) => self.vpn_catalog_loaded(result),
+            ServiceEvent::VpnDone(job, result) => self.vpn_done(job, result),
             ServiceEvent::Profiles(profiles) => self.profiles_changed(profiles),
             ServiceEvent::WallApplied(result) => self.wallpaper_applied(result),
             ServiceEvent::CursorList(items) => self.cursors_listed(items),
@@ -541,6 +548,7 @@ impl App {
         if changed {
             self.sync();
         }
+        self.poll_vpn();
     }
 
     fn sample_resources(&mut self) {
@@ -747,6 +755,12 @@ impl App {
             "calendar" => panel(self, "calendar"),
             "wallpapers" => panel(self, "wallpapers"),
             "wifi" => panel(self, "wifi"),
+            "vpn" => {
+                return match self.vpn_ipc(&args[1..]) {
+                    Ok(text) => Reply::Ok(text),
+                    Err(err) => Reply::Error(err),
+                };
+            }
             "bluetooth" => panel(self, "bluetooth"),
             "audio" => panel(self, "audio"),
             "battery" => panel(self, "battery"),
@@ -835,6 +849,7 @@ impl App {
             "pinned": self.apps.pinned,
                         "wifi": self.net.wifi.state,
             "bluetooth": self.net.bluetooth.powered,
+            "vpn": self.vpn.bar_state().name(),
             "wallpapers": self.walls.data.items.len(),
             "wallpaper": self.walls.data.current,
             "previews": self.walls.previews.len(),
@@ -881,6 +896,8 @@ impl App {
         self.model.bluetooth_powered = self.net.bluetooth.powered;
         self.model.bluetooth_connected = self.net.connected_devices();
         self.model.network_connected = self.net.network_connected(state.wired.connected);
+        self.model.vpn = self.vpn.bar_state();
+        self.model.vpn_tooltip = self.vpn.tooltip();
         self.overlay.wifi_prompt = !self.net.prompt.is_empty();
         self.model.unread_notifications = self.notes.unread();
         self.model.tray = self.tray.bar_entries();
@@ -937,6 +954,7 @@ impl App {
             wifi_down: self.net.down.clone(),
             wifi_up: self.net.up.clone(),
             wifi_prompt: self.net.prompt.clone(),
+            vpn: self.vpn.data(),
             bluetooth: self.net.bluetooth.clone(),
             bluetooth_profiles: self.net.profiles.clone(),
             bluetooth_prompt: self.net.bluetooth_prompt.clone(),
@@ -975,6 +993,7 @@ impl App {
             self.overlay.panel_changed(&mut self.engine, &panel, now);
             self.panel_opened(&panel);
             self.network_panel_changed(&panel);
+            self.vpn_panel_changed(&panel);
             self.apps_panel_changed(&panel);
             self.clip_panel_changed(&panel);
             self.walls_panel_changed(&panel);
@@ -1099,6 +1118,7 @@ impl App {
                 self.net_action(crate::panels::NetAction::BtPower(!powered));
             }
             PanelAction::Net(action) => self.net_action(action),
+            PanelAction::Vpn(action) => self.vpn_action(action),
             PanelAction::Launch(id) => self.launch_application(&id),
             PanelAction::ToggleHidden(id) => self.toggle_application_hidden(&id),
             PanelAction::TogglePinned(id) => self.toggle_application_pinned(&id),
@@ -1306,6 +1326,10 @@ impl App {
             BarAction::ToggleDnd => {
                 self.state.dnd = !self.state.dnd;
                 self.sync();
+                Ok(())
+            }
+            BarAction::ToggleVpn => {
+                self.vpn_toggle();
                 Ok(())
             }
         };

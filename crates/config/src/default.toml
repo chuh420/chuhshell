@@ -44,3 +44,7 @@ name = "gruvbox"
 [hooks]
 # wallpaper_changed = "~/.local/bin/wallpaper-sync"
 # theme_changed = "~/.local/bin/theme-reload"
+
+[vpn]
+# home = "KZ"
+# exclude = ["RU"]

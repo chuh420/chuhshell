@@ -11,6 +11,7 @@ pub mod picker;
 pub mod power;
 pub mod system;
 pub mod tray;
+pub mod vpn;
 pub mod wallpapers;
 pub mod wifi;
 
@@ -43,6 +44,7 @@ pub enum PanelAction {
     TrayQuit,
     TrayEvent(i32, &'static str),
     Net(NetAction),
+    Vpn(VpnAction),
     Launch(String),
     ToggleHidden(String),
     TogglePinned(String),
@@ -97,6 +99,18 @@ pub enum NetAction {
     BtReply(bool, String),
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum VpnAction {
+    Fastest,
+    Connect(services::vpn::Target),
+    Disconnect,
+    Reconnect,
+    Refresh,
+    Setting(String),
+    Favorite(String),
+    CopyIp(String),
+}
+
 pub struct TooltipSpot {
     pub key: AreaId,
     pub text: String,
@@ -133,6 +147,7 @@ pub struct PanelData {
     pub wifi_down: Vec<f64>,
     pub wifi_up: Vec<f64>,
     pub wifi_prompt: String,
+    pub vpn: crate::vpnctl::VpnData,
     pub bluetooth: services::network::BluetoothState,
     pub bluetooth_profiles: HashMap<String, services::network::DeviceProfiles>,
     pub bluetooth_prompt: services::network::BluetoothPrompt,
