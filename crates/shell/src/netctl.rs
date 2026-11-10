@@ -24,7 +24,9 @@ pub struct Net {
     refresh_queued: bool,
     bluetooth_queued: bool,
     wifi_panel: bool,
+    wifi_opened: u64,
     bluetooth_panel: bool,
+    bluetooth_opened: u64,
 }
 
 impl Net {
@@ -196,26 +198,28 @@ impl App {
         }
         if wifi && !self.net.wifi_panel {
             self.net.wifi_panel = true;
+            self.net.wifi_opened += 1;
+            let opened = self.net.wifi_opened;
             self.net_task(|handle| async move {
                 handle.reset_details();
             });
             self.network_event(network::Event::WifiChanged);
-            self.add_timer(Duration::from_secs(10), |app| {
-                if !app.net.wifi_panel {
+            self.add_timer(Duration::from_secs(10), move |app| {
+                if !app.net.wifi_panel || app.net.wifi_opened != opened {
                     return None;
                 }
                 app.net_task(|handle| async move { handle.refresh_wifi().await });
                 Some(Duration::from_secs(10))
             });
-            self.add_timer(Duration::from_millis(1000), |app| {
-                if !app.net.wifi_panel {
+            self.add_timer(Duration::from_millis(1000), move |app| {
+                if !app.net.wifi_panel || app.net.wifi_opened != opened {
                     return None;
                 }
                 app.net_task(|handle| async move { handle.details().await });
                 Some(Duration::from_millis(1000))
             });
-            self.add_timer(Duration::from_millis(200), |app| {
-                if app.net.wifi_panel {
+            self.add_timer(Duration::from_millis(200), move |app| {
+                if app.net.wifi_panel && app.net.wifi_opened == opened {
                     app.net_task(|handle| async move { handle.details().await });
                 }
                 None
@@ -226,9 +230,11 @@ impl App {
         let bluetooth = panel == "bluetooth";
         if bluetooth && !self.net.bluetooth_panel {
             self.net.bluetooth_panel = true;
+            self.net.bluetooth_opened += 1;
+            let opened = self.net.bluetooth_opened;
             self.net_task(|handle| async move { handle.profiles(true).await });
-            self.add_timer(Duration::from_secs(3), |app| {
-                if !app.net.bluetooth_panel {
+            self.add_timer(Duration::from_secs(3), move |app| {
+                if !app.net.bluetooth_panel || app.net.bluetooth_opened != opened {
                     return None;
                 }
                 app.net_task(|handle| async move { handle.profiles(false).await });

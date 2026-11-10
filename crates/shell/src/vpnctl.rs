@@ -165,6 +165,7 @@ pub struct Vpn {
     rx: u64,
     tx: u64,
     panel: bool,
+    opened: u64,
     pub saved: Saved,
     home: Option<String>,
     exclude: Vec<String>,
@@ -393,8 +394,10 @@ impl App {
             self.vpn_job(VpnJob::Settings);
         }
         self.sample_vpn();
-        self.add_timer(Duration::from_secs(1), |app| {
-            if !app.vpn.panel {
+        self.vpn.opened += 1;
+        let opened = self.vpn.opened;
+        self.add_timer(Duration::from_secs(1), move |app| {
+            if !app.vpn.panel || app.vpn.opened != opened {
                 return None;
             }
             app.poll_vpn();
