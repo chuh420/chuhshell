@@ -164,8 +164,8 @@ pub fn iwd_signal_matters(
     }
 }
 
-pub fn choose_backend(networkmanager: bool, iwd: bool) -> Backend {
-    if networkmanager {
+pub fn choose_backend(networkmanager: bool, iwd: bool, nm_owns_wifi: bool) -> Backend {
+    if networkmanager && (nm_owns_wifi || !iwd) {
         Backend::NetworkManager
     } else if iwd {
         Backend::Iwd
@@ -800,7 +800,15 @@ impl Handle {
     }
 
     async fn detect_backend(&self) -> Backend {
-        let backend = choose_backend(self.has_owner(nm::NM).await, self.has_owner(IWD).await);
+        let networkmanager = self.has_owner(nm::NM).await;
+        let iwd = self.has_owner(IWD).await;
+        let nm_owns_wifi = networkmanager
+            && iwd
+            && self
+                .nm_objects()
+                .await
+                .is_ok_and(|objects| nm::manages_wifi(&objects));
+        let backend = choose_backend(networkmanager, iwd, nm_owns_wifi);
         let register = match self.inner.lock() {
             Ok(mut inner) => {
                 if inner.backend != backend {
@@ -1909,10 +1917,11 @@ mod tests {
 
     #[test]
     fn backend_prefers_networkmanager() {
-        assert_eq!(choose_backend(true, true), Backend::NetworkManager);
-        assert_eq!(choose_backend(false, true), Backend::Iwd);
-        assert_eq!(choose_backend(true, false), Backend::NetworkManager);
-        assert_eq!(choose_backend(false, false), Backend::None);
+        assert_eq!(choose_backend(true, true, true), Backend::NetworkManager);
+        assert_eq!(choose_backend(true, true, false), Backend::Iwd);
+        assert_eq!(choose_backend(false, true, false), Backend::Iwd);
+        assert_eq!(choose_backend(true, false, false), Backend::NetworkManager);
+        assert_eq!(choose_backend(false, false, false), Backend::None);
     }
 
     #[test]
