@@ -39,6 +39,7 @@ struct Graph {
 }
 
 pub struct BatteryPanel {
+    plate: NodeId,
     pub root: NodeId,
     title: Label,
     state: Label,
@@ -165,7 +166,8 @@ impl BatteryPanel {
         now: Millis,
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
-        let title = label(tree, engine, root, "battery", 18.0, theme::text());
+        let title = super::kit::title(tree, engine, root, "󰁹", "battery");
+        let plate = super::kit::plate(tree, root);
         let state = label(tree, engine, root, "", 12.0, theme::green());
         let mut level_spec = TextSpec::plain("", crate::theme::font(), 42.0, theme::text());
         if let Some(span) = level_spec.spans.first_mut() {
@@ -173,7 +175,16 @@ impl BatteryPanel {
         }
         let level = Label::new(tree, engine, root, level_spec);
         let track = rect(tree, root, theme::elevated(), 4.0);
-        let fill = rect(tree, track, theme::green(), 4.0);
+        let fill = tree.add(
+            track,
+            Node::rect(
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                ui::RectPaint::solid(theme::green(), 4.0),
+            ),
+        );
         let shimmer = rect(tree, fill, theme::text(), 4.0);
         tree.set_opacity(shimmer, 0.25);
         let rows = ROWS
@@ -236,6 +247,7 @@ impl BatteryPanel {
         let mut panel = Self {
             root,
             title,
+            plate,
             state,
             level,
             track,
@@ -368,6 +380,13 @@ impl BatteryPanel {
             place_label(tree, value, width - vw, slot, vw);
             place_label(tree, key, 0.0, slot, (width - vw - 5.0).max(0.0));
         }
+        super::kit::place_plate(
+            tree,
+            self.plate,
+            slots[3].pos + 3.0,
+            slots[7].pos + slots[7].size - 3.0,
+            width,
+        );
         let graphs = slots[8];
         let columns = linear(&[Cell::fill(0.0), Cell::fill(0.0)], 10.0, width);
         for (graph, column) in self.graphs.iter_mut().zip(columns) {
@@ -477,14 +496,12 @@ impl BatteryPanel {
         running |= self.fill_width.tick(now);
         let fill = self.fill_width.value();
         tree.set_size(self.fill, fill, 8.0);
-        tree.set_fill(
-            self.fill,
-            if level(&self.data) < 20 {
-                theme::red()
-            } else {
-                theme::green()
-            },
-        );
+        let accent = if level(&self.data) < 20 {
+            theme::red()
+        } else {
+            theme::green()
+        };
+        tree.set_fill(self.fill, accent);
         let charging = self.charging();
         tree.set_visible(self.shimmer, charging);
         if charging {

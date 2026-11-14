@@ -54,11 +54,63 @@ impl TransformOp {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Shadow {
+    pub color: Color,
+    pub blur: f32,
+    pub offset: f32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct RectPaint {
     pub color: Color,
     pub radius: f32,
     pub border_color: Color,
     pub border_width: f32,
+    pub shadow: Option<Shadow>,
+}
+
+impl RectPaint {
+    pub fn solid(color: Color, radius: f32) -> Self {
+        Self {
+            color,
+            radius,
+            ..Self::default()
+        }
+    }
+
+    pub fn bordered(mut self, color: Color, width: f32) -> Self {
+        self.border_color = color;
+        self.border_width = width;
+        self
+    }
+
+    pub fn shadowed(mut self, color: Color, blur: f32, offset: f32) -> Self {
+        self.shadow = Some(Shadow {
+            color,
+            blur,
+            offset,
+        });
+        self
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RipplePaint {
+    pub x: f32,
+    pub y: f32,
+    pub radius: f32,
+    pub corner: f32,
+    pub color: Color,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ArcPaint {
+    pub start: f32,
+    pub sweep: f32,
+    pub span: f32,
+    pub width: f32,
+    pub color: Color,
+    pub track: Color,
 }
 
 pub struct TextPaint {
@@ -124,6 +176,8 @@ pub enum Paint {
     Svg(SvgPaint),
     Image(Arc<Pixmap>),
     Path(PathPaint),
+    Arc(ArcPaint),
+    Ripple(RipplePaint),
 }
 
 pub struct Node {
@@ -138,6 +192,7 @@ pub struct Node {
     pub origin: Option<(f32, f32)>,
     pub transforms: Vec<TransformOp>,
     pub clip: bool,
+    pub cascade: f32,
     pub paint: Paint,
     children: Vec<NodeId>,
     parent: Option<NodeId>,
@@ -159,6 +214,7 @@ impl Default for Node {
             origin: None,
             transforms: Vec::new(),
             clip: false,
+            cascade: 1.0,
             paint: Paint::None,
             children: Vec::new(),
             parent: None,
@@ -211,6 +267,9 @@ impl Node {
     pub(crate) fn overflow(&self) -> f32 {
         match &self.paint {
             Paint::Text(text) => text.overflow(),
+            Paint::Rect(rect) => rect
+                .shadow
+                .map_or(0.0, |shadow| shadow.blur + shadow.offset.abs()),
             _ => 0.0,
         }
     }
@@ -278,6 +337,17 @@ impl Tree {
         self.free.push(id.0);
         for child in node.children {
             self.remove(child);
+        }
+    }
+
+    pub fn lower(&mut self, id: NodeId) {
+        let Some(parent) = self.parent(id) else {
+            return;
+        };
+        if let Some(parent) = self.nodes.get_mut(parent.0).and_then(Option::as_mut) {
+            parent.children.retain(|child| *child != id);
+            parent.children.insert(0, id);
+            parent.dirty = true;
         }
     }
 
@@ -391,6 +461,64 @@ impl Tree {
         });
     }
 
+    pub fn set_border(&mut self, id: NodeId, color: Color, width: f32) {
+        self.update(id, |node| match &mut node.paint {
+            Paint::Rect(rect) if rect.border_color != color || rect.border_width != width => {
+                rect.border_color = color;
+                rect.border_width = width;
+                true
+            }
+            _ => false,
+        });
+    }
+
+    pub fn set_radius(&mut self, id: NodeId, radius: f32) {
+        self.update(id, |node| match &mut node.paint {
+            Paint::Rect(rect) if rect.radius != radius => {
+                rect.radius = radius;
+                true
+            }
+            _ => false,
+        });
+    }
+
+    pub fn set_arc(&mut self, id: NodeId, sweep: f32, color: Color) {
+        self.update(id, |node| match &mut node.paint {
+            Paint::Arc(arc) if arc.sweep != sweep || arc.color != color => {
+                arc.sweep = sweep;
+                arc.color = color;
+                true
+            }
+            _ => false,
+        });
+    }
+
+    pub fn set_ripple(&mut self, id: NodeId, ripple: RipplePaint) {
+        self.update(id, |node| match &mut node.paint {
+            Paint::Ripple(current) if *current != ripple => {
+                *current = ripple;
+                true
+            }
+            _ => false,
+        });
+    }
+
+    pub fn set_clip(&mut self, id: NodeId, clip: bool) {
+        self.update(id, |node| {
+            let changed = node.clip != clip;
+            node.clip = clip;
+            changed
+        });
+    }
+
+    pub fn set_cascade(&mut self, id: NodeId, cascade: f32) {
+        self.update(id, |node| {
+            let changed = node.cascade != cascade;
+            node.cascade = cascade;
+            changed
+        });
+    }
+
     pub fn set_text(&mut self, id: NodeId, spec: TextSpec) {
         self.update(id, |node| match &mut node.paint {
             Paint::Text(text) => text.set_spec(spec),
@@ -469,7 +597,14 @@ impl Tree {
 
     pub fn collect_damage(&mut self) -> Damage {
         let mut damage = std::mem::take(&mut self.removed);
-        self.collect(self.root, Transform::identity(), true, false, &mut damage);
+        self.collect(
+            self.root,
+            Transform::identity(),
+            true,
+            false,
+            0.0,
+            &mut damage,
+        );
         damage
     }
 
@@ -479,6 +614,7 @@ impl Tree {
         parent: Transform,
         parent_visible: bool,
         parent_dirty: bool,
+        grow: f32,
         damage: &mut Damage,
     ) {
         let Some(node) = self.get_mut_clean(id) else {
@@ -489,7 +625,7 @@ impl Tree {
         let transform = parent.pre_concat(node.local_transform());
         if dirty {
             let bounds = if visible {
-                device_bounds(transform, node.width, node.height, node.overflow())
+                device_bounds(transform, node.width, node.height, node.overflow() + grow)
             } else {
                 None
             };
@@ -502,11 +638,27 @@ impl Tree {
             node.bounds = bounds;
             node.dirty = false;
         }
+        let grow = if node.cascade < 1.0 {
+            CASCADE_SHIFT + 2.0
+        } else {
+            grow
+        };
         let children = node.children.clone();
         for child in children {
-            self.collect(child, transform, visible, dirty, damage);
+            self.collect(child, transform, visible, dirty, grow, damage);
         }
     }
+}
+
+pub const CASCADE_SHIFT: f32 = 24.0;
+const CASCADE_SPREAD: f32 = 0.6;
+pub(crate) const CASCADE_WINDOW: f32 = 560.0;
+
+pub(crate) fn cascade_step(cascade: f32, position: f32) -> f32 {
+    let local = (cascade * (1.0 + CASCADE_SPREAD) - position.clamp(0.0, 1.0) * CASCADE_SPREAD)
+        .clamp(0.0, 1.0);
+    let rest = 1.0 - local;
+    1.0 - rest * rest * rest
 }
 
 pub(crate) fn device_bounds(

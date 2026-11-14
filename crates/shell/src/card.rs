@@ -18,6 +18,7 @@ fn chip_style() -> ChipStyle {
     ChipStyle {
         family: crate::theme::icons(),
         hover: theme::elevated(),
+        rest: ui::Color::TRANSPARENT,
     }
 }
 
@@ -147,15 +148,10 @@ impl Card {
                 0.0,
                 0.0,
                 0.0,
-                RectPaint {
-                    color: theme::bg(),
-                    radius: 14.0,
-                    border_color: theme::line(),
-                    border_width: 1.0,
-                },
+                RectPaint::solid(theme::bg(), 16.0).bordered(theme::line(), 1.0),
             ),
         );
-        let mut icon_node = Node::rect(13.0, 13.0, 38.0, 38.0, rect(theme::elevated(), 10.0));
+        let mut icon_node = Node::rect(13.0, 13.0, 38.0, 38.0, rect(theme::elevated(), 12.0));
         icon_node.clip = true;
         let icon_box = tree.add(body, icon_node);
         let icon_image = tree.add(icon_box, Node::new(0.0, 0.0, 0.0, 0.0));
@@ -340,14 +336,12 @@ impl Card {
         {
             rect.border_color = border;
         }
-        tree.set_fill(
-            self.bar,
-            if critical {
-                theme::red()
-            } else {
-                theme::green()
-            },
-        );
+        let accent = if critical {
+            theme::red()
+        } else {
+            theme::green()
+        };
+        tree.set_fill(self.bar, accent);
     }
 
     pub fn set_icon(&mut self, tree: &mut Tree, icon: Option<Arc<Pixmap>>) {

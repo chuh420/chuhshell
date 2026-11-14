@@ -153,6 +153,28 @@ fn cover_rect(source: &Pixmap, width: u32, height: u32) -> Option<Pixmap> {
     Some(out)
 }
 
+pub fn rounded(source: &Pixmap, radius: f32) -> Option<Pixmap> {
+    let (width, height) = (source.width(), source.height());
+    let mut mask = ui::tiny_skia::Mask::new(width, height)?;
+    let path = ui::rounded_rect(0.0, 0.0, width as f32, height as f32, radius)?;
+    mask.fill_path(
+        &path,
+        ui::tiny_skia::FillRule::Winding,
+        true,
+        Transform::identity(),
+    );
+    let mut out = Pixmap::new(width, height)?;
+    out.draw_pixmap(
+        0,
+        0,
+        source.as_ref(),
+        &ui::tiny_skia::PixmapPaint::default(),
+        Transform::identity(),
+        Some(&mask),
+    );
+    Some(out)
+}
+
 pub fn load_cover(path: &Path, width: u32, height: u32) -> Option<Pixmap> {
     let image = match image::open(path) {
         Ok(image) => image.into_rgba8(),

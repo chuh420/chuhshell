@@ -131,6 +131,10 @@ impl Input {
         self.hovered.contains(&id)
     }
 
+    pub fn pointer(&self) -> Option<(f32, f32)> {
+        self.position
+    }
+
     pub fn pressed(&self, id: AreaId) -> bool {
         self.grab.as_ref().is_some_and(|grab| grab.area == id)
     }

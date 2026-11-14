@@ -294,6 +294,22 @@ pub fn bg() -> Color {
     palette().bg
 }
 
+pub fn dim() -> Color {
+    palette().dim
+}
+
+pub fn tint(accent: Color, amount: f32) -> Color {
+    palette().surface.lerp(accent, amount)
+}
+
+pub fn lift(color: Color, amount: f32) -> Color {
+    color.lerp(Color::rgb(0xffffff), amount)
+}
+
+pub fn shadow(alpha: f32) -> Color {
+    Color::rgb(0x000000).with_alpha(alpha)
+}
+
 pub fn surface() -> Color {
     palette().surface
 }

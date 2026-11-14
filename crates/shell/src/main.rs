@@ -9,6 +9,7 @@ mod history;
 mod icons;
 mod ipc;
 mod logger;
+mod mediactl;
 mod memory;
 mod model;
 mod netctl;
@@ -18,6 +19,8 @@ mod overlay;
 mod panels;
 mod popups;
 mod powerctl;
+#[cfg(test)]
+mod preview;
 mod sessionctl;
 mod state;
 mod theme;

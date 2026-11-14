@@ -59,6 +59,8 @@ pub enum ServiceEvent {
     VpnCatalog(Result<std::sync::Arc<services::vpn::Catalog>, String>),
     VpnDone(crate::vpnctl::VpnJob, Result<String, String>),
     Profiles(services::upower::Profiles),
+    Media(Option<services::media::Track>),
+    MediaArt(String, Option<ui::tiny_skia::Pixmap>),
     WallApplied(Result<services::wallpapers::State, String>),
     CursorList(Vec<crate::cursorctl::CursorItem>),
     CursorApplied(Result<services::cursors::State, String>),
@@ -92,6 +94,7 @@ pub struct App {
     pub(crate) tray: crate::trayctl::Tray,
     pub(crate) net: crate::netctl::Net,
     pub(crate) vpn: crate::vpnctl::Vpn,
+    pub(crate) media: crate::mediactl::Media,
     pub(crate) apps: crate::appsctl::Apps,
     pub(crate) clip: crate::clipctl::Clip,
     pub(crate) walls: crate::wallctl::Walls,
@@ -175,6 +178,7 @@ impl App {
             tray: crate::trayctl::Tray::default(),
             net: crate::netctl::Net::default(),
             vpn: crate::vpnctl::Vpn::default(),
+            media: crate::mediactl::Media::default(),
             apps: crate::appsctl::Apps::default(),
             clip: crate::clipctl::Clip::default(),
             walls: crate::wallctl::Walls::default(),
@@ -232,6 +236,7 @@ impl App {
         self.start_cursors();
         self.start_theme();
         self.start_power_panels();
+        self.start_media();
         let sender = self.events.clone();
         if let Err(err) = compositor::spawn(move |event| {
             let _ = sender.send(ServiceEvent::Compositor(event));
@@ -401,6 +406,8 @@ impl App {
             ServiceEvent::VpnCatalog(result) => self.vpn_catalog_loaded(result),
             ServiceEvent::VpnDone(job, result) => self.vpn_done(job, result),
             ServiceEvent::Profiles(profiles) => self.profiles_changed(profiles),
+            ServiceEvent::Media(track) => self.media_changed(track),
+            ServiceEvent::MediaArt(key, art) => self.media_art_loaded(key, art),
             ServiceEvent::WallApplied(result) => self.wallpaper_applied(result),
             ServiceEvent::CursorList(items) => self.cursors_listed(items),
             ServiceEvent::CursorApplied(result) => self.cursor_applied(result),
@@ -901,6 +908,8 @@ impl App {
         self.overlay.wifi_prompt = !self.net.prompt.is_empty();
         self.model.unread_notifications = self.notes.unread();
         self.model.tray = self.tray.bar_entries();
+        self.model.media = self.media.bar_entry();
+        self.overlay.media = self.media.track.is_some();
         self.overlay.tray_tall = self.tray.only_menu || self.tray.expanded;
         self.refresh_bars();
         self.sync_osd();
@@ -980,6 +989,8 @@ impl App {
             cpu_history: self.cpu_history.clone(),
             ram_history: self.ram_history.clone(),
             system_detail: self.system_detail.clone(),
+            media: self.media.track.clone(),
+            media_art: crate::panels::Art(self.media.art.clone()),
         }
     }
 
@@ -1140,6 +1151,7 @@ impl App {
             PanelAction::SetMicVolume(value) => self.set_mic_volume(value),
             PanelAction::SetDefaultNode(id) => self.set_default_node(id),
             PanelAction::ToggleMic => self.toggle_mic(),
+            PanelAction::Media(command) => self.media_command(command),
             PanelAction::Session(action) => self.session_action(action),
             PanelAction::Kill(pid, force) => self.kill_process(pid, force),
             PanelAction::WallApply(path, x, y) => {
@@ -1332,6 +1344,10 @@ impl App {
             }
             BarAction::ToggleVpn => {
                 self.vpn_toggle();
+                Ok(())
+            }
+            BarAction::Media(command) => {
+                self.media_command(command);
                 Ok(())
             }
         };

@@ -15,6 +15,7 @@ fn chip_style() -> ChipStyle {
     ChipStyle {
         family: crate::theme::icons(),
         hover: theme::elevated(),
+        rest: ui::Color::TRANSPARENT,
     }
 }
 

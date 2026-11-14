@@ -21,6 +21,7 @@ fn chip_style() -> ChipStyle {
     ChipStyle {
         family: crate::theme::icons(),
         hover: theme::elevated(),
+        rest: theme::surface(),
     }
 }
 const SCROLLBAR: Color = Color::rgb(0xb8b8b8);

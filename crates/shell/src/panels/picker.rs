@@ -12,7 +12,7 @@ use crate::theme::{self, FAST, NORMAL, SLOW};
 pub const SEARCH_HEIGHT: f32 = 52.0;
 const SPACING: f32 = 5.0;
 const INTRO: Millis = 420.0;
-const MOVE: Millis = 170.0;
+const MOVE: Millis = 280.0;
 const SCROLLBAR: Color = Color::rgb(0xb8b8b8);
 
 pub fn eyebrow(tree: &mut Tree, engine: &mut TextEngine, parent: NodeId, text: &str) -> Label {
@@ -234,7 +234,7 @@ impl PickList {
             bar,
             rows: Vec::new(),
             current: -1,
-            highlight_y: Tween::new(0.0, MOVE, Easing::InOutQuad),
+            highlight_y: Tween::new(0.0, MOVE, Easing::Bezier(0.3, 1.3, 0.3, 1.0)),
             highlight_h: Tween::new(0.0, style.resize.max(1.0), Easing::InOutQuad),
             scroll: Flick::new(0.0),
             tracking: false,
@@ -460,6 +460,9 @@ impl PickList {
             tree.set_pos(accent, 0.0, (self.highlight_h.value() - 20.0) / 2.0);
         }
         tree.set_opacity(self.highlight, if self.rows.is_empty() { 0.0 } else { 1.0 });
+        let enter = ((now - self.opened) / 600.0).clamp(0.0, 1.0) as f32;
+        running |= enter < 1.0;
+        tree.set_cascade(self.content, enter);
         tree.set_pos(self.content, 0.0, -self.scroll.value().round());
         running |= self.tick_bar(tree, input, now, scrolling);
         let width = self.width;
