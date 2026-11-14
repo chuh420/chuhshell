@@ -87,6 +87,35 @@ fn panel_data() -> PanelData {
 
 #[test]
 #[ignore]
+fn frame_cost() {
+    let mut engine = TextEngine::new(&font_families());
+    let data = panel_data();
+    let mut total = std::time::Duration::ZERO;
+    for panel in [
+        "control",
+        "calendar",
+        "battery",
+        "audio",
+        "system",
+        "power",
+        "notifications",
+    ] {
+        for round in 0..3 {
+            if let Some((spent, frames)) =
+                Overlay::frame_cost(&mut engine, panel, &data, (1920.0, 1080.0))
+            {
+                if round > 0 {
+                    total += spent;
+                }
+                println!("{panel} round {round}: {frames} frames in {spent:?}");
+            }
+        }
+    }
+    println!("total {total:?}");
+}
+
+#[test]
+#[ignore]
 fn dump() {
     let Some(dir) = target() else {
         return;

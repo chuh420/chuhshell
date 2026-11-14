@@ -175,16 +175,54 @@ pub fn rounded(source: &Pixmap, radius: f32) -> Option<Pixmap> {
     Some(out)
 }
 
+const SHRINK_BELOW: f32 = 0.5;
+
 pub fn load_cover(path: &Path, width: u32, height: u32) -> Option<Pixmap> {
     let image = match image::open(path) {
-        Ok(image) => image.into_rgba8(),
+        Ok(image) => image,
         Err(err) => {
             log::warn!("image {}: {err}", path.display());
             return None;
         }
     };
-    let pixmap = from_rgba(image.width(), image.height(), image.as_raw())?;
+    let image = match shrunk_size(image.width(), image.height(), width, height) {
+        Some((w, h)) => image.thumbnail_exact(w, h),
+        None => image,
+    };
+    let pixmap = premultiplied(image.into_rgba8())?;
     cover_rect(&pixmap, width, height)
+}
+
+fn shrunk_size(width: u32, height: u32, target_w: u32, target_h: u32) -> Option<(u32, u32)> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let scale = (target_w as f32 / width as f32).max(target_h as f32 / height as f32);
+    if scale >= SHRINK_BELOW {
+        return None;
+    }
+    let w = ((width as f32 * scale).ceil() as u32)
+        .max(target_w)
+        .min(width);
+    let h = ((height as f32 * scale).ceil() as u32)
+        .max(target_h)
+        .min(height);
+    Some((w, h))
+}
+
+fn premultiplied(image: image::RgbaImage) -> Option<Pixmap> {
+    let size = IntSize::from_wh(image.width(), image.height())?;
+    let mut data = image.into_raw();
+    for pixel in data.as_chunks_mut::<4>().0 {
+        let a = pixel[3] as u16;
+        if a == 255 {
+            continue;
+        }
+        for channel in &mut pixel[..3] {
+            *channel = ((*channel as u16 * a + 127) / 255) as u8;
+        }
+    }
+    Pixmap::from_vec(data, size)
 }
 
 fn from_rgba(width: u32, height: u32, rgba: &[u8]) -> Option<Pixmap> {
@@ -223,8 +261,7 @@ fn decode_file(path: &Path, size: u32) -> Option<Pixmap> {
             return None;
         }
     };
-    let pixmap = from_rgba(image.width(), image.height(), image.as_raw())?;
-    cover(&pixmap, size)
+    cover(&premultiplied(image)?, size)
 }
 
 pub fn load(source: &IconSource, size: u32) -> Option<Pixmap> {
@@ -235,5 +272,31 @@ pub fn load(source: &IconSource, size: u32) -> Option<Pixmap> {
             rgba,
         } => cover(&from_rgba(*width, *height, rgba)?, size),
         IconSource::File(path) => decode_file(path, size),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shrinks_only_large_images() {
+        assert_eq!(shrunk_size(2560, 1440, 1920, 1080), None);
+        assert_eq!(shrunk_size(3840, 2160, 1920, 1080), None);
+        assert_eq!(shrunk_size(0, 100, 1920, 1080), None);
+        for (w, h) in [(7200, 4050), (6068, 2856), (4000, 9000)] {
+            let (sw, sh) = shrunk_size(w, h, 1920, 1080).unwrap_or_else(|| unreachable!());
+            assert!(sw >= 1920 && sh >= 1080, "{w}x{h} -> {sw}x{sh}");
+            let ratio = (sw as f32 / sh as f32) / (w as f32 / h as f32);
+            assert!((ratio - 1.0).abs() < 0.01, "{w}x{h} -> {sw}x{sh}");
+        }
+    }
+
+    #[test]
+    fn premultiplies_in_place() {
+        let image = image::RgbaImage::from_raw(2, 1, vec![200, 100, 50, 255, 200, 100, 50, 128])
+            .unwrap_or_else(|| unreachable!());
+        let pixmap = premultiplied(image).unwrap_or_else(|| unreachable!());
+        assert_eq!(pixmap.data(), &[200, 100, 50, 255, 100, 50, 25, 128]);
     }
 }
