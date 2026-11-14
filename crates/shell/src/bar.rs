@@ -29,6 +29,8 @@ const GROUP: f32 = 5.0;
 const EDGE: f32 = 3.0;
 const WELL: f32 = 22.0;
 const GAP: f32 = 3.0;
+const ICON: f32 = 13.0;
+const BIG_ICON: f32 = 15.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum BarAction {
@@ -69,6 +71,20 @@ fn chip(
     ink: Color,
     shortcut: &str,
 ) -> Chip {
+    sized_chip(tree, input, engine, parent, label, ink, shortcut, ICON)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sized_chip(
+    tree: &mut Tree,
+    input: &mut Input,
+    engine: &mut TextEngine,
+    parent: NodeId,
+    label: &str,
+    ink: Color,
+    shortcut: &str,
+    icon_size: f32,
+) -> Chip {
     let mut chip = Chip::new(
         tree,
         input,
@@ -78,7 +94,7 @@ fn chip(
         label,
         ink,
         true,
-        Some(13.0),
+        Some(icon_size),
     );
     chip.shortcut = shortcut.to_string();
     chip
@@ -908,7 +924,7 @@ impl Bar {
             )
         });
         let left_row = tree.add(body, Node::new(5.0, 0.0, 0.0, 22.0));
-        let launcher = chip(
+        let launcher = sized_chip(
             &mut tree,
             &mut input,
             engine,
@@ -916,6 +932,7 @@ impl Bar {
             "󰣇",
             theme::green(),
             "Super + D",
+            BIG_ICON,
         );
         let left_separator = separator(&mut tree, left_row);
         let workspaces = Workspaces::new(&mut tree, left_row);
@@ -944,7 +961,7 @@ impl Bar {
             ui::image::svg_from_data(keyboard_icon().as_bytes(), "keyboard-bar.svg"),
             &model.keyboard_label,
         );
-        let network = chip(
+        let network = sized_chip(
             &mut tree,
             &mut input,
             engine,
@@ -952,8 +969,9 @@ impl Bar {
             network_icon(model),
             theme::green(),
             "",
+            BIG_ICON,
         );
-        let vpn = chip(
+        let vpn = sized_chip(
             &mut tree,
             &mut input,
             engine,
@@ -961,6 +979,7 @@ impl Bar {
             "󰒙",
             theme::muted(),
             "",
+            BIG_ICON,
         );
         let bluetooth = chip(
             &mut tree,
@@ -971,7 +990,7 @@ impl Bar {
             theme::green(),
             "",
         );
-        let audio = chip(
+        let audio = sized_chip(
             &mut tree,
             &mut input,
             engine,
@@ -979,6 +998,7 @@ impl Bar {
             "󰕾",
             theme::text(),
             "XF86AudioRaiseVolume / XF86AudioLowerVolume / XF86AudioMute",
+            BIG_ICON,
         );
         let battery = chip(
             &mut tree,
@@ -999,7 +1019,7 @@ impl Bar {
             theme::yellow(),
             "hotkeys paused · Super + Escape",
         );
-        let bell = chip(
+        let bell = sized_chip(
             &mut tree,
             &mut input,
             engine,
@@ -1007,8 +1027,9 @@ impl Bar {
             "󰂚",
             theme::yellow(),
             "Super + N",
+            BIG_ICON,
         );
-        let control = chip(
+        let control = sized_chip(
             &mut tree,
             &mut input,
             engine,
@@ -1016,6 +1037,7 @@ impl Bar {
             "󰒓",
             theme::green(),
             "Super + Space",
+            BIG_ICON,
         );
         let (mut network, mut vpn, mut bluetooth, mut audio, mut bell) =
             (network, vpn, bluetooth, audio, bell);
