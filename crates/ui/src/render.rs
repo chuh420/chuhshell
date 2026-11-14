@@ -6,20 +6,28 @@ use tiny_skia::{
 
 use crate::{
     ArcPaint, RectPaint,
+    shadow::ShadowCache,
     text::TextEngine,
     tree::{CASCADE_SHIFT, CASCADE_WINDOW, NodeId, Paint, Tree, cascade_step},
 };
 
 const MARGIN: i32 = 40;
+const FLAT: f32 = 1.0 / 4096.0;
 
 pub struct Canvas {
     pixmap: Pixmap,
+    scratch: Vec<u8>,
+    pool: Vec<Vec<u8>>,
+    shadows: ShadowCache,
 }
 
 impl Canvas {
     pub fn new(width: u32, height: u32) -> Option<Self> {
         Some(Self {
             pixmap: Pixmap::new(width.max(1), height.max(1))?,
+            scratch: Vec::new(),
+            pool: Vec::new(),
+            shadows: ShadowCache::default(),
         })
     }
 
@@ -48,8 +56,11 @@ impl Canvas {
                 engine,
                 full,
                 masks: Vec::new(),
+                pool: &mut self.pool,
+                shadows: &mut self.shadows,
             };
             ctx.node(tree, tree.root(), Transform::identity(), 1.0, full);
+            ctx.release();
             return;
         }
         let area = Rect::new(
@@ -59,7 +70,12 @@ impl Canvas {
             clip.height + MARGIN * 2,
         )
         .intersect(&full);
-        let Some(mut scratch) = Pixmap::new(area.width as u32, area.height as u32) else {
+        let mut data = std::mem::take(&mut self.scratch);
+        data.clear();
+        data.resize(area.width as usize * area.height as usize * 4, 0);
+        let Some(mut scratch) = tiny_skia::IntSize::from_wh(area.width as u32, area.height as u32)
+            .and_then(|size| Pixmap::from_vec(data, size))
+        else {
             return;
         };
         let local = Rect::new(0, 0, area.width, area.height);
@@ -68,9 +84,12 @@ impl Canvas {
             engine,
             full: local,
             masks: Vec::new(),
+            pool: &mut self.pool,
+            shadows: &mut self.shadows,
         };
         let origin = Transform::from_translate(-area.x as f32, -area.y as f32);
         ctx.node(tree, tree.root(), origin, 1.0, local);
+        ctx.release();
         let stride = self.pixmap.width() as usize * 4;
         let source_stride = area.width as usize * 4;
         let row = clip.width as usize * 4;
@@ -82,6 +101,7 @@ impl Canvas {
             let from = (dy + y) * source_stride + dx * 4;
             target[at..at + row].copy_from_slice(&source[from..from + row]);
         }
+        self.scratch = scratch.take();
     }
 }
 
@@ -90,6 +110,23 @@ struct Context<'a> {
     engine: &'a mut TextEngine,
     full: Rect,
     masks: Vec<(Rect, Mask)>,
+    pool: &'a mut Vec<Vec<u8>>,
+    shadows: &'a mut ShadowCache,
+}
+
+const POOLED_MASKS: usize = 4;
+
+fn blank_mask(pool: &mut Vec<Vec<u8>>, width: u32, height: u32) -> Option<Mask> {
+    let mut data = pool.pop().unwrap_or_default();
+    data.clear();
+    data.resize(width as usize * height as usize, 0);
+    Mask::from_vec(data, tiny_skia::IntSize::from_wh(width, height)?)
+}
+
+fn recycle(pool: &mut Vec<Vec<u8>>, mask: Mask) {
+    if pool.len() < POOLED_MASKS {
+        pool.push(mask.take());
+    }
 }
 
 fn to_skia_rect(rect: Rect) -> Option<tiny_skia::Rect> {
@@ -102,6 +139,12 @@ fn to_skia_rect(rect: Rect) -> Option<tiny_skia::Rect> {
 }
 
 impl Context<'_> {
+    fn release(&mut self) {
+        for (_, mask) in self.masks.drain(..) {
+            recycle(self.pool, mask);
+        }
+    }
+
     fn prepare_mask(&mut self, clip: Rect) -> bool {
         if clip == self.full {
             return false;
@@ -109,13 +152,17 @@ impl Context<'_> {
         if self.masks.iter().any(|(rect, _)| *rect == clip) {
             return true;
         }
-        let Some(mut mask) = Mask::new(self.pixmap.width(), self.pixmap.height()) else {
+        let (width, height) = (self.pixmap.width(), self.pixmap.height());
+        let area = clip.intersect(&Rect::new(0, 0, width as i32, height as i32));
+        let Some(mut mask) = blank_mask(self.pool, width, height) else {
             return false;
         };
-        let Some(path) = to_skia_rect(clip).map(PathBuilder::from_rect) else {
-            return false;
-        };
-        mask.fill_path(&path, FillRule::Winding, false, Transform::identity());
+        let stride = width as usize;
+        let data = mask.data_mut();
+        for y in area.y..area.y + area.height {
+            let at = y as usize * stride + area.x as usize;
+            data[at..at + area.width as usize].fill(255);
+        }
         self.masks.push((clip, mask));
         true
     }
@@ -148,7 +195,7 @@ impl Context<'_> {
         }
         let (width, height) = (node.width, node.height);
         let cascade = node.cascade;
-        let children = node.children().to_vec();
+        let count = node.children().len();
         let extent = if matches!(node.paint, Paint::None) {
             None
         } else {
@@ -181,9 +228,16 @@ impl Context<'_> {
         if paints && let Some(node) = tree.get_mut_clean(id) {
             match &mut node.paint {
                 Paint::None => {}
-                Paint::Rect(paint) => {
-                    draw_rect(self.pixmap, paint, width, height, transform, opacity, mask)
-                }
+                Paint::Rect(paint) => draw_rect(
+                    self.pixmap,
+                    self.shadows,
+                    paint,
+                    width,
+                    height,
+                    transform,
+                    opacity,
+                    mask,
+                ),
                 Paint::Text(text) => {
                     let scale = transform_scale(transform);
                     let stale = text
@@ -199,13 +253,7 @@ impl Context<'_> {
                                 .pre_scale(1.0 / raster.scale, 1.0 / raster.scale)
                                 .pre_translate(raster.left, raster.top),
                         );
-                        let paint = PixmapPaint {
-                            opacity,
-                            blend_mode: BlendMode::SourceOver,
-                            quality,
-                        };
-                        self.pixmap
-                            .draw_pixmap(0, 0, raster.pixmap.as_ref(), &paint, matrix, mask);
+                        draw_image(self.pixmap, &raster.pixmap, matrix, quality, opacity, mask);
                     }
                 }
                 Paint::Svg(svg) => {
@@ -221,13 +269,7 @@ impl Context<'_> {
                     if let Some(raster) = &svg.raster {
                         let (matrix, quality) =
                             snap(transform.pre_scale(width / pw as f32, height / ph as f32));
-                        let paint = PixmapPaint {
-                            opacity,
-                            blend_mode: BlendMode::SourceOver,
-                            quality,
-                        };
-                        self.pixmap
-                            .draw_pixmap(0, 0, raster.as_ref(), &paint, matrix, mask);
+                        draw_image(self.pixmap, raster, matrix, quality, opacity, mask);
                     }
                 }
                 Paint::Path(path) => draw_path(self.pixmap, path, transform, opacity, mask),
@@ -236,6 +278,7 @@ impl Context<'_> {
                 }
                 Paint::Ripple(ripple) => draw_ripple(
                     self.pixmap,
+                    self.pool,
                     ripple,
                     width,
                     height,
@@ -259,30 +302,27 @@ impl Context<'_> {
                         } else {
                             (matrix, FilterQuality::Bilinear)
                         };
-                        let paint = PixmapPaint {
-                            opacity,
-                            blend_mode: BlendMode::SourceOver,
-                            quality,
-                        };
-                        self.pixmap.draw_pixmap(
-                            0,
-                            0,
-                            image.as_ref().as_ref(),
-                            &paint,
-                            matrix,
-                            mask,
-                        );
+                        draw_image(self.pixmap, image, matrix, quality, opacity, mask);
                     }
                 }
             }
         }
+        let child_at = |tree: &Tree, index: usize| {
+            tree.get(id)
+                .and_then(|node| node.children().get(index).copied())
+        };
         if cascade >= 1.0 {
-            for child in children {
-                self.node(tree, child, transform, opacity, clip);
+            for index in 0..count {
+                if let Some(child) = child_at(tree, index) {
+                    self.node(tree, child, transform, opacity, clip);
+                }
             }
             return;
         }
-        for child in children {
+        for index in 0..count {
+            let Some(child) = child_at(tree, index) else {
+                continue;
+            };
             let position = tree
                 .get(child)
                 .map_or(0.0, |node| node.y / height.clamp(1.0, CASCADE_WINDOW));
@@ -301,8 +341,10 @@ impl Context<'_> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_ripple(
     pixmap: &mut Pixmap,
+    pool: &mut Vec<Vec<u8>>,
     ripple: &crate::RipplePaint,
     width: f32,
     height: f32,
@@ -313,10 +355,10 @@ fn draw_ripple(
     if ripple.radius <= 0.0 || ripple.color.is_transparent() {
         return;
     }
-    let Some(mut mask) = Mask::new(pixmap.width(), pixmap.height()) else {
+    let Some(shape) = rounded_rect(0.0, 0.0, width, height, ripple.corner) else {
         return;
     };
-    let Some(shape) = rounded_rect(0.0, 0.0, width, height, ripple.corner) else {
+    let Some(mut mask) = blank_mask(pool, pixmap.width(), pixmap.height()) else {
         return;
     };
     mask.fill_path(&shape, FillRule::Winding, true, transform);
@@ -334,6 +376,7 @@ fn draw_ripple(
             Some(&mask),
         );
     }
+    recycle(pool, mask);
 }
 
 fn arc_path(cx: f32, cy: f32, radius: f32, start: f32, sweep: f32) -> Option<Path> {
@@ -457,6 +500,44 @@ fn draw_path(
     }
 }
 
+fn draw_image(
+    pixmap: &mut Pixmap,
+    source: &Pixmap,
+    matrix: Transform,
+    quality: FilterQuality,
+    opacity: f32,
+    mask: Option<&Mask>,
+) {
+    let exact = matches!(quality, FilterQuality::Nearest)
+        && matrix.sx == 1.0
+        && matrix.sy == 1.0
+        && matrix.kx == 0.0
+        && matrix.ky == 0.0
+        && matrix.tx.fract() == 0.0
+        && matrix.ty.fract() == 0.0;
+    if exact {
+        crate::blit::over(
+            pixmap,
+            source,
+            tiny_skia::IntRect::from_xywh(
+                matrix.tx as i32,
+                matrix.ty as i32,
+                source.width(),
+                source.height(),
+            ),
+            mask,
+            (opacity.clamp(0.0, 1.0) * 255.0).round() as u8,
+        );
+        return;
+    }
+    let paint = PixmapPaint {
+        opacity,
+        blend_mode: BlendMode::SourceOver,
+        quality,
+    };
+    pixmap.draw_pixmap(0, 0, source.as_ref(), &paint, matrix, mask);
+}
+
 fn transform_scale(transform: Transform) -> f32 {
     (transform.sx * transform.sx + transform.ky * transform.ky).sqrt()
 }
@@ -477,6 +558,9 @@ fn snap(matrix: Transform) -> (Transform, FilterQuality) {
 }
 
 pub fn rounded_rect(x: f32, y: f32, w: f32, h: f32, radius: f32) -> Option<Path> {
+    if !(w > 0.0 && h > 0.0) {
+        return None;
+    }
     let r = radius.min(w / 2.0).min(h / 2.0).max(0.0);
     if r <= 0.0 {
         return Some(PathBuilder::from_rect(tiny_skia::Rect::from_xywh(
@@ -507,6 +591,10 @@ fn fill(
     transform: Transform,
     mask: Option<&Mask>,
 ) {
+    let flat = |b: tiny_skia::Rect| b.width() <= FLAT || b.height() <= FLAT;
+    if path.bounds().transform(transform).is_none_or(flat) {
+        return;
+    }
     let mut paint = SkPaint::default();
     paint.set_color(color.to_skia(opacity));
     paint.anti_alias = true;
@@ -514,7 +602,7 @@ fn fill(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_shadow(
+pub(crate) fn draw_shadow(
     pixmap: &mut Pixmap,
     rect: &RectPaint,
     shadow: crate::tree::Shadow,
@@ -568,8 +656,10 @@ fn draw_shadow(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_rect(
     pixmap: &mut Pixmap,
+    shadows: &mut ShadowCache,
     rect: &RectPaint,
     width: f32,
     height: f32,
@@ -577,7 +667,11 @@ fn draw_rect(
     opacity: f32,
     mask: Option<&Mask>,
 ) {
-    if let Some(shadow) = rect.shadow {
+    if let Some(shadow) = rect.shadow
+        && !shadows.draw(
+            pixmap, rect, shadow, width, height, transform, opacity, mask,
+        )
+    {
         draw_shadow(
             pixmap, rect, shadow, width, height, transform, opacity, mask,
         );

@@ -1286,6 +1286,45 @@ impl Overlay {
         canvas.render(&mut self.tree, engine, &Damage::full(cw as i32, ch as i32));
         Some((canvas.data().to_vec(), cw, ch))
     }
+
+    #[cfg(test)]
+    pub(crate) fn frame_cost(
+        engine: &mut TextEngine,
+        panel: &str,
+        data: &PanelData,
+        size: (f32, f32),
+    ) -> Option<(std::time::Duration, usize)> {
+        let mut probe = Overlay::new();
+        probe.preview(engine, panel, data, size, 1000.0)?;
+        let (_, _, cw, ch) = probe.frame_rect()?;
+        let mut overlay = Overlay::new();
+        overlay.size = Some(size);
+        overlay.media = data.media.is_some();
+        overlay.set_data(engine, data, 0.0);
+        overlay.panel_changed(engine, panel, 0.0);
+        let mut canvas = Canvas::new(cw, ch)?;
+        let mut actions = Vec::new();
+        let mut frames = 0;
+        let started = std::time::Instant::now();
+        let mut now = 0.0;
+        while now <= 1000.0 {
+            overlay.last_now = now;
+            overlay.step(engine, now, &mut actions);
+            if let Some((ox, oy, _, _)) = overlay.frame_rect() {
+                overlay.tree.set_pos(overlay.offset, -ox as f32, -oy as f32);
+            }
+            let damage = if frames == 0 {
+                overlay.tree.collect_damage();
+                Damage::full(cw as i32, ch as i32)
+            } else {
+                overlay.tree.collect_damage()
+            };
+            canvas.render(&mut overlay.tree, engine, &damage);
+            frames += 1;
+            now += 16.0;
+        }
+        Some((started.elapsed(), frames))
+    }
 }
 
 #[cfg(test)]

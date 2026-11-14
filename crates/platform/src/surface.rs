@@ -147,6 +147,7 @@ pub(crate) struct Surface {
     full_damage: bool,
     frame_pending: bool,
     has_content: bool,
+    rgba: bool,
     pub(crate) viewport: Option<WpViewport>,
 }
 
@@ -190,6 +191,7 @@ impl Surface {
             full_damage: true,
             frame_pending: false,
             has_content: false,
+            rgba: false,
             viewport: None,
         }
     }
@@ -206,6 +208,7 @@ impl Surface {
             full_damage: true,
             frame_pending: false,
             has_content: false,
+            rgba: false,
             viewport: None,
         }
     }
@@ -225,6 +228,7 @@ impl Surface {
             full_damage: true,
             frame_pending: false,
             has_content: false,
+            rgba: false,
             viewport: None,
         }
     }
@@ -314,9 +318,11 @@ impl Surface {
         if width <= 0 || height <= 0 || pixels.len() < len {
             return false;
         }
-        if self.slot_size != (width, height) {
+        let rgba = native_order(shm);
+        if self.slot_size != (width, height) || self.rgba != rgba {
             self.slots.clear();
             self.slot_size = (width, height);
+            self.rgba = rgba;
         }
         if self.pool.is_none() {
             match SlotPool::new(len * 2, shm) {
@@ -337,7 +343,7 @@ impl Surface {
         {
             Some(index) => index,
             None if self.slots.len() < MAX_BUFFERS => {
-                match pool.create_buffer(width, height, stride, wl_shm::Format::Argb8888) {
+                match pool.create_buffer(width, height, stride, format(rgba)) {
                     Ok((buffer, _)) => {
                         self.slots.push(Slot {
                             buffer,
@@ -361,7 +367,7 @@ impl Surface {
             return false;
         };
         for rect in region.rects() {
-            copy_swizzled(pixels, canvas, stride as usize, rect);
+            copy_pixels(pixels, canvas, stride as usize, rect, rgba);
         }
         for (i, slot) in self.slots.iter_mut().enumerate() {
             if i == index {
@@ -405,6 +411,9 @@ impl Surface {
         if raw.len() < len {
             return None;
         }
+        if self.rgba {
+            return Some(raw[..len].to_vec());
+        }
         let mut out = vec![0u8; len];
         for (s, d) in raw[..len]
             .as_chunks::<4>()
@@ -430,6 +439,7 @@ impl Surface {
         if width <= 0 || height <= 0 || pixels.len() < len {
             return false;
         }
+        let rgba = native_order(shm);
         let mut pool = match SlotPool::new(len, shm) {
             Ok(pool) => pool,
             Err(err) => {
@@ -437,19 +447,19 @@ impl Surface {
                 return false;
             }
         };
-        let (buffer, canvas) =
-            match pool.create_buffer(width, height, stride, wl_shm::Format::Argb8888) {
-                Ok(created) => created,
-                Err(err) => {
-                    log::error!("shm buffer: {err}");
-                    return false;
-                }
-            };
-        copy_swizzled(
+        let (buffer, canvas) = match pool.create_buffer(width, height, stride, format(rgba)) {
+            Ok(created) => created,
+            Err(err) => {
+                log::error!("shm buffer: {err}");
+                return false;
+            }
+        };
+        copy_pixels(
             pixels,
             canvas,
             stride as usize,
             &Rect::new(0, 0, width, height),
+            rgba,
         );
         let wl = &self.wl;
         wl.damage_buffer(0, 0, width, height);
@@ -465,6 +475,7 @@ impl Surface {
         });
         self.pool = Some(pool);
         self.slot_size = (width, height);
+        self.rgba = rgba;
         self.full_damage = false;
         self.has_content = true;
         true
@@ -485,13 +496,29 @@ impl Drop for Surface {
     }
 }
 
-fn copy_swizzled(src: &[u8], dst: &mut [u8], stride: usize, rect: &Rect) {
+fn native_order(shm: &Shm) -> bool {
+    shm.formats().contains(&wl_shm::Format::Abgr8888)
+}
+
+fn format(rgba: bool) -> wl_shm::Format {
+    if rgba {
+        wl_shm::Format::Abgr8888
+    } else {
+        wl_shm::Format::Argb8888
+    }
+}
+
+fn copy_pixels(src: &[u8], dst: &mut [u8], stride: usize, rect: &Rect, rgba: bool) {
     let x0 = rect.x as usize * 4;
     let x1 = rect.right() as usize * 4;
     for y in rect.y as usize..rect.bottom() as usize {
         let row = y * stride;
         let from = &src[row + x0..row + x1];
         let to = &mut dst[row + x0..row + x1];
+        if rgba {
+            to.copy_from_slice(from);
+            continue;
+        }
         for (s, d) in from
             .as_chunks::<4>()
             .0

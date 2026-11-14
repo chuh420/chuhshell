@@ -1,10 +1,12 @@
 pub mod anim;
+mod blit;
 mod color;
 pub mod image;
 pub mod input;
 pub mod layout;
 mod render;
 pub mod rich;
+mod shadow;
 pub mod text;
 pub mod textfield;
 mod tree;

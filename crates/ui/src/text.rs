@@ -8,6 +8,8 @@ use tiny_skia::{IntSize, Pixmap};
 
 use crate::Color;
 
+const GLYPH_CACHE: usize = 2048;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Weight {
     Light,
@@ -268,12 +270,19 @@ impl TextEngine {
     }
 
     pub fn raster(&mut self, spec: &TextSpec, scale: f32) -> Option<Raster> {
-        let natural = self.measure(spec, scale);
-        let elide = spec
+        let mut buffer = self.shape(spec, scale, None);
+        let mut metrics = self.line_metrics(&mut buffer, spec.max_lines);
+        if let Some(elide) = spec
             .elide_width
-            .filter(|width| *width + 0.01 < natural.width);
-        let mut buffer = self.shape(spec, scale, elide);
-        let (width, ascent, descent, lines) = self.line_metrics(&mut buffer, spec.max_lines);
+            .filter(|width| *width + 0.01 < metrics.0 / scale)
+        {
+            buffer = self.shape(spec, scale, Some(elide));
+            metrics = self.line_metrics(&mut buffer, spec.max_lines);
+        }
+        let (width, ascent, descent, lines) = metrics;
+        if self.swash.image_cache.len() > GLYPH_CACHE {
+            self.swash.image_cache.clear();
+        }
         let line_height = ((ascent + descent) / scale).ceil() * scale;
         let max_size = spec.spans.iter().map(|span| span.size).fold(1.0, f32::max) * scale;
         let pad = (max_size * 0.4).ceil() as i32 + 2;
@@ -318,10 +327,7 @@ impl TextEngine {
                     }
                 }
                 let physical = glyph.physical((origin, baseline), 1.0);
-                let Some(image) = self
-                    .swash
-                    .get_image_uncached(&mut self.fonts, physical.cache_key)
-                else {
+                let Some(image) = self.swash.get_image(&mut self.fonts, physical.cache_key) else {
                     continue;
                 };
                 let x0 = physical.x + image.placement.left;
