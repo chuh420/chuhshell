@@ -180,7 +180,7 @@ impl BluetoothPanel {
         now: Millis,
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
-        let title = label(tree, engine, root, "Bluetooth", 18.0, theme::text());
+        let title = super::kit::title(tree, engine, root, "󰂯", "Bluetooth");
         let power = chip(
             tree,
             input,

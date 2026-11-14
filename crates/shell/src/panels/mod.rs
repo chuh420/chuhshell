@@ -68,6 +68,7 @@ pub enum PanelAction {
     ToggleMic,
     Session(&'static str),
     Kill(i32, bool),
+    Media(services::media::Command),
 }
 
 #[derive(Clone, Debug)]
@@ -109,6 +110,19 @@ pub enum VpnAction {
     Setting(String),
     Favorite(String),
     CopyIp(String),
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Art(pub Option<Arc<ui::tiny_skia::Pixmap>>);
+
+impl PartialEq for Art {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        }
+    }
 }
 
 pub struct TooltipSpot {
@@ -169,4 +183,6 @@ pub struct PanelData {
     pub cpu_history: Vec<f64>,
     pub ram_history: Vec<f64>,
     pub system_detail: Option<services::system::Detail>,
+    pub media: Option<services::media::Track>,
+    pub media_art: Art,
 }

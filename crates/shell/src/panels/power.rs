@@ -119,6 +119,7 @@ impl PowerPanel {
                             radius: 16.0,
                             border_color: Color::TRANSPARENT,
                             border_width: 1.0,
+                            ..RectPaint::default()
                         },
                     ),
                 );

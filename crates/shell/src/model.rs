@@ -64,6 +64,7 @@ pub struct BarModel {
     pub dnd: bool,
     pub unread_notifications: u32,
     pub tray: Vec<(String, Option<std::sync::Arc<ui::tiny_skia::Pixmap>>)>,
+    pub media: Option<(String, bool)>,
 }
 
 impl Default for BarModel {
@@ -97,6 +98,7 @@ impl Default for BarModel {
             dnd: false,
             unread_notifications: 0,
             tray: Vec::new(),
+            media: None,
         }
     }
 }

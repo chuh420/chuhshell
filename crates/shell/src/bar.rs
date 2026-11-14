@@ -19,10 +19,15 @@ fn chip_style() -> ChipStyle {
     ChipStyle {
         family: crate::theme::icons(),
         hover: theme::elevated(),
+        rest: ui::Color::TRANSPARENT,
     }
 }
 const KEYBOARD_ICON: &str = include_str!("../assets/keyboard-bar.svg");
 const SLOT: f32 = 25.0;
+const PAD: f32 = 3.0;
+const GROUP: f32 = 5.0;
+const EDGE: f32 = 3.0;
+const WELL: f32 = 22.0;
 const GAP: f32 = 3.0;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -46,6 +51,7 @@ pub enum BarAction {
     Volume(i32),
     ToggleDnd,
     ToggleVpn,
+    Media(services::media::Command),
 }
 
 pub struct TooltipTarget {
@@ -119,10 +125,12 @@ fn pop_sequence() -> Sequence {
     )
 }
 
+const PILL: f32 = 18.0;
+
 struct Workspaces {
     root: NodeId,
+    well: NodeId,
     highlight: NodeId,
-    marker: NodeId,
     row: NodeId,
     chips: Vec<WorkspaceChip>,
     ids: Vec<i32>,
@@ -138,39 +146,25 @@ struct Workspaces {
 impl Workspaces {
     fn new(tree: &mut Tree, parent: NodeId) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 22.0));
+        let well = tree.add(
+            root,
+            Node::rect(-3.0, 0.0, 0.0, 22.0, RectPaint::solid(theme::dim(), 8.0)),
+        );
         let highlight = tree.add(
             root,
             Node::rect(
                 0.0,
-                0.0,
+                center(22.0, PILL),
                 SLOT,
-                22.0,
-                RectPaint {
-                    color: theme::elevated(),
-                    radius: 6.0,
-                    ..RectPaint::default()
-                },
-            ),
-        );
-        let marker = tree.add(
-            highlight,
-            Node::rect(
-                0.0,
-                0.0,
-                0.0,
-                2.0 / crate::theme::scale(),
-                RectPaint {
-                    color: theme::green(),
-                    radius: 1.0,
-                    ..RectPaint::default()
-                },
+                PILL,
+                RectPaint::solid(theme::green(), 6.0),
             ),
         );
         let row = tree.add(root, Node::new(0.0, 0.0, 0.0, 22.0));
         Self {
             root,
+            well,
             highlight,
-            marker,
             row,
             chips: Vec::new(),
             ids: Vec::new(),
@@ -223,7 +217,7 @@ impl Workspaces {
             "○".to_string()
         };
         let ink = if active {
-            theme::green()
+            theme::dim()
         } else if occupied {
             theme::text()
         } else {
@@ -312,7 +306,7 @@ impl Workspaces {
         for entry in &mut self.chips {
             let hovered = entry.chip.hovered(input);
             entry.chip.color_override = Some(if hovered && !entry.active {
-                theme::surface()
+                theme::elevated()
             } else {
                 Color::TRANSPARENT
             });
@@ -337,18 +331,11 @@ impl Workspaces {
         running |= self.implicit_width.tick(now);
         let left = self.edge_left.value();
         let width = self.edge_right.value() - left;
-        tree.set_pos(self.highlight, left, 0.0);
-        tree.set_size(self.highlight, width, 22.0);
+        tree.set_pos(self.highlight, left, center(22.0, PILL));
+        tree.set_size(self.highlight, width, PILL);
         tree.set_opacity(self.highlight, self.highlight_opacity.value());
-        let marker_width = (10.0 / crate::theme::scale())
-            .max(14.0 / crate::theme::scale() - (width - SLOT) * 0.15);
-        let marker_height = 2.0 / crate::theme::scale();
-        tree.set_pos(
-            self.marker,
-            center(width, marker_width),
-            22.0 - marker_height,
-        );
-        tree.set_size(self.marker, marker_width, marker_height);
+        tree.set_size(self.well, self.implicit_width.value() + 6.0, 22.0);
+        tree.set_visible(self.well, false);
         for (index, entry) in self.chips.iter_mut().enumerate() {
             running |= entry.pop.tick(now);
             let pulse = entry.pop.value() as f32;
@@ -373,6 +360,8 @@ struct HoverRect {
     color: Tween<Color>,
     scale: Tween<f32>,
     pressed_scale: f32,
+    base: Color,
+    ripple: ui::widgets::Ripple,
 }
 
 impl HoverRect {
@@ -397,20 +386,31 @@ impl HoverRect {
             ),
         );
         let area = input.add(MouseArea::new(root));
+        let ripple = ui::widgets::Ripple::new(tree, root, area, 9.0, theme::text());
         Self {
+            ripple,
             root,
             area,
             color: Tween::new(Color::TRANSPARENT, 140.0, Easing::Linear),
             scale: Tween::new(1.0, 110.0, Easing::OutCubic),
             pressed_scale,
+            base: Color::TRANSPARENT,
         }
     }
 
+    fn set_base(&mut self, tree: &mut Tree, base: Color, radius: f32) {
+        self.base = base;
+        self.color.jump(base);
+        tree.set_fill(self.root, base);
+        tree.set_radius(self.root, radius);
+    }
+
     fn sync(&mut self, now: Millis, input: &Input, selected: bool) {
+        self.ripple.sync(input);
         let color = if input.contains_mouse(self.area) || selected {
             theme::elevated()
         } else {
-            Color::TRANSPARENT
+            self.base
         };
         self.color.set_target(now, color);
         let scale = if input.pressed(self.area) {
@@ -422,7 +422,7 @@ impl HoverRect {
     }
 
     fn tick(&mut self, tree: &mut Tree, now: Millis) -> bool {
-        let running = self.color.tick(now) | self.scale.tick(now);
+        let running = self.color.tick(now) | self.scale.tick(now) | self.ripple.tick(tree, now);
         tree.set_fill(self.root, self.color.value());
         tree.set_scale(self.root, self.scale.value());
         running
@@ -507,99 +507,280 @@ impl TrayIcon {
     }
 }
 
-struct Resources {
-    rect: HoverRect,
-    cpu: NodeId,
-    ram: NodeId,
-    cpu_text: String,
-    ram_text: String,
-    cpu_color: Tween<Color>,
-    width: f32,
+const RING: f32 = 13.0;
+const CPU_WIDTH: f32 = 50.0;
+const RAM_WIDTH: f32 = 72.0;
+
+struct Gauge {
+    ring: NodeId,
+    text: NodeId,
+    value: String,
+    level: f32,
+    color: Tween<Color>,
 }
 
-fn resource_spec(icon: &str, value: &str, color: Color) -> TextSpec {
-    TextSpec {
-        spans: vec![
-            ui::Span::new(icon, crate::theme::icons(), 12.0),
-            ui::Span::new(format!(" {value}"), crate::theme::icons(), 10.0),
-        ],
-        color,
-        elide_width: None,
-        wrap_width: None,
-        max_lines: None,
+fn gauge_spec(value: &str) -> TextSpec {
+    TextSpec::plain(value, crate::theme::icons(), 10.0, theme::text())
+}
+
+impl Gauge {
+    fn new(
+        tree: &mut Tree,
+        engine: &mut TextEngine,
+        parent: NodeId,
+        x: f32,
+        width: f32,
+        color: Color,
+    ) -> Self {
+        let ring = tree.add(
+            parent,
+            Node::new(x, center(22.0, RING), RING, RING).with_paint(Paint::Arc(ui::ArcPaint {
+                start: 0.0,
+                sweep: 0.0,
+                span: 360.0,
+                width: 2.4,
+                color,
+                track: theme::line(),
+            })),
+        );
+        let spec = gauge_spec("…");
+        let metrics = engine.measure(&spec, 1.0);
+        let text = tree.add(
+            parent,
+            Node::new(
+                x + RING + 6.0,
+                center(22.0, metrics.height),
+                width - RING - 6.0,
+                metrics.height,
+            )
+            .with_paint(Paint::Text(TextPaint::new(spec))),
+        );
+        Self {
+            ring,
+            text,
+            value: "…".into(),
+            level: 0.0,
+            color: Tween::new(color, SLOW, Easing::Linear),
+        }
     }
+
+    fn tick(&mut self, tree: &mut Tree, now: Millis) -> bool {
+        let running = self.color.tick(now);
+        tree.set_arc(self.ring, 360.0 * self.level, self.color.value());
+        tree.set_text(self.text, gauge_spec(&self.value));
+        running
+    }
+}
+
+struct Resources {
+    rect: HoverRect,
+    cpu: Gauge,
+    ram: Gauge,
+    width: f32,
 }
 
 impl Resources {
     fn new(tree: &mut Tree, input: &mut Input, engine: &mut TextEngine, parent: NodeId) -> Self {
-        let cpu_spec = resource_spec("󰻠", "…", theme::text());
-        let ram_spec = resource_spec("󰍛", "…", theme::text());
-        let cpu_metrics = engine.measure(&cpu_spec, 1.0);
-        let ram_metrics = engine.measure(&ram_spec, 1.0);
-        let layout = plain_row(
-            &[
-                Item::new(53.0, cpu_metrics.height),
-                Item::new(74.0, ram_metrics.height),
-            ],
-            0.0,
-        );
-        let width = layout.width + 8.0;
-        let rect = HoverRect::new(tree, input, parent, width, 0.96);
-        let row = tree.add(
+        let width = 9.0 + CPU_WIDTH + RAM_WIDTH + 5.0;
+        let mut rect = HoverRect::new(tree, input, parent, width, 0.96);
+        rect.set_base(tree, Color::TRANSPARENT, 9.0);
+        let cpu = Gauge::new(tree, engine, rect.root, 9.0, CPU_WIDTH, theme::green());
+        let ram = Gauge::new(
+            tree,
+            engine,
             rect.root,
-            Node::new(
-                4.0,
-                center(22.0, layout.height),
-                layout.width,
-                layout.height,
-            ),
-        );
-        let cpu = tree.add(
-            row,
-            Node::new(0.0, 0.0, 53.0, cpu_metrics.height)
-                .with_paint(Paint::Text(TextPaint::new(cpu_spec))),
-        );
-        let ram = tree.add(
-            row,
-            Node::new(53.0, 0.0, 74.0, ram_metrics.height)
-                .with_paint(Paint::Text(TextPaint::new(ram_spec))),
+            9.0 + CPU_WIDTH,
+            RAM_WIDTH,
+            theme::blue(),
         );
         Self {
             rect,
             cpu,
             ram,
-            cpu_text: "…".into(),
-            ram_text: "…".into(),
-            cpu_color: Tween::new(theme::text(), SLOW, Easing::Linear),
             width,
         }
     }
 
     fn apply(&mut self, model: &BarModel, now: Millis) {
-        self.cpu_text = model
+        self.cpu.value = model
             .cpu
             .map_or_else(|| "…".to_string(), |cpu| format!("{cpu}%"));
-        self.ram_text = if model.ram_total > 0.0 {
-            format!("{:.1} GiB", model.ram_used)
+        self.cpu.level = model.cpu.map_or(0.0, |cpu| cpu.min(100) as f32 / 100.0);
+        if model.ram_total > 0.0 {
+            self.ram.value = format!("{:.1} GiB", model.ram_used);
+            self.ram.level = (model.ram_used / model.ram_total).clamp(0.0, 1.0) as f32;
         } else {
-            "…".to_string()
-        };
+            self.ram.value = "…".to_string();
+            self.ram.level = 0.0;
+        }
         let color = if model.cpu.is_some_and(|cpu| cpu >= 85) {
             theme::yellow()
         } else {
-            theme::text()
+            theme::green()
         };
-        self.cpu_color.set_target(now, color);
+        self.cpu.color.set_target(now, color);
     }
 
     fn tick(&mut self, tree: &mut Tree, now: Millis) -> bool {
-        let running = self.rect.tick(tree, now) | self.cpu_color.tick(now);
-        tree.set_text(
-            self.cpu,
-            resource_spec("󰻠", &self.cpu_text, self.cpu_color.value()),
-        );
-        tree.set_text(self.ram, resource_spec("󰍛", &self.ram_text, theme::text()));
+        let mut running = self.rect.tick(tree, now);
+        running |= self.cpu.tick(tree, now);
+        running |= self.ram.tick(tree, now);
         running
+    }
+}
+
+const MEDIA_MAX: f32 = 210.0;
+
+struct MediaChip {
+    rect: HoverRect,
+    icon: NodeId,
+    label: SwapText,
+    playing: bool,
+    shown: bool,
+    opacity: Tween<f32>,
+    ink: Tween<Color>,
+}
+
+fn media_icon(playing: bool, color: Color) -> TextSpec {
+    TextSpec::plain(
+        if playing { "󰎈" } else { "󰏤" },
+        crate::theme::icons(),
+        13.0,
+        color,
+    )
+}
+
+impl MediaChip {
+    fn new(tree: &mut Tree, input: &mut Input, engine: &mut TextEngine, parent: NodeId) -> Self {
+        let mut rect = HoverRect::new(tree, input, parent, 0.0, 0.96);
+        rect.set_base(tree, Color::TRANSPARENT, 9.0);
+        if let Some(area) = input.get_mut(rect.area) {
+            area.buttons = ui::input::Buttons::LEFT_RIGHT;
+        }
+        let spec = media_icon(true, theme::green());
+        let metrics = engine.measure(&spec, 1.0);
+        let icon = tree.add(
+            rect.root,
+            Node::new(
+                9.0,
+                center(22.0, metrics.height),
+                metrics.width,
+                metrics.height,
+            )
+            .with_paint(Paint::Text(TextPaint::new(spec))),
+        );
+        let label = SwapText::new(
+            tree,
+            engine,
+            rect.root,
+            "",
+            "",
+            crate::theme::font(),
+            10.0,
+            theme::text(),
+            MEDIA_MAX,
+        );
+        tree.set_opacity(rect.root, 0.0);
+        Self {
+            rect,
+            icon,
+            label,
+            playing: false,
+            shown: false,
+            opacity: Tween::new(0.0, NORMAL, Easing::Linear),
+            ink: Tween::new(theme::muted(), NORMAL, Easing::Linear),
+        }
+    }
+
+    fn apply(&mut self, engine: &mut TextEngine, media: &Option<(String, bool)>, now: Millis) {
+        self.shown = media.is_some();
+        self.opacity
+            .set_target(now, if self.shown { 1.0 } else { 0.0 });
+        if let Some((text, playing)) = media {
+            self.playing = *playing;
+            self.label.set(text, "");
+            self.label.flush(engine, now);
+        }
+        self.ink.set_target(
+            now,
+            if self.playing {
+                theme::green()
+            } else {
+                theme::muted()
+            },
+        );
+    }
+
+    fn width(&self) -> f32 {
+        9.0 + 14.0 + 6.0 + self.label.implicit_width().ceil() + 10.0
+    }
+
+    fn tick(&mut self, tree: &mut Tree, now: Millis, x: f32, y: f32) -> bool {
+        let mut running = self.rect.tick(tree, now);
+        running |= self.opacity.tick(now);
+        running |= self.ink.tick(now);
+        running |= self.label.advance(now);
+        let width = self.width();
+        let visible = self.opacity.value() > 0.0;
+        tree.set_visible(self.rect.root, visible);
+        tree.set_opacity(self.rect.root, self.opacity.value());
+        tree.set_pos(self.rect.root, x, y);
+        tree.set_size(self.rect.root, width, 22.0);
+        tree.set_text(self.icon, media_icon(self.playing, self.ink.value()));
+        let height = self.label.implicit_height().ceil();
+        self.label.place(
+            tree,
+            29.0,
+            center(22.0, height),
+            (width - 39.0).max(0.0),
+            height,
+        );
+        self.label.apply(tree);
+        running
+    }
+}
+
+struct Clock {
+    rect: HoverRect,
+    label: SwapText,
+}
+
+impl Clock {
+    fn new(
+        tree: &mut Tree,
+        input: &mut Input,
+        engine: &mut TextEngine,
+        parent: NodeId,
+        text: &str,
+    ) -> Self {
+        let rect = HoverRect::new(tree, input, parent, 0.0, 0.96);
+        let mut label = SwapText::new(
+            tree,
+            engine,
+            rect.root,
+            text,
+            "",
+            crate::theme::icons(),
+            11.0,
+            theme::text(),
+            100000.0,
+        );
+        label.set_distance(6.0);
+        Self { rect, label }
+    }
+
+    fn width(&self) -> f32 {
+        self.label.implicit_width().ceil() + 20.0
+    }
+
+    fn place(&mut self, tree: &mut Tree, x: f32, y: f32) {
+        let width = self.width();
+        let height = self.label.implicit_height().ceil();
+        tree.set_pos(self.rect.root, x, y);
+        tree.set_size(self.rect.root, width, 22.0);
+        self.label
+            .place(tree, 10.0, center(22.0, height), width - 20.0, height);
+        self.label.apply(tree);
     }
 }
 
@@ -663,8 +844,10 @@ pub struct Bar {
     left_separator: NodeId,
     workspaces: Workspaces,
     title: SwapText,
-    clock: Chip,
+    clock: Clock,
+    media: MediaChip,
     right_row: NodeId,
+    islands: [NodeId; 8],
     tray: Vec<TrayIcon>,
     resources: Resources,
     keyboard: Keyboard,
@@ -705,18 +888,25 @@ impl Bar {
             0.0,
             body_width,
             body_height,
-            RectPaint {
-                color: theme::bg(),
-                radius: 9.0,
-                border_color: theme::line(),
-                border_width: 1.0,
-            },
+            RectPaint::solid(theme::bg(), 10.0).bordered(theme::line(), 1.0),
         );
         body.scale = crate::theme::scale();
         body.origin = Some((0.0, 0.0));
         body.opacity = 0.0;
         let root = tree.root();
         let body = tree.add(root, body);
+        let islands = std::array::from_fn(|_| {
+            tree.add(
+                body,
+                Node::rect(
+                    0.0,
+                    0.0,
+                    0.0,
+                    body_height,
+                    RectPaint::solid(theme::dim(), 8.0),
+                ),
+            )
+        });
         let left_row = tree.add(body, Node::new(5.0, 0.0, 0.0, 22.0));
         let launcher = chip(
             &mut tree,
@@ -742,15 +932,8 @@ impl Bar {
             theme::muted(),
             max_width,
         );
-        let clock = chip(
-            &mut tree,
-            &mut input,
-            engine,
-            body,
-            &model.clock,
-            theme::text(),
-            "",
-        );
+        let clock = Clock::new(&mut tree, &mut input, engine, body, &model.clock);
+        let media = MediaChip::new(&mut tree, &mut input, engine, body);
         let right_row = tree.add(body, Node::new(0.0, 0.0, 0.0, 22.0));
         let resources = Resources::new(&mut tree, &mut input, engine, right_row);
         let keyboard = Keyboard::new(
@@ -834,7 +1017,18 @@ impl Bar {
             theme::green(),
             "Super + Space",
         );
-        let mut enter = Tween::new(0.0, 620.0, Easing::OutCubic);
+        let (mut network, mut vpn, mut bluetooth, mut audio, mut bell) =
+            (network, vpn, bluetooth, audio, bell);
+        for chip in [
+            &mut network,
+            &mut vpn,
+            &mut bluetooth,
+            &mut audio,
+            &mut bell,
+        ] {
+            chip.pop_on_change = true;
+        }
+        let mut enter = Tween::new(0.0, 700.0, Easing::SPATIAL_SLOW);
         enter.start(now, 0.0, 1.0);
         let mut bar = Self {
             tree,
@@ -849,7 +1043,9 @@ impl Bar {
             workspaces,
             title,
             clock,
+            media,
             right_row,
+            islands,
             tray: Vec::new(),
             resources,
             keyboard,
@@ -920,7 +1116,9 @@ impl Bar {
         );
         self.title.set(&title_text(model), &model.title_key);
         self.title.flush(engine, now);
-        self.clock.set_label(engine, &model.clock, 11.0);
+        self.clock.label.set(&model.clock, "");
+        self.clock.label.flush(engine, now);
+        self.media.apply(engine, &model.media, now);
         self.resources.apply(model, now);
         self.keyboard.label.set(&model.keyboard_label, "");
         self.keyboard.label.flush(engine, now);
@@ -1032,7 +1230,6 @@ impl Bar {
             },
         );
         self.launcher.selected = self.panel == "launcher";
-        self.clock.selected = self.panel == "calendar";
         self.network.selected = self.panel == "wifi";
         self.vpn.selected = self.panel == "vpn";
         self.bluetooth.selected = self.panel == "bluetooth";
@@ -1052,10 +1249,9 @@ impl Bar {
         self.bell_ring.restart(now);
     }
 
-    fn chips_mut(&mut self) -> [&mut Chip; 10] {
+    fn chips_mut(&mut self) -> [&mut Chip; 9] {
         [
             &mut self.launcher,
-            &mut self.clock,
             &mut self.network,
             &mut self.vpn,
             &mut self.bluetooth,
@@ -1095,10 +1291,9 @@ impl Bar {
         }
     }
 
-    fn chips(&self) -> [&Chip; 10] {
+    fn chips(&self) -> [&Chip; 9] {
         [
             &self.launcher,
-            &self.clock,
             &self.network,
             &self.vpn,
             &self.bluetooth,
@@ -1114,7 +1309,6 @@ impl Bar {
         let input = &self.input;
         for chip in [
             &mut self.launcher,
-            &mut self.clock,
             &mut self.network,
             &mut self.vpn,
             &mut self.bluetooth,
@@ -1129,6 +1323,8 @@ impl Bar {
         self.workspaces.sync(now, input);
         let system = self.panel == "system";
         self.resources.rect.sync(now, input, system);
+        self.clock.rect.sync(now, input, self.panel == "calendar");
+        self.media.rect.sync(now, input, false);
         self.keyboard.rect.sync(now, input, false);
         for icon in &mut self.tray {
             icon.rect.sync(now, input, false);
@@ -1200,7 +1396,14 @@ impl Bar {
         {
             return (!right).then_some(BarAction::Workspace(entry.id));
         }
-        if area == self.clock.area && !right {
+        if area == self.media.rect.area {
+            return self.media.shown.then_some(BarAction::Media(if right {
+                services::media::Command::Next
+            } else {
+                services::media::Command::Toggle
+            }));
+        }
+        if area == self.clock.rect.area && !right {
             return self.open("calendar", area);
         }
         if area == self.resources.rect.area {
@@ -1278,31 +1481,46 @@ impl Bar {
 
     fn layout(&mut self) {
         let tree = &mut self.tree;
+        let height = self.height;
+        let island = |tree: &mut Tree, node: NodeId, from: f32, to: f32| {
+            tree.set_visible(node, to > from);
+            tree.set_pos(node, from.round(), center(height, WELL));
+            tree.set_size(node, (to - from).round().max(0.0), WELL);
+        };
         let title_width = self.title.implicit_width();
         let left_items = [
             Item::new(self.launcher.implicit_width(), 22.0),
-            Item::new(1.0, 12.0).margins(4.0, 6.0),
-            Item::new(self.workspaces.implicit_width(), 22.0),
-            Item::preferred(title_width, 16.0).margins(12.0, 0.0),
+            Item::new(self.workspaces.implicit_width(), 22.0).margins(2.0, 0.0),
+            Item::preferred(title_width, 16.0).margins(PAD + GROUP + 11.0, 0.0),
         ];
-        let left = row_layout(&left_items, 3.0);
-        tree.set_pos(self.left_row, 5.0, center(self.height, left.height));
+        let left = row_layout(&left_items, 2.0);
+        tree.set_pos(self.left_row, EDGE + PAD, center(height, left.height));
         tree.set_size(self.left_row, left.width, left.height);
         let p = &left.positions;
         self.launcher
             .place(tree, p[0].0, p[0].1, left_items[0].layout_width());
-        tree.set_pos(self.left_separator, p[1].0, p[1].1);
-        tree.set_pos(self.workspaces.root, p[2].0, p[2].1);
-        tree.set_size(self.workspaces.root, left_items[2].layout_width(), 22.0);
-        tree.set_size(self.workspaces.row, left_items[2].layout_width(), 22.0);
-        self.title.place(tree, p[3].0, p[3].1, title_width, 16.0);
-
-        let clock_width = self.clock.implicit_width();
-        self.clock.place(
+        tree.set_visible(self.left_separator, false);
+        tree.set_pos(self.workspaces.root, p[1].0, p[1].1);
+        tree.set_size(self.workspaces.root, left_items[1].layout_width(), 22.0);
+        tree.set_size(self.workspaces.row, left_items[1].layout_width(), 22.0);
+        self.title.place(tree, p[2].0, p[2].1, title_width, 16.0);
+        let workspaces_end = EDGE + PAD + p[1].0 + left_items[1].layout_width();
+        island(tree, self.islands[0], EDGE, workspaces_end + PAD);
+        island(
             tree,
-            center(self.width, clock_width),
-            center(self.height, 22.0),
-            clock_width,
+            self.islands[1],
+            EDGE + PAD + p[2].0 - 11.0,
+            EDGE + PAD + p[2].0 + title_width + 11.0,
+        );
+
+        let clock_width = self.clock.width();
+        let clock_x = center(self.width, clock_width).round();
+        self.clock.place(tree, clock_x, center(height, 22.0));
+        island(
+            tree,
+            self.islands[2],
+            clock_x - PAD,
+            clock_x + clock_width + PAD,
         );
 
         enum Slot {
@@ -1314,67 +1532,57 @@ impl Bar {
             Bluetooth,
             Audio,
             Battery,
-            Separator,
             Paused,
             Bell,
             Control,
         }
-        let mut slots: Vec<(Slot, Item)> = (0..self.tray.len())
-            .map(|index| (Slot::Tray(index), Item::new(23.0, 22.0)))
+        let gap = PAD * 2.0 + GROUP;
+        let mut slots: Vec<(Slot, usize, Item)> = (0..self.tray.len())
+            .map(|index| (Slot::Tray(index), 0, Item::new(23.0, 22.0)))
             .collect();
-        slots.extend([
-            (
-                Slot::Resources,
-                Item::new(self.resources.width, 22.0).margins(2.0, 0.0),
-            ),
-            (Slot::Keyboard, Item::new(49.0, 22.0)),
-        ]);
-        if self.network_visible {
+        let mut push = |slot: Slot, group: usize, width: f32| {
+            let first = slots.last().is_some_and(|(_, last, _)| *last != group);
             slots.push((
-                Slot::Network,
-                Item::new(self.network.implicit_width(), 22.0),
+                slot,
+                group,
+                Item::new(width, 22.0).margins(if first { gap - 2.0 } else { 0.0 }, 0.0),
             ));
+        };
+        push(Slot::Resources, 1, self.resources.width);
+        push(Slot::Keyboard, 2, 49.0);
+        if self.network_visible {
+            push(Slot::Network, 2, self.network.implicit_width());
         }
         if self.vpn_visible {
-            slots.push((Slot::Vpn, Item::new(self.vpn.implicit_width(), 22.0)));
+            push(Slot::Vpn, 2, self.vpn.implicit_width());
         }
         if self.bluetooth_visible {
-            slots.push((
-                Slot::Bluetooth,
-                Item::new(self.bluetooth.implicit_width(), 22.0),
-            ));
+            push(Slot::Bluetooth, 2, self.bluetooth.implicit_width());
         }
-        slots.push((Slot::Audio, Item::new(self.audio.implicit_width(), 22.0)));
+        push(Slot::Audio, 2, self.audio.implicit_width());
         if self.battery_visible {
-            slots.push((
-                Slot::Battery,
-                Item::new(self.battery.implicit_width(), 22.0),
-            ));
+            push(Slot::Battery, 2, self.battery.implicit_width());
         }
-        slots.push((Slot::Separator, Item::new(1.0, 12.0).margins(5.0, 5.0)));
         if self.paused_visible {
-            slots.push((Slot::Paused, Item::new(self.paused.implicit_width(), 22.0)));
+            push(Slot::Paused, 3, self.paused.implicit_width());
         }
-        slots.push((Slot::Bell, Item::new(self.bell.implicit_width(), 22.0)));
-        slots.push((
-            Slot::Control,
-            Item::new(self.control.implicit_width(), 22.0),
-        ));
-        let items: Vec<Item> = slots.iter().map(|(_, item)| *item).collect();
+        push(Slot::Bell, 3, self.bell.implicit_width());
+        push(Slot::Control, 3, self.control.implicit_width());
+        let items: Vec<Item> = slots.iter().map(|(_, _, item)| *item).collect();
         let right = row_layout(&items, 2.0);
-        tree.set_pos(
-            self.right_row,
-            self.width - 5.0 - right.width,
-            center(self.height, right.height),
-        );
+        let right_x = self.width - EDGE - PAD - right.width;
+        tree.set_pos(self.right_row, right_x, center(height, right.height));
         tree.set_size(self.right_row, right.width, right.height);
         tree.set_visible(self.battery.root, self.battery_visible);
         tree.set_visible(self.network.root, self.network_visible);
         tree.set_visible(self.vpn.root, self.vpn_visible);
         tree.set_visible(self.bluetooth.root, self.bluetooth_visible);
         tree.set_visible(self.paused.root, self.paused_visible);
-        for ((slot, item), (x, y)) in slots.iter().zip(right.positions.iter().copied()) {
+        tree.set_visible(self.right_separator, false);
+        let mut groups = [(f32::MAX, 0.0f32); 4];
+        for ((slot, group, item), (x, y)) in slots.iter().zip(right.positions.iter().copied()) {
             let width = item.layout_width();
+            groups[*group] = (groups[*group].0.min(x), groups[*group].1.max(x + width));
             match slot {
                 Slot::Tray(index) => tree.set_pos(self.tray[*index].rect.root, x, y),
                 Slot::Resources => tree.set_pos(self.resources.rect.root, x, y),
@@ -1384,28 +1592,54 @@ impl Bar {
                 Slot::Bluetooth => self.bluetooth.place(tree, x, y, width),
                 Slot::Audio => self.audio.place(tree, x, y, width),
                 Slot::Battery => self.battery.place(tree, x, y, width),
-                Slot::Separator => tree.set_pos(self.right_separator, x, y),
                 Slot::Paused => self.paused.place(tree, x, y, width),
                 Slot::Bell => self.bell.place(tree, x, y, width),
                 Slot::Control => self.control.place(tree, x, y, width),
             }
+        }
+        for (index, (from, to)) in groups.into_iter().enumerate() {
+            island(
+                tree,
+                self.islands[4 + index],
+                right_x + from - PAD,
+                right_x + to + PAD,
+            );
         }
     }
 
     pub fn tick(&mut self, now: Millis) -> bool {
         let mut running = self.enter.tick(now);
         let enter = self.enter.value();
-        self.tree.set_opacity(self.body, enter);
+        self.tree
+            .set_opacity(self.body, (enter * 2.0).clamp(0.0, 1.0));
         self.tree.set_transforms(
             self.body,
             &[TransformOp::Translate {
                 x: 0.0,
-                y: -12.0 * (1.0 - enter),
+                y: -26.0 * (1.0 - enter).max(0.0),
             }],
         );
         running |= self.workspaces.tick(&mut self.tree, now);
         running |= self.title.advance(now);
         running |= self.resources.tick(&mut self.tree, now);
+        running |= self.clock.rect.tick(&mut self.tree, now);
+        running |= self.clock.label.advance(now);
+        let media_x = (center(self.width, self.clock.width()) + self.clock.width()).round()
+            + PAD * 2.0
+            + GROUP;
+        running |= self
+            .media
+            .tick(&mut self.tree, now, media_x, center(self.height, 22.0));
+        let media_width = self.media.width();
+        let media_island = self.islands[3];
+        self.tree
+            .set_visible(media_island, self.media.opacity.value() > 0.0);
+        self.tree
+            .set_opacity(media_island, self.media.opacity.value());
+        self.tree
+            .set_pos(media_island, media_x - PAD, center(self.height, WELL));
+        self.tree
+            .set_size(media_island, media_width + PAD * 2.0, WELL);
         running |= self.keyboard.rect.tick(&mut self.tree, now);
         for icon in &mut self.tray {
             running |= icon.tick(&mut self.tree, now);
@@ -1432,7 +1666,6 @@ impl Bar {
         let tree = &mut self.tree;
         for chip in [
             &mut self.launcher,
-            &mut self.clock,
             &mut self.network,
             &mut self.vpn,
             &mut self.bluetooth,
@@ -1510,7 +1743,7 @@ mod tests {
                 target.anchor.anchor_width,
                 target.anchor.anchor_height
             ),
-            (6, 3, 23, 22)
+            (7, 3, 23, 22)
         );
     }
 

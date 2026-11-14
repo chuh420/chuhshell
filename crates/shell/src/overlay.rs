@@ -3,8 +3,8 @@ use platform::{
     PointerKind, PopupPlacement, SurfaceId, keys,
 };
 use ui::{
-    Canvas, Color, Node, NodeId, Paint, RectPaint, TextEngine, TransformOp, Tree,
-    anim::{Easing, Millis, Spring, Tween},
+    Canvas, Color, Node, NodeId, RectPaint, TextEngine, TransformOp, Tree,
+    anim::{Easing, Millis, Tween},
     input::{AreaId, Buttons, Input, InputEvent, MouseArea},
 };
 
@@ -43,7 +43,9 @@ const MODULE: [&str; 8] = [
     "notifications",
 ];
 
-const MARGIN: f32 = 48.0;
+const MARGIN: f32 = 60.0;
+const MEDIA_EXTRA: f64 = 100.0;
+const SEED: f32 = 56.0;
 const DIM_ANCHORED: Color = Color {
     r: 0x1d as f32 / 255.0,
     g: 0x20 as f32 / 255.0,
@@ -92,7 +94,7 @@ pub fn panel_height(p: &str, available: f64, tray_tall: bool, wifi_prompt: bool)
         "calendar" => 500.0,
         "notifications" => 640.0,
         "power" => 290.0,
-        _ => 704.0,
+        _ => 580.0,
     };
     (available - 70.0).min(value)
 }
@@ -187,13 +189,14 @@ pub struct Overlay {
     pub anchor: f64,
     pub tray_tall: bool,
     pub wifi_prompt: bool,
+    pub media: bool,
     last_now: Millis,
     queued: Vec<PanelAction>,
     pub displayed: String,
     content_panel: String,
     pending: String,
     reveal: f64,
-    spring: Spring,
+    open: Tween<f64>,
     close: Tween<f64>,
     phase: Reveal,
     morph: bool,
@@ -206,6 +209,7 @@ pub struct Overlay {
     dim_color: Tween<Color>,
     content_opacity: Tween<f32>,
     content_shift: Tween<f32>,
+    cascade: Tween<f32>,
     swap: Swap,
     view: View,
     data: PanelData,
@@ -230,12 +234,9 @@ impl Overlay {
             0.0,
             0.0,
             0.0,
-            RectPaint {
-                color: theme::bg(),
-                radius: 22.0,
-                border_color: theme::line(),
-                border_width: 1.0,
-            },
+            RectPaint::solid(theme::bg(), 22.0)
+                .bordered(theme::line(), 1.0)
+                .shadowed(theme::shadow(0.55), 30.0, 10.0),
         );
         card_node.scale = crate::theme::scale();
         card_node.origin = Some((0.0, 0.0));
@@ -245,8 +246,6 @@ impl Overlay {
         card_mouse.cursor = platform::CursorShape::Default;
         input.add(card_mouse);
         let content = tree.add(card, Node::new(0.0, 0.0, 0.0, 0.0));
-        let mut spring = Spring::new(0.0, 4.2, 0.3);
-        spring.epsilon = 0.002;
         Self {
             surface: None,
             card_surface: None,
@@ -267,25 +266,27 @@ impl Overlay {
             anchor: 0.0,
             tray_tall: false,
             wifi_prompt: false,
+            media: false,
             last_now: 0.0,
             queued: Vec::new(),
             displayed: String::new(),
             content_panel: String::new(),
             pending: String::new(),
             reveal: 0.0,
-            spring,
-            close: Tween::new(0.0, 170.0, Easing::InCubic),
+            open: Tween::new(0.0, 520.0, Easing::SPATIAL),
+            close: Tween::new(0.0, 210.0, Easing::ACCELERATE),
             phase: Reveal::Idle,
             morph: false,
             morph_arm: None,
-            x: Tween::new(0.0, SLOW, Easing::OutQuint),
-            y: Tween::new(0.0, SLOW, Easing::OutQuint),
-            width: Tween::new(0.0, SLOW, Easing::OutQuint),
-            height: Tween::new(0.0, SLOW, Easing::OutQuint),
+            x: Tween::new(0.0, 460.0, Easing::SPATIAL),
+            y: Tween::new(0.0, 460.0, Easing::SPATIAL),
+            width: Tween::new(0.0, 460.0, Easing::SPATIAL),
+            height: Tween::new(0.0, 460.0, Easing::SPATIAL),
             radius: Tween::new(22.0, SLOW, Easing::Linear),
             dim_color: Tween::new(DIM_DEFAULT, NORMAL, Easing::Linear),
             content_opacity: Tween::new(1.0, 90.0, Easing::InQuad),
             content_shift: Tween::new(0.0, SLOW, Easing::OutCubic),
+            cascade: Tween::new(1.0, 640.0, Easing::Linear),
             swap: Swap::Idle,
             view: View::None,
             data: PanelData::default(),
@@ -353,13 +354,14 @@ impl Overlay {
                 self.content_opacity.jump(1.0);
                 self.content_shift.jump(0.0);
                 self.set_content(engine, panel, now);
+                self.cascade.start(now, 0.0, 1.0);
             }
             self.displayed = panel.to_string();
             let from = self.reveal;
-            self.spring.start(now, from, 1.0);
+            self.open.start(now, from, 1.0);
             self.phase = Reveal::Opening;
         } else {
-            self.spring.stop();
+            self.open.stop();
             let from = self.reveal;
             self.close.start(now, from, 0.0);
             self.phase = Reveal::Closing;
@@ -533,11 +535,7 @@ impl Overlay {
 
     pub fn retheme(&mut self, engine: &mut TextEngine, now: Millis) {
         self.tree.set_fill(self.card, theme::bg());
-        if let Some(node) = self.tree.get_mut(self.card)
-            && let Paint::Rect(rect) = &mut node.paint
-        {
-            rect.border_color = theme::line();
-        }
+        self.tree.set_border(self.card, theme::line(), 1.0);
         if !matches!(self.view, View::None) {
             let walls = match &self.view {
                 View::Wallpapers(panel) => Some(panel.view()),
@@ -559,7 +557,7 @@ impl Overlay {
         }
         self.data = data.clone();
         match &mut self.view {
-            View::Control(panel) => panel.sync(engine, data, now),
+            View::Control(panel) => panel.sync(&mut self.tree, engine, data, now),
             View::Notifications(panel) => {
                 panel.sync(&mut self.tree, &mut self.input, engine, data, now)
             }
@@ -697,9 +695,9 @@ impl Overlay {
         }
         match self.phase {
             Reveal::Opening => {
-                running |= self.spring.tick(now);
-                self.reveal = self.spring.value();
-                if !self.spring.is_running() {
+                running |= self.open.tick(now);
+                self.reveal = self.open.value();
+                if !self.open.is_running() {
                     self.phase = Reveal::Idle;
                 }
             }
@@ -727,6 +725,7 @@ impl Overlay {
                     self.content_opacity.start(now, 0.0, 1.0);
                     self.content_shift = Tween::new(8.0, SLOW, Easing::OutCubic);
                     self.content_shift.start(now, 8.0, 0.0);
+                    self.cascade.start(now, 0.15, 1.0);
                     self.swap = Swap::In;
                 }
             }
@@ -740,6 +739,7 @@ impl Overlay {
             }
             Swap::Idle => {}
         }
+        running |= self.cascade.tick(now);
         running
     }
 
@@ -747,7 +747,10 @@ impl Overlay {
         let (sw, sh) = self.size?;
         let kind = self.displayed.as_str();
         let vw = panel_width(kind, sw as f64);
-        let vh = panel_height(kind, sh as f64, self.tray_tall, self.wifi_prompt);
+        let mut vh = panel_height(kind, sh as f64, self.tray_tall, self.wifi_prompt);
+        if kind == "control" && self.media {
+            vh = (vh + MEDIA_EXTRA).min(sh as f64 - 70.0);
+        }
         let x = panel_x(kind, vw, sw as f64, self.anchor);
         let y = panel_y(kind, vh, sh as f64);
         Some((
@@ -800,55 +803,49 @@ impl Overlay {
             self.height.value(),
         );
         let r = self.reveal as f32;
+        let scale = crate::theme::scale();
         let anchored = ANCHORED.contains(&kind.as_str()) && self.anchor > 0.0;
         let centered = CENTERED.contains(&kind.as_str());
-        let origin_x = if anchored {
-            ((self.anchor as f32 - x) / crate::theme::scale()).clamp(0.0, w.max(0.0))
-        } else if centered {
-            w / 2.0
+        let settled = (r - 1.0).abs() < 0.0005;
+        let (gx, gy, gw, gh, transforms) = if centered {
+            let zoom = 0.88 + 0.12 * r;
+            (
+                x,
+                y,
+                w,
+                h,
+                vec![
+                    TransformOp::Translate {
+                        x: 0.0,
+                        y: 34.0 * (1.0 - r),
+                    },
+                    TransformOp::Scale {
+                        x: zoom,
+                        y: zoom,
+                        origin_x: w / 2.0,
+                        origin_y: h / 2.0,
+                    },
+                ],
+            )
         } else {
-            w
+            let pivot = if anchored {
+                ((self.anchor as f32 - x) / (w * scale).max(1.0)).clamp(0.0, 1.0)
+            } else {
+                0.92
+            };
+            let seed = SEED.min(w);
+            let gw = seed + (w - seed) * r;
+            let gh = (h * r).max(0.0);
+            (x + (w - gw) * scale * pivot, y, gw, gh, Vec::new())
         };
-        let origin_y = if kind == "power" { h / 2.0 } else { 0.0 };
-        let (x_scale, y_scale) = if anchored {
-            (0.86 + 0.14 * r, 0.8 + 0.2 * r)
-        } else if centered {
-            (0.95 + 0.05 * r, 0.95 + 0.05 * r)
-        } else {
-            (0.985 + 0.015 * r, 0.9 + 0.1 * r)
-        };
-        let transforms = [
-            TransformOp::Translate {
-                x: 0.0,
-                y: if anchored { -10.0 } else { 24.0 } * (1.0 - r),
-            },
-            TransformOp::Scale {
-                x: x_scale,
-                y: y_scale,
-                origin_x,
-                origin_y,
-            },
-            TransformOp::Rotate {
-                angle: if anchored { 0.0 } else { -1.6 * (1.0 - r) },
-                origin_x: w - 30.0,
-                origin_y: 0.0,
-            },
-        ];
         let tree = &mut self.tree;
-        tree.set_pos(self.card, x, y);
-        tree.set_size(self.card, w, h);
-        tree.set_opacity(self.card, (r * 2.0).clamp(0.0, 1.0));
+        tree.set_pos(self.card, gx, gy);
+        tree.set_size(self.card, gw, gh);
+        tree.set_clip(self.card, !settled && !centered);
+        tree.set_opacity(self.card, (r * 3.0).clamp(0.0, 1.0));
         tree.set_transforms(self.card, &transforms);
-        let radius = self.radius.value();
-        let stale = tree
-            .get(self.card)
-            .is_some_and(|node| matches!(&node.paint, Paint::Rect(rect) if rect.radius != radius));
-        if stale
-            && let Some(node) = tree.get_mut(self.card)
-            && let Paint::Rect(rect) = &mut node.paint
-        {
-            rect.radius = radius;
-        }
+        tree.set_radius(self.card, self.radius.value());
+        let shift = (gx - x) / scale;
         let module = MODULE.contains(&self.content_panel.as_str());
         let margin = if module {
             24.0
@@ -859,9 +856,17 @@ impl Overlay {
         } / crate::theme::scale();
         let cw = w - margin * 2.0;
         let ch = h - margin * 2.0;
-        tree.set_pos(self.content, margin, margin);
+        tree.set_pos(self.content, margin - shift, margin);
         tree.set_size(self.content, cw, ch);
         tree.set_opacity(self.content, self.content_opacity.value());
+        let cascade = self.cascade.value();
+        let roots = tree
+            .get(self.content)
+            .map(|node| node.children().to_vec())
+            .unwrap_or_default();
+        for root in roots {
+            tree.set_cascade(root, cascade);
+        }
         tree.set_transforms(
             self.content,
             &[TransformOp::Translate {
@@ -887,6 +892,57 @@ impl Overlay {
             View::None => {}
         }
         running
+    }
+
+    fn step(
+        &mut self,
+        engine: &mut TextEngine,
+        now: Millis,
+        actions: &mut Vec<PanelAction>,
+    ) -> Option<bool> {
+        let (sw, sh) = self.size?;
+        let mut running = self.tick(engine, now);
+        if self.displayed.is_empty() && self.phase == Reveal::Idle {
+            return None;
+        }
+        self.tree.set_size(self.dim, sw, sh);
+        running |= self.update_card(engine, now);
+        match &mut self.view {
+            View::Control(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
+            View::Notifications(panel) => {
+                let (busy, more) = panel.tick(&mut self.tree, &self.input, now);
+                running |= busy;
+                actions.extend(more);
+            }
+            View::Tray(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
+            View::Wifi(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
+            View::Vpn(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
+            View::Bluetooth(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
+            View::Launcher(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
+            View::Clipboard(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
+            View::Wallpapers(panel) => {
+                let (busy, more) = panel.tick(&mut self.tree, &mut self.input, engine, now);
+                running |= busy;
+                actions.extend(more);
+            }
+            View::Battery(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
+            View::Audio(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
+            View::Power(panel) => {
+                let (busy, more) = panel.tick(&mut self.tree, &self.input, engine, now);
+                running |= busy;
+                actions.extend(more);
+            }
+            View::Calendar(panel) => {
+                running |= panel.tick(&mut self.tree, &self.input, engine, now)
+            }
+            View::System(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
+            View::None => {}
+        }
+        let events = self.input.refresh(&self.tree);
+        if !events.is_empty() {
+            actions.extend(self.handle_events(engine, &events, now));
+        }
+        Some(running)
     }
 
     fn frame_rect(&self) -> Option<(i32, i32, u32, u32)> {
@@ -941,47 +997,10 @@ impl Overlay {
         let Some((sw, sh)) = self.size else {
             return actions;
         };
-        let mut running = self.tick(engine, now);
-        if self.displayed.is_empty() && self.phase == Reveal::Idle {
+        let Some(mut running) = self.step(engine, now, &mut actions) else {
             return actions;
-        }
-        self.tree.set_size(self.dim, sw, sh);
-        running |= self.update_card(engine, now);
-        match &mut self.view {
-            View::Control(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
-            View::Notifications(panel) => {
-                let (busy, more) = panel.tick(&mut self.tree, &self.input, now);
-                running |= busy;
-                actions.extend(more);
-            }
-            View::Tray(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
-            View::Wifi(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
-            View::Vpn(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
-            View::Bluetooth(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
-            View::Launcher(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
-            View::Clipboard(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
-            View::Wallpapers(panel) => {
-                let (busy, more) = panel.tick(&mut self.tree, &mut self.input, engine, now);
-                running |= busy;
-                actions.extend(more);
-            }
-            View::Battery(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
-            View::Audio(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
-            View::Power(panel) => {
-                let (busy, more) = panel.tick(&mut self.tree, &self.input, engine, now);
-                running |= busy;
-                actions.extend(more);
-            }
-            View::Calendar(panel) => {
-                running |= panel.tick(&mut self.tree, &self.input, engine, now)
-            }
-            View::System(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
-            View::None => {}
-        }
-        let events = self.input.refresh(&self.tree);
-        if !events.is_empty() {
-            actions.extend(self.handle_events(engine, &events, now));
-        }
+        };
+        let _ = (sw, sh);
         running |= self.morph_arm.is_some();
         let mut presented = false;
         if let Some((ox, oy, cw, ch)) = self.frame_rect() {
@@ -1240,6 +1259,36 @@ impl Overlay {
 }
 
 #[cfg(test)]
+impl Overlay {
+    pub(crate) fn preview(
+        &mut self,
+        engine: &mut TextEngine,
+        panel: &str,
+        data: &PanelData,
+        size: (f32, f32),
+        until: Millis,
+    ) -> Option<(Vec<u8>, u32, u32)> {
+        self.size = Some(size);
+        self.media = data.media.is_some();
+        self.set_data(engine, data, 0.0);
+        self.panel_changed(engine, panel, 0.0);
+        let mut actions = Vec::new();
+        let mut now = 0.0;
+        while now <= until {
+            self.last_now = now;
+            self.step(engine, now, &mut actions);
+            now += 16.0;
+        }
+        let (ox, oy, cw, ch) = self.frame_rect()?;
+        self.tree.set_pos(self.offset, -ox as f32, -oy as f32);
+        let mut canvas = Canvas::new(cw, ch)?;
+        self.tree.collect_damage();
+        canvas.render(&mut self.tree, engine, &Damage::full(cw as i32, ch as i32));
+        Some((canvas.data().to_vec(), cw, ch))
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1247,7 +1296,7 @@ mod tests {
     fn control_geometry_matches_qml() {
         let w = panel_width("control", 1920.0);
         let h = panel_height("control", 1080.0, false, false);
-        assert_eq!((w, h), (520.0, 704.0));
+        assert_eq!((w, h), (520.0, 580.0));
         assert_eq!(panel_x("control", w, 1920.0, 0.0), 1386.0);
         assert_eq!(panel_y("control", h, 1080.0), 58.0);
     }

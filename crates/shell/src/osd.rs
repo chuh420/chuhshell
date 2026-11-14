@@ -20,6 +20,7 @@ const ROW_WIDTH: f32 = WIDTH - 40.0;
 const SPACING: f32 = 14.0;
 const ICON_WIDTH: f32 = 24.0;
 const TRACK_WIDTH: f32 = ROW_WIDTH - 24.0 - 44.0 - 28.0;
+const TRACK: f32 = 8.0;
 
 pub fn layer_config(output: OutputId) -> LayerConfig {
     LayerConfig {
@@ -100,12 +101,7 @@ impl Osd {
             0.0,
             WIDTH,
             HEIGHT,
-            RectPaint {
-                color: theme::bg(),
-                radius: 18.0,
-                border_color: theme::line(),
-                border_width: 1.0,
-            },
+            RectPaint::solid(theme::bg(), 20.0).bordered(theme::line(), 1.0),
         );
         pill.scale = crate::theme::scale();
         pill.origin = Some((0.0, 0.0));
@@ -127,12 +123,8 @@ impl Osd {
                 0.0,
                 0.0,
                 TRACK_WIDTH,
-                6.0,
-                RectPaint {
-                    color: theme::elevated(),
-                    radius: 3.0,
-                    ..RectPaint::default()
-                },
+                TRACK,
+                RectPaint::solid(theme::elevated(), TRACK / 2.0),
             ),
         );
         let fill = tree.add(
@@ -141,12 +133,8 @@ impl Osd {
                 0.0,
                 0.0,
                 0.0,
-                6.0,
-                RectPaint {
-                    color: theme::green(),
-                    radius: 3.0,
-                    ..RectPaint::default()
-                },
+                TRACK,
+                RectPaint::solid(theme::green(), TRACK / 2.0),
             ),
         );
         let mut caption = SwapText::new(
@@ -293,7 +281,7 @@ impl Osd {
         };
         let row_height = icon_height
             .max(18.0)
-            .max(if self.has_bar { 6.0 } else { 0.0 });
+            .max(if self.has_bar { TRACK } else { 0.0 });
         tree.set_pos(self.row, ROW_X, ui::layout::center(HEIGHT, row_height));
         tree.set_size(self.row, ROW_WIDTH, row_height);
         tree.set_pos(self.icon, 0.0, ui::layout::center(row_height, icon_height));
@@ -317,10 +305,11 @@ impl Osd {
         tree.set_pos(
             self.track,
             ICON_WIDTH + SPACING,
-            ui::layout::center(row_height, 6.0),
+            ui::layout::center(row_height, TRACK),
         );
-        tree.set_size(self.fill, self.fill_width.value(), 6.0);
-        tree.set_fill(self.fill, self.fill_color.value());
+        tree.set_size(self.fill, self.fill_width.value(), TRACK);
+        let color = self.fill_color.value();
+        tree.set_fill(self.fill, color);
         self.caption.place(
             tree,
             caption_x,

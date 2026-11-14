@@ -14,10 +14,18 @@ pub enum Easing {
     OutQuint,
     InOutSine,
     OutBack(f64),
+    Bezier(f64, f64, f64, f64),
 }
 
 impl Easing {
     pub const OUT_BACK: Easing = Easing::OutBack(1.70158);
+    pub const SPATIAL: Easing = Easing::Bezier(0.38, 1.21, 0.22, 1.0);
+    pub const SPATIAL_FAST: Easing = Easing::Bezier(0.42, 1.67, 0.21, 0.9);
+    pub const SPATIAL_SLOW: Easing = Easing::Bezier(0.39, 1.29, 0.35, 0.98);
+    pub const EFFECTS: Easing = Easing::Bezier(0.34, 0.8, 0.34, 1.0);
+    pub const STANDARD: Easing = Easing::Bezier(0.2, 0.0, 0.0, 1.0);
+    pub const DECELERATE: Easing = Easing::Bezier(0.05, 0.7, 0.1, 1.0);
+    pub const ACCELERATE: Easing = Easing::Bezier(0.3, 0.0, 0.8, 0.15);
 
     pub fn value(self, t: f64) -> f64 {
         let t = t.clamp(0.0, 1.0);
@@ -57,8 +65,37 @@ impl Easing {
                 let t = t - 1.0;
                 t * t * ((s + 1.0) * t + s) + 1.0
             }
+            Easing::Bezier(x1, y1, x2, y2) => bezier(t, x1, y1, x2, y2),
         }
     }
+}
+
+fn bezier(x: f64, x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    if x >= 1.0 {
+        return 1.0;
+    }
+    let curve = |t: f64, a: f64, b: f64| {
+        let u = 1.0 - t;
+        3.0 * u * u * t * a + 3.0 * u * t * t * b + t * t * t
+    };
+    let (mut low, mut high) = (0.0, 1.0);
+    let mut t = x;
+    for _ in 0..24 {
+        let at = curve(t, x1, x2);
+        if (at - x).abs() < 1e-5 {
+            break;
+        }
+        if at < x {
+            low = t;
+        } else {
+            high = t;
+        }
+        t = (low + high) / 2.0;
+    }
+    curve(t, y1, y2)
 }
 
 pub trait Lerp: Copy + PartialEq {
@@ -435,10 +472,25 @@ mod tests {
             Easing::OutQuint,
             Easing::InOutSine,
             Easing::OUT_BACK,
+            Easing::SPATIAL,
+            Easing::STANDARD,
+            Easing::ACCELERATE,
         ] {
             assert!(close(easing.value(0.0), 0.0), "{easing:?}");
             assert!(close(easing.value(1.0), 1.0), "{easing:?}");
         }
+    }
+
+    #[test]
+    fn bezier_curves_follow_their_shape() {
+        let linear = Easing::Bezier(0.25, 0.25, 0.75, 0.75);
+        assert!((linear.value(0.3) - 0.3).abs() < 1e-3);
+        let peak = (1..100)
+            .map(|step| Easing::SPATIAL_FAST.value(step as f64 / 100.0))
+            .fold(0.0, f64::max);
+        assert!(peak > 1.05 && peak < 1.3, "{peak}");
+        assert!(Easing::ACCELERATE.value(0.5) < 0.2);
+        assert!(Easing::DECELERATE.value(0.3) > 0.8);
     }
 
     #[test]

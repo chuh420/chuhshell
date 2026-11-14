@@ -5,9 +5,9 @@ use tiny_skia::{
 };
 
 use crate::{
-    RectPaint,
+    ArcPaint, RectPaint,
     text::TextEngine,
-    tree::{NodeId, Paint, Tree},
+    tree::{CASCADE_SHIFT, CASCADE_WINDOW, NodeId, Paint, Tree, cascade_step},
 };
 
 const MARGIN: i32 = 40;
@@ -129,6 +129,7 @@ impl Context<'_> {
         }
         let opacity = opacity * node.opacity;
         let transform = parent.pre_concat(node.local_transform());
+        let outer = clip;
         let mut clip = clip;
         if node.clip {
             if let Some(bounds) =
@@ -146,6 +147,7 @@ impl Context<'_> {
             }
         }
         let (width, height) = (node.width, node.height);
+        let cascade = node.cascade;
         let children = node.children().to_vec();
         let extent = if matches!(node.paint, Paint::None) {
             None
@@ -164,14 +166,14 @@ impl Context<'_> {
                 )
             })
         };
-        let paints = extent.is_some_and(|extent| !extent.intersect(&clip).is_empty());
+        let paints = extent.is_some_and(|extent| !extent.intersect(&outer).is_empty());
         let masked = paints
-            && extent.is_some_and(|extent| extent.intersect(&clip) != extent)
-            && self.prepare_mask(clip);
+            && extent.is_some_and(|extent| extent.intersect(&outer) != extent)
+            && self.prepare_mask(outer);
         let mask = if masked {
             self.masks
                 .iter()
-                .find(|(rect, _)| *rect == clip)
+                .find(|(rect, _)| *rect == outer)
                 .map(|(_, mask)| mask)
         } else {
             None
@@ -229,6 +231,18 @@ impl Context<'_> {
                     }
                 }
                 Paint::Path(path) => draw_path(self.pixmap, path, transform, opacity, mask),
+                Paint::Arc(arc) => {
+                    draw_arc(self.pixmap, arc, width, height, transform, opacity, mask)
+                }
+                Paint::Ripple(ripple) => draw_ripple(
+                    self.pixmap,
+                    ripple,
+                    width,
+                    height,
+                    transform,
+                    opacity,
+                    (outer != self.full).then_some(outer),
+                ),
                 Paint::Image(image) => {
                     if image.width() > 0 && image.height() > 0 {
                         let (iw, ih) = (image.width() as f32, image.height() as f32);
@@ -262,10 +276,124 @@ impl Context<'_> {
                 }
             }
         }
+        if cascade >= 1.0 {
+            for child in children {
+                self.node(tree, child, transform, opacity, clip);
+            }
+            return;
+        }
         for child in children {
-            self.node(tree, child, transform, opacity, clip);
+            let position = tree
+                .get(child)
+                .map_or(0.0, |node| node.y / height.clamp(1.0, CASCADE_WINDOW));
+            let step = cascade_step(cascade, position);
+            if step <= 0.0 {
+                continue;
+            }
+            self.node(
+                tree,
+                child,
+                transform.pre_translate(0.0, CASCADE_SHIFT * (1.0 - step)),
+                opacity * step,
+                clip,
+            );
         }
     }
+}
+
+fn draw_ripple(
+    pixmap: &mut Pixmap,
+    ripple: &crate::RipplePaint,
+    width: f32,
+    height: f32,
+    transform: Transform,
+    opacity: f32,
+    clip: Option<Rect>,
+) {
+    if ripple.radius <= 0.0 || ripple.color.is_transparent() {
+        return;
+    }
+    let Some(mut mask) = Mask::new(pixmap.width(), pixmap.height()) else {
+        return;
+    };
+    let Some(shape) = rounded_rect(0.0, 0.0, width, height, ripple.corner) else {
+        return;
+    };
+    mask.fill_path(&shape, FillRule::Winding, true, transform);
+    if let Some(path) = clip.and_then(to_skia_rect).map(PathBuilder::from_rect) {
+        mask.intersect_path(&path, FillRule::Winding, false, Transform::identity());
+    }
+    if let Some(circle) = PathBuilder::from_circle(ripple.x, ripple.y, ripple.radius) {
+        fill(
+            pixmap,
+            &circle,
+            ripple.color,
+            opacity,
+            FillRule::Winding,
+            transform,
+            Some(&mask),
+        );
+    }
+}
+
+fn arc_path(cx: f32, cy: f32, radius: f32, start: f32, sweep: f32) -> Option<Path> {
+    if sweep.abs() < 0.01 || radius <= 0.0 {
+        return None;
+    }
+    let pieces = (sweep.abs() / 90.0).ceil().max(1.0) as usize;
+    let step = (sweep / pieces as f32).to_radians();
+    let handle = 4.0 / 3.0 * (step / 4.0).tan() * radius;
+    let point = |angle: f32| (cx + radius * angle.sin(), cy - radius * angle.cos());
+    let mut angle = start.to_radians();
+    let mut pb = PathBuilder::new();
+    let (x, y) = point(angle);
+    pb.move_to(x, y);
+    for _ in 0..pieces {
+        let next = angle + step;
+        let (x0, y0) = point(angle);
+        let (x1, y1) = point(next);
+        pb.cubic_to(
+            x0 + handle * angle.cos(),
+            y0 + handle * angle.sin(),
+            x1 - handle * next.cos(),
+            y1 - handle * next.sin(),
+            x1,
+            y1,
+        );
+        angle = next;
+    }
+    pb.finish()
+}
+
+fn draw_arc(
+    pixmap: &mut Pixmap,
+    arc: &ArcPaint,
+    width: f32,
+    height: f32,
+    transform: Transform,
+    opacity: f32,
+    mask: Option<&Mask>,
+) {
+    let radius = (width.min(height) - arc.width) / 2.0;
+    let (cx, cy) = (width / 2.0, height / 2.0);
+    let stroke = tiny_skia::Stroke {
+        width: arc.width,
+        line_cap: tiny_skia::LineCap::Round,
+        ..tiny_skia::Stroke::default()
+    };
+    let mut draw = |sweep: f32, color: crate::Color| {
+        if color.is_transparent() {
+            return;
+        }
+        if let Some(path) = arc_path(cx, cy, radius, arc.start, sweep) {
+            let mut paint = SkPaint::default();
+            paint.set_color(color.to_skia(opacity));
+            paint.anti_alias = true;
+            pixmap.stroke_path(&path, &paint, &stroke, transform, mask);
+        }
+    };
+    draw(arc.span, arc.track);
+    draw(arc.sweep.clamp(-arc.span.abs(), arc.span.abs()), arc.color);
 }
 
 fn draw_path(
@@ -348,7 +476,7 @@ fn snap(matrix: Transform) -> (Transform, FilterQuality) {
     }
 }
 
-pub(crate) fn rounded_rect(x: f32, y: f32, w: f32, h: f32, radius: f32) -> Option<Path> {
+pub fn rounded_rect(x: f32, y: f32, w: f32, h: f32, radius: f32) -> Option<Path> {
     let r = radius.min(w / 2.0).min(h / 2.0).max(0.0);
     if r <= 0.0 {
         return Some(PathBuilder::from_rect(tiny_skia::Rect::from_xywh(
@@ -385,6 +513,61 @@ fn fill(
     pixmap.fill_path(path, &paint, rule, transform, mask);
 }
 
+#[allow(clippy::too_many_arguments)]
+fn draw_shadow(
+    pixmap: &mut Pixmap,
+    rect: &RectPaint,
+    shadow: crate::tree::Shadow,
+    width: f32,
+    height: f32,
+    transform: Transform,
+    opacity: f32,
+    mask: Option<&Mask>,
+) {
+    if shadow.blur <= 0.0 || shadow.color.is_transparent() {
+        return;
+    }
+    let scale = transform_scale(transform).max(0.01);
+    let layers = ((shadow.blur * scale / 2.5).ceil() as usize).clamp(3, 14);
+    let hole = rounded_rect(
+        1.0,
+        1.0,
+        width - 2.0,
+        height - 2.0,
+        (rect.radius - 1.0).max(0.0),
+    );
+    let total: f32 = (1..=layers).map(|layer| layer as f32).sum();
+    for layer in 0..layers {
+        let grow = shadow.blur * (layers - layer) as f32 / layers as f32;
+        let weight = (layer + 1) as f32 / total;
+        let Some(outer) = rounded_rect(
+            -grow,
+            -grow + shadow.offset,
+            width + grow * 2.0,
+            height + grow * 2.0,
+            rect.radius + grow,
+        ) else {
+            continue;
+        };
+        let mut pb = PathBuilder::new();
+        pb.push_path(&outer);
+        if let Some(hole) = &hole {
+            pb.push_path(hole);
+        }
+        if let Some(ring) = pb.finish() {
+            fill(
+                pixmap,
+                &ring,
+                shadow.color.with_alpha(shadow.color.a * weight),
+                opacity,
+                FillRule::EvenOdd,
+                transform,
+                mask,
+            );
+        }
+    }
+}
+
 fn draw_rect(
     pixmap: &mut Pixmap,
     rect: &RectPaint,
@@ -394,6 +577,11 @@ fn draw_rect(
     opacity: f32,
     mask: Option<&Mask>,
 ) {
+    if let Some(shadow) = rect.shadow {
+        draw_shadow(
+            pixmap, rect, shadow, width, height, transform, opacity, mask,
+        );
+    }
     let border = rect.border_width.min(width / 2.0).min(height / 2.0);
     let has_border = border > 0.0 && !rect.border_color.is_transparent();
     let inset = if has_border { border } else { 0.0 };
@@ -460,6 +648,7 @@ mod tests {
                 a: 0.5,
             },
             border_width: 1.0,
+            ..RectPaint::default()
         }
     }
 

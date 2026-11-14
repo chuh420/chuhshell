@@ -12,6 +12,7 @@ pub fn chip_style() -> ChipStyle {
     ChipStyle {
         family: crate::theme::icons(),
         hover: theme::elevated(),
+        rest: theme::surface(),
     }
 }
 
@@ -32,6 +33,57 @@ pub fn label(
         TextSpec::plain(text, crate::theme::font(), size, color),
     )
 }
+
+pub fn title(
+    tree: &mut Tree,
+    engine: &mut TextEngine,
+    parent: NodeId,
+    glyph: &str,
+    text: &str,
+) -> Label {
+    let mut icon = ui::Span::new(glyph, crate::theme::icons(), 17.0);
+    icon.color = Some(theme::green());
+    let mut name = ui::Span::new(format!("  {text}"), crate::theme::font(), 18.0);
+    name.weight = ui::Weight::Medium;
+    Label::new(
+        tree,
+        engine,
+        parent,
+        TextSpec {
+            spans: vec![icon, name],
+            color: theme::text(),
+            elide_width: None,
+            wrap_width: None,
+            max_lines: None,
+        },
+    )
+}
+
+pub fn plate(tree: &mut Tree, parent: NodeId) -> NodeId {
+    let node = tree.add(
+        parent,
+        Node::rect(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            RectPaint::solid(theme::surface(), 14.0).bordered(theme::line().with_alpha(0.55), 0.8),
+        ),
+    );
+    tree.lower(node);
+    node
+}
+
+pub fn place_plate(tree: &mut Tree, node: NodeId, top: f32, bottom: f32, width: f32) {
+    tree.set_pos(node, -PLATE, top - PLATE);
+    tree.set_size(
+        node,
+        width + PLATE * 2.0,
+        (bottom - top + PLATE * 2.0).max(0.0),
+    );
+}
+
+pub const PLATE: f32 = 9.0;
 
 pub fn icon_label(
     tree: &mut Tree,
@@ -132,6 +184,8 @@ pub struct Scroller {
     height: f32,
     width: f32,
     content_height: f32,
+    enter: Tween<f32>,
+    entered: bool,
 }
 
 impl Scroller {
@@ -171,6 +225,8 @@ impl Scroller {
             height: 0.0,
             width: 0.0,
             content_height: 0.0,
+            enter: Tween::new(0.0, 560.0, Easing::Linear),
+            entered: false,
         }
     }
 
@@ -219,6 +275,12 @@ impl Scroller {
             self.scroll.jump(value);
         }
         let mut running = self.scroll.tick(now);
+        if !self.entered {
+            self.entered = true;
+            self.enter.start(now, 0.0, 1.0);
+        }
+        running |= self.enter.tick(now);
+        tree.set_cascade(self.content, self.enter.value());
         tree.set_pos(self.content, 0.0, -self.scroll.value().round());
         let scrollable = self.has_bar && self.content_height > self.height;
         if scrollable && (self.scroll.is_running() || input.contains_mouse(self.bar_area)) {

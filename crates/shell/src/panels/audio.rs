@@ -29,6 +29,7 @@ pub struct AudioPanel {
     volume: Slider,
     sinks: Vec<Device>,
     separator: NodeId,
+    plates: [NodeId; 2],
     microphone: Label,
     mic: Chip,
     mic_volume: Slider,
@@ -61,7 +62,8 @@ impl AudioPanel {
         now: Millis,
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
-        let title = label(tree, engine, root, "sound", 18.0, theme::text());
+        let title = super::kit::title(tree, engine, root, "󰕾", "sound");
+        let plates = [super::kit::plate(tree, root), super::kit::plate(tree, root)];
         let mut mute = chip(tree, input, engine, root, "󰕾", theme::green(), false, None);
         mute.shortcut = "XF86AudioMute".into();
         let output = label(tree, engine, root, "output", 12.0, theme::muted());
@@ -108,6 +110,7 @@ impl AudioPanel {
             volume,
             sinks: Vec::new(),
             separator,
+            plates,
             microphone,
             mic,
             mic_volume,
@@ -263,6 +266,7 @@ impl AudioPanel {
         );
         place_chip(tree, &mut self.mute, width - mw, slot);
         let slot = next.next().unwrap_or_default();
+        let output_top = slot.pos;
         let pw = self.percent.implicit_width();
         place_label(tree, &mut self.percent, width - pw, slot, pw);
         place_label(
@@ -281,8 +285,9 @@ impl AudioPanel {
             device.chip.place_sized(tree, 0.0, y, width, h);
         }
         let slot = next.next().unwrap_or_default();
-        tree.set_pos(self.separator, 0.0, slot.pos);
-        tree.set_size(self.separator, width, 1.0);
+        tree.set_visible(self.separator, false);
+        super::kit::place_plate(tree, self.plates[0], output_top, slot.pos - 12.0, width);
+        let mic_top = slot.pos + 13.0;
         let slot = next.next().unwrap_or_default();
         let cw = self.mic.implicit_width().ceil();
         place_label(
@@ -301,7 +306,8 @@ impl AudioPanel {
             let (y, h) = fit(slot, device.chip.implicit_height().ceil());
             device.chip.place_sized(tree, 0.0, y, width, h);
         }
-        let _ = next.next();
+        let fill = next.next().unwrap_or_default();
+        super::kit::place_plate(tree, self.plates[1], mic_top, fill.pos - 12.0, width);
         let slot = next.next().unwrap_or_default();
         place_chip(tree, &mut self.mixer, 0.0, slot);
     }

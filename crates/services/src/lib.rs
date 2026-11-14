@@ -7,6 +7,7 @@ pub mod config_watch;
 pub mod cursor_colors;
 pub mod cursors;
 pub mod live;
+pub mod media;
 pub mod network;
 pub mod notifications;
 pub mod oneshot;

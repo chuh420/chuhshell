@@ -22,9 +22,100 @@ const FAST: Millis = 140.0;
 const NORMAL: Millis = 220.0;
 const SLOW: Millis = 340.0;
 
+pub struct Ripple {
+    node: NodeId,
+    area: AreaId,
+    progress: Tween<f32>,
+    origin: Option<(f32, f32)>,
+    pending: Option<(f32, f32)>,
+    was_pressed: bool,
+    reach: f32,
+    pub color: Color,
+    pub corner: f32,
+}
+
+impl Ripple {
+    pub fn new(tree: &mut Tree, parent: NodeId, area: AreaId, corner: f32, color: Color) -> Self {
+        let node = tree.add(
+            parent,
+            Node::new(0.0, 0.0, 0.0, 0.0).with_paint(Paint::Ripple(crate::RipplePaint::default())),
+        );
+        Self {
+            node,
+            area,
+            progress: Tween::new(1.0, 560.0, Easing::Linear),
+            origin: None,
+            pending: None,
+            was_pressed: false,
+            reach: 0.0,
+            color,
+            corner,
+        }
+    }
+
+    pub fn sync(&mut self, input: &Input) {
+        let pressed = input.pressed(self.area);
+        if pressed && !self.was_pressed {
+            self.pending = input.pointer();
+        }
+        self.was_pressed = pressed;
+    }
+
+    pub fn tick(&mut self, tree: &mut Tree, now: Millis) -> bool {
+        let Some((width, height)) = tree
+            .parent(self.node)
+            .and_then(|parent| tree.get(parent))
+            .map(|node| (node.width, node.height))
+        else {
+            return false;
+        };
+        tree.set_size(self.node, width, height);
+        if let Some((x, y)) = self.pending.take() {
+            let local = tree
+                .device_transform(self.node)
+                .invert()
+                .map(|inverse| {
+                    let mut point = tiny_skia::Point::from_xy(x, y);
+                    inverse.map_point(&mut point);
+                    (point.x, point.y)
+                })
+                .unwrap_or((width / 2.0, height / 2.0));
+            let far_x = local.0.max(width - local.0);
+            let far_y = local.1.max(height - local.1);
+            self.reach = (far_x * far_x + far_y * far_y).sqrt() * 1.15;
+            self.origin = Some(local);
+            self.progress.start(now, 0.0, 1.0);
+        }
+        let running = self.progress.tick(now);
+        let Some((x, y)) = self.origin else {
+            return running;
+        };
+        let progress = self.progress.value();
+        let grow = Easing::STANDARD.value((progress / 0.75).min(1.0) as f64) as f32;
+        let fade = ((progress - 0.4) / 0.6).clamp(0.0, 1.0);
+        let alpha = if self.progress.is_running() {
+            0.16 * (1.0 - fade * fade)
+        } else {
+            0.0
+        };
+        tree.set_ripple(
+            self.node,
+            crate::RipplePaint {
+                x,
+                y,
+                radius: self.reach * grow,
+                corner: self.corner,
+                color: self.color.with_alpha(alpha),
+            },
+        );
+        running
+    }
+}
+
 pub struct ChipStyle {
     pub family: &'static str,
     pub hover: Color,
+    pub rest: Color,
 }
 
 pub struct Chip {
@@ -33,6 +124,7 @@ pub struct Chip {
     pub area: AreaId,
     family: &'static str,
     hover_color: Color,
+    rest_color: Color,
     label: String,
     pub compact: bool,
     font_size: f32,
@@ -49,6 +141,11 @@ pub struct Chip {
     pub color_override: Option<Color>,
     pub shortcut: String,
     pub extra: Vec<TransformOp>,
+    ripple: Ripple,
+    pub pop_on_change: bool,
+    pop: Tween<f32>,
+    pending_pop: bool,
+    placed: bool,
 }
 
 impl Chip {
@@ -97,12 +194,14 @@ impl Chip {
         area.buttons = Buttons::LEFT_RIGHT;
         area.wheel = true;
         let area = input.add(area);
+        let ripple = Ripple::new(tree, root, area, if compact { 6.0 } else { 10.0 }, ink);
         let mut chip = Self {
             root,
             text,
             area,
             family: style.family,
             hover_color: style.hover,
+            rest_color: style.rest,
             label: label.to_string(),
             compact,
             font_size,
@@ -113,12 +212,17 @@ impl Chip {
             height,
             implicit_height: height,
             ink: Tween::new(ink, NORMAL, Easing::Linear),
-            color: Tween::new(Color::TRANSPARENT, 140.0, Easing::Linear),
+            color: Tween::new(style.rest, 140.0, Easing::Linear),
             scale: Tween::new(1.0, 110.0, Easing::OutCubic),
             selected: false,
             color_override: None,
             shortcut: String::new(),
             extra: Vec::new(),
+            ripple,
+            pop_on_change: false,
+            pop: Tween::new(1.0, 380.0, Easing::SPATIAL_FAST),
+            pending_pop: false,
+            placed: false,
         };
         chip.width = chip.implicit_width();
         chip
@@ -155,6 +259,7 @@ impl Chip {
         if self.label == label && self.font_size == font_size {
             return;
         }
+        self.pending_pop = self.pop_on_change && self.placed && self.label != label;
         self.label = label.to_string();
         self.font_size = font_size;
         self.metrics = engine.measure(&self.spec(), 1.0);
@@ -204,11 +309,12 @@ impl Chip {
     }
 
     pub fn sync(&mut self, now: Millis, input: &Input) {
+        self.ripple.sync(input);
         let hovered = input.contains_mouse(self.area);
         let color = self.color_override.unwrap_or(if self.selected || hovered {
             self.hover_color
         } else {
-            Color::TRANSPARENT
+            self.rest_color
         });
         self.color.set_target(now, color);
         let scale = if input.pressed(self.area) { 0.94 } else { 1.0 };
@@ -220,7 +326,7 @@ impl Chip {
         let color = self.color_override.unwrap_or(if self.selected || hovered {
             self.hover_color
         } else {
-            Color::TRANSPARENT
+            self.rest_color
         });
         self.color.jump(color);
     }
@@ -229,8 +335,16 @@ impl Chip {
         let mut running = self.ink.tick(now);
         running |= self.color.tick(now);
         running |= self.scale.tick(now);
+        if std::mem::take(&mut self.pending_pop) {
+            self.pop.start(now, 0.6, 1.0);
+        }
+        self.placed = true;
+        running |= self.pop.tick(now);
+        self.ripple.color = self.ink.value();
+        running |= self.ripple.tick(tree, now);
         tree.set_fill(self.root, self.color.value());
         tree.set_scale(self.root, self.scale.value());
+        tree.set_scale(self.text, self.pop.value());
         tree.set_transforms(self.root, &self.extra);
         tree.set_text(self.text, self.spec());
         running
@@ -352,10 +466,15 @@ pub struct Slider {
     knob_color: Tween<Color>,
     press_x: Option<f32>,
     dragging: bool,
+    thick: bool,
+    bar: Tween<f32>,
     pub shortcut: String,
 }
 
 const SLIDER_PADDING: f32 = 7.0;
+const TRACK: f32 = 8.0;
+const THICK_RADIUS: f32 = 11.0;
+const THICK_MIN: f32 = THICK_RADIUS * 2.0;
 
 impl Slider {
     pub fn new(
@@ -374,27 +493,13 @@ impl Slider {
                 0.0,
                 0.0,
                 0.0,
-                6.0,
-                RectPaint {
-                    color: style.track,
-                    radius: 3.0,
-                    ..RectPaint::default()
-                },
+                TRACK,
+                RectPaint::solid(style.track, TRACK / 2.0),
             ),
         );
         let fill = tree.add(
             track,
-            Node::rect(
-                0.0,
-                0.0,
-                0.0,
-                6.0,
-                RectPaint {
-                    color: accent,
-                    radius: 3.0,
-                    ..RectPaint::default()
-                },
-            ),
+            Node::rect(0.0, 0.0, 0.0, TRACK, RectPaint::solid(accent, TRACK / 2.0)),
         );
         let handle = tree.add(
             root,
@@ -433,8 +538,22 @@ impl Slider {
             knob_color: Tween::new(style.handle, FAST, Easing::Linear),
             press_x: None,
             dragging: false,
+            thick: false,
+            bar: Tween::new(0.0, FAST, Easing::OutCubic),
             shortcut: String::new(),
         }
+    }
+
+    pub fn thick(mut self, tree: &mut Tree) -> Self {
+        self.thick = true;
+        tree.set_radius(self.track, THICK_RADIUS);
+        tree.set_radius(self.fill, THICK_RADIUS);
+        tree.set_radius(self.handle, 1.5);
+        self
+    }
+
+    pub fn fill_end(&self) -> f32 {
+        self.fill_width.value()
     }
 
     pub fn place(&mut self, tree: &mut Tree, x: f32, y: f32, width: f32, height: f32) {
@@ -479,6 +598,13 @@ impl Slider {
     }
 
     fn position_at(&self, x: f32) -> f64 {
+        if self.thick {
+            let available = self.width - THICK_MIN;
+            if available <= 0.0 {
+                return 0.0;
+            }
+            return ((x - THICK_MIN) / available).clamp(0.0, 1.0) as f64;
+        }
         let handle = self.size.value();
         let available = self.available() - handle;
         if available <= 0.0 {
@@ -528,7 +654,42 @@ impl Slider {
         moved
     }
 
+    fn tick_thick(&mut self, tree: &mut Tree, input: &Input, now: Millis) -> bool {
+        let pressed = input.pressed(self.area);
+        let hovered = input.contains_mouse(self.area);
+        self.fill_color.set_target(now, self.accent);
+        self.bar
+            .set_target(now, if pressed || hovered { 1.0 } else { 0.0 });
+        let target = THICK_MIN + (self.width - THICK_MIN) * self.position();
+        if pressed {
+            self.fill_width.jump(target);
+        } else {
+            self.fill_width.set_target(now, target);
+        }
+        let mut running = self.fill_color.tick(now);
+        running |= self.bar.tick(now);
+        running |= self.fill_width.tick(now);
+        let fill = self.fill_width.value();
+        let color = self.fill_color.value();
+        tree.set_pos(self.track, 0.0, 0.0);
+        tree.set_size(self.track, self.width, self.height);
+        tree.set_size(self.fill, fill, self.height);
+        tree.set_fill(self.fill, color);
+        let grip = self.bar.value();
+        let grip_height = (self.height - 20.0) + 6.0 * grip;
+        tree.set_pos(self.handle, fill - 9.0, (self.height - grip_height) / 2.0);
+        tree.set_size(self.handle, 3.0, grip_height);
+        tree.set_fill(
+            self.handle,
+            Color::rgb(0x000000).with_alpha(0.28 + 0.22 * grip),
+        );
+        running
+    }
+
     pub fn tick(&mut self, tree: &mut Tree, input: &Input, now: Millis) -> bool {
+        if self.thick {
+            return self.tick_thick(tree, input, now);
+        }
         let pressed = input.pressed(self.area);
         let hovered = input.contains_mouse(self.area);
         let size = if pressed {
@@ -565,10 +726,11 @@ impl Slider {
         }
         running |= self.fill_width.tick(now);
         running |= self.handle_x.tick(now);
-        tree.set_pos(self.track, SLIDER_PADDING, (self.height - 6.0) / 2.0);
-        tree.set_size(self.track, available, 6.0);
-        tree.set_size(self.fill, self.fill_width.value(), 6.0);
-        tree.set_fill(self.fill, self.fill_color.value());
+        tree.set_pos(self.track, SLIDER_PADDING, (self.height - TRACK) / 2.0);
+        tree.set_size(self.track, available, TRACK);
+        tree.set_size(self.fill, self.fill_width.value(), TRACK);
+        let color = self.fill_color.value();
+        tree.set_fill(self.fill, color);
         tree.set_pos(
             self.handle,
             self.handle_x.value(),
@@ -589,6 +751,13 @@ impl Slider {
 
     pub fn jump(&mut self, tree: &mut Tree, input: &Input) {
         self.tick(tree, input, 0.0);
+        if self.thick {
+            self.fill_width
+                .jump(THICK_MIN + (self.width - THICK_MIN) * self.position());
+            self.fill_color.jump(self.accent);
+            self.tick(tree, input, 0.0);
+            return;
+        }
         let available = self.available();
         let position = self.position();
         let size = self.size.target();
@@ -871,12 +1040,7 @@ impl TooltipView {
                 0.0,
                 width,
                 height,
-                RectPaint {
-                    color: style.surface,
-                    radius: 8.0,
-                    border_color: style.line,
-                    border_width: 1.0,
-                },
+                RectPaint::solid(style.surface, 9.0).bordered(style.line, 1.0),
             ),
         );
         let spec = Self::spec(text, style);

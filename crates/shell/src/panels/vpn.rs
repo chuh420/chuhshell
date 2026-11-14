@@ -188,7 +188,7 @@ impl VpnPanel {
         now: Millis,
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
-        let title = label(tree, engine, root, "Proton VPN", 18.0, theme::text());
+        let title = super::kit::title(tree, engine, root, "󰒃", "Proton VPN");
         let mut refresh = chip(tree, input, engine, root, "󰑐", theme::green(), false, None);
         refresh.shortcut = "update the server list and settings".into();
         let power = chip(

@@ -42,6 +42,7 @@ struct Row {
 }
 
 pub struct SystemPanel {
+    plate: NodeId,
     pub root: NodeId,
     title: Label,
     uptime: Label,
@@ -109,7 +110,8 @@ impl SystemPanel {
         now: Millis,
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
-        let title = label(tree, engine, root, "system", 18.0, theme::text());
+        let title = super::kit::title(tree, engine, root, "󰍛", "system");
+        let plate = super::kit::plate(tree, root);
         let uptime = label(tree, engine, root, "", 12.0, theme::green());
         let card = |tree: &mut Tree, engine: &mut TextEngine, cpu: bool| {
             let root = rect(tree, root, theme::surface(), 14.0);
@@ -181,6 +183,7 @@ impl SystemPanel {
         let mut panel = Self {
             root,
             title,
+            plate,
             uptime,
             cards,
             cores: Vec::new(),
@@ -461,13 +464,17 @@ impl SystemPanel {
                 let lh = core.label.implicit_height().ceil();
                 core.label.place(tree, column.pos, slot.pos + 9.0, lw, lh);
             }
+            let mut span = (f32::MAX, 0.0f32);
             for (key, value) in &mut self.details {
                 let slot = next.next().unwrap_or_default();
+                span = (span.0.min(slot.pos), span.1.max(slot.pos + slot.size));
                 let vw = value.implicit_width();
                 place_label(tree, value, width - vw, slot, vw);
                 place_label(tree, key, 0.0, slot, (width - vw - 5.0).max(0.0));
             }
+            super::kit::place_plate(tree, self.plate, span.0 + 3.0, span.1 - 3.0, width);
         }
+        tree.set_visible(self.plate, has_detail);
         for core in &self.cores {
             tree.set_visible(core.track, has_detail);
             tree.set_visible(core.label.node, has_detail);
