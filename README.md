@@ -4,7 +4,7 @@ a Wayland desktop shell for Hyprland, niri and sway, written in Rust. it draws t
 
 ![control center](docs/screenshots/control.webp)
 
-on one 1920x1080 output it idles at about 28 MB RSS and 0.2% CPU.
+on one 1920x1080 output it idles at about 32 MB RSS and under 0.1% CPU.
 
 ## status
 
@@ -16,8 +16,9 @@ chuhshell is in beta. I built it for my own desktop and then moved every persona
 
 ## features
 
-- **bar**: workspaces, active window title, clock, CPU and RAM, keyboard layout, Wi-Fi, VPN, Bluetooth, volume, battery, tray and a keep awake toggle.
-- **control center**: network and Bluetooth tiles, volume and brightness sliders, keep awake, shortcuts to notifications, clipboard, screenshots, wallpapers and the power menu.
+- **bar**: workspaces, active window title, clock, the playing track, CPU and RAM rings, keyboard layout, Wi-Fi, VPN, Bluetooth, volume, battery and tray.
+- **control center**: CPU, RAM and battery rings, network and Bluetooth tiles, switches for keep awake, do not disturb, the microphone and wallpaper colors, volume and brightness sliders, a media card, shortcuts to notifications, clipboard, screenshots, wallpapers, lock and the power menu.
+- **media**: any MPRIS player shows up in the bar and the control center with cover art, play, pause, next and previous.
 - **launcher**: Unicode search over desktop entries, pinned and hidden apps, terminal entries in your terminal, every app in its own `app.slice` scope.
 - **notifications**: a full `org.freedesktop.Notifications` server with actions, images, markup, history and do not disturb.
 - **tray**: StatusNotifierItem host with dbusmenu submenus.
@@ -30,6 +31,7 @@ chuhshell is in beta. I built it for my own desktop and then moved every persona
 - **themes**: six built-in palettes and per-color overrides.
 - **cursors**: a cursor theme picker that can recolor themes to the current palette.
 - **calendar**, **power menu** and a **system** panel with cores, temperatures, disk, load and top processes.
+- **motion**: panels grow out of their bar chip, content and lists cascade in, clicks send a ripple from the pointer. the curves are the Material 3 expressive set.
 
 ## screenshots
 
@@ -44,7 +46,7 @@ chuhshell is in beta. I built it for my own desktop and then moved every persona
   </tr>
   <tr>
     <td><img src="docs/screenshots/audio.webp" alt="sound"></td>
-    <td></td>
+    <td><img src="docs/screenshots/system.webp" alt="system"></td>
   </tr>
 </table>
 
@@ -212,6 +214,8 @@ bind("XF86AudioRaiseVolume", hl.dsp.exec_cmd("chuhshell msg volumeUp"), { locked
 bind("Print", hl.dsp.exec_cmd("chuhshell msg screenshot"))
 ```
 
+in the bar, a click on the track pauses or resumes the player and a right click skips to the next track. a right click on the volume chip mutes, on the bell it toggles do not disturb, on the VPN chip it connects or disconnects.
+
 in the launcher, `Ctrl + P` or a right click pins the selected app to the top or unpins it, `Ctrl + H` hides it and `Ctrl + Shift + H` shows hidden ones. pinned apps carry a pin icon. the wallpaper gallery reads your wallpapers folder and its `live wallpapers` subfolder; cursor themes go in `cursors` inside it. live wallpapers pause while the active workspace has windows or the screen is locked.
 
 ## how it works
@@ -220,8 +224,8 @@ in the launcher, `Ctrl + P` or a right click pins the selected app to the top or
 | --- | --- |
 | `config` | XDG paths and the TOML config |
 | `platform` | Wayland: outputs, layer surfaces, subsurfaces, popups, shm buffers, damage, input, cursor shape, idle inhibit |
-| `ui` | toolkit: node tree, layout, tiny-skia painting, cosmic-text text, animations ported from Qt easing and springs, widgets |
-| `services` | compositors, PipeWire, UPower, iwd, NetworkManager, BlueZ, logind, notifications, tray, apps, clipboard, wallpapers, themes, Proton VPN |
+| `ui` | toolkit: node tree, layout, tiny-skia painting, cosmic-text text, animations with Qt easing, springs and bezier curves, widgets |
+| `services` | compositors, PipeWire, UPower, iwd, NetworkManager, BlueZ, logind, notifications, tray, MPRIS players, apps, clipboard, wallpapers, themes, Proton VPN |
 | `shell` | the binary: shell state, surfaces, panels and IPC |
 
 calloop drives everything on one thread. zbus futures run on its executor, and each image decode or file scan runs on its own short-lived thread. the shell repaints only damaged regions after frame callbacks and frees surfaces you close.
@@ -235,6 +239,14 @@ cargo test --workspace
 ```
 
 the tests include property tests for the parsers and a notification server test on a private D-Bus session bus, so you need `dbus-daemon`. GitHub Actions runs the same three commands in an Arch container on every push and pull request.
+
+to look at a change without restarting your shell, render the bar and panels to PNG files with made-up data:
+
+```sh
+CHUHSHELL_PREVIEW_DIR=/tmp/preview cargo test -p shell dump -- --ignored
+```
+
+`CHUHSHELL_PREVIEW_PANELS=control,calendar` picks the panels and `CHUHSHELL_PREVIEW_UNTIL=200` stops the clock at 200 ms to catch a frame of the open animation.
 
 `tools/netlab` builds a Wi-Fi lab out of `mac80211_hwsim` radios: hostapd serves `lab-open`, `lab-wpa2`, `lab-sae`, `lab-mixed`, `lab-hidden` and `lab-hidden-open` in one network namespace, and NetworkManager or iwd runs in another with its own system bus. your own Wi-Fi keeps working, and only the user who started the lab can reach its bus. it needs root, `hostapd`, `dnsmasq`, `networkmanager` and `iwd`.
 
