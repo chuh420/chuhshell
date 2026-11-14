@@ -14,8 +14,8 @@ use crate::{
         PanelAction, PanelData, audio::AudioPanel, battery::BatteryPanel,
         bluetooth::BluetoothPanel, calendar::CalendarPanel, clipboard::ClipboardPanel,
         control::ControlPanel, launcher::LauncherPanel, notifications::NotificationsPanel,
-        power::PowerPanel, system::SystemPanel, tray::TrayPanel, vpn::VpnPanel,
-        wallpapers::WallpapersPanel, wifi::WifiPanel,
+        power::PowerPanel, system::SystemPanel, themes::ThemesPanel, tray::TrayPanel,
+        vpn::VpnPanel, wallpapers::WallpapersPanel, wifi::WifiPanel,
     },
     theme::{self, NORMAL, SLOW},
 };
@@ -31,7 +31,7 @@ pub const ANCHORED: [&str; 9] = [
     "calendar",
     "notifications",
 ];
-pub const CENTERED: [&str; 4] = ["launcher", "wallpapers", "clipboard", "power"];
+pub const CENTERED: [&str; 5] = ["launcher", "wallpapers", "themes", "clipboard", "power"];
 const MODULE: [&str; 8] = [
     "wifi",
     "vpn",
@@ -60,7 +60,7 @@ const DIM_DEFAULT: Color = Color {
 pub fn panel_width(p: &str, available: f64) -> f64 {
     match p {
         "tray" => 293.0,
-        "wallpapers" => 1000f64.min(available - 40.0),
+        "wallpapers" | "themes" => 1000f64.min(available - 40.0),
         "launcher" | "clipboard" => 720.0,
         "control" => 520.0,
         "power" => 640.0,
@@ -90,6 +90,7 @@ pub fn panel_height(p: &str, available: f64, tray_tall: bool, wifi_prompt: bool)
             }
         }
         "wallpapers" => 700.0,
+        "themes" => 780.0,
         "launcher" | "clipboard" => 650.0,
         "calendar" => 500.0,
         "notifications" => 640.0,
@@ -162,6 +163,7 @@ enum View {
     Launcher(Box<LauncherPanel>),
     Clipboard(Box<ClipboardPanel>),
     Wallpapers(Box<WallpapersPanel>),
+    Themes(Box<ThemesPanel>),
     Battery(Box<BatteryPanel>),
     Audio(Box<AudioPanel>),
     Power(Box<PowerPanel>),
@@ -383,6 +385,7 @@ impl Overlay {
             View::Launcher(panel) => (panel.areas(), Some(panel.root)),
             View::Clipboard(panel) => (panel.areas(), Some(panel.root)),
             View::Wallpapers(panel) => (panel.areas(), Some(panel.root)),
+            View::Themes(panel) => (panel.areas(), Some(panel.root)),
             View::Battery(panel) => (panel.areas(), Some(panel.root)),
             View::Audio(panel) => (panel.areas(), Some(panel.root)),
             View::Power(panel) => (panel.areas(), Some(panel.root)),
@@ -489,6 +492,16 @@ impl Overlay {
                 now,
             );
             self.view = View::Wallpapers(Box::new(panel));
+        } else if name == "themes" {
+            let panel = ThemesPanel::new(
+                &mut self.tree,
+                &mut self.input,
+                engine,
+                self.content,
+                &self.data,
+                now,
+            );
+            self.view = View::Themes(Box::new(panel));
         } else if name == "clipboard" {
             let panel = ClipboardPanel::new(
                 &mut self.tree,
@@ -541,10 +554,17 @@ impl Overlay {
                 View::Wallpapers(panel) => Some(panel.view()),
                 _ => None,
             };
+            let themes = match &self.view {
+                View::Themes(panel) => Some(panel.view()),
+                _ => None,
+            };
             let name = std::mem::take(&mut self.content_panel);
             self.set_content(engine, &name, now);
             if let (View::Wallpapers(panel), Some(view)) = (&mut self.view, walls) {
                 panel.restore(&mut self.tree, &mut self.input, engine, view);
+            }
+            if let (View::Themes(panel), Some(view)) = (&mut self.view, themes) {
+                panel.restore(view);
             }
         }
         self.tree.mark_all();
@@ -575,6 +595,7 @@ impl Overlay {
                 panel.sync(&mut self.tree, &mut self.input, engine, data, now)
             }
             View::Wallpapers(panel) => panel.sync(&mut self.tree, &mut self.input, engine, data),
+            View::Themes(panel) => panel.sync(&mut self.tree, &mut self.input, engine, data, now),
             View::Battery(panel) => panel.sync(engine, data, now),
             View::Audio(panel) => panel.sync(&mut self.tree, &mut self.input, engine, data, now),
             View::Calendar(panel) => panel.sync(engine, data),
@@ -608,14 +629,17 @@ impl Overlay {
         pixmaps: &std::collections::HashMap<String, Option<std::sync::Arc<ui::tiny_skia::Pixmap>>>,
     ) {
         let now = self.last_now;
-        if let View::Wallpapers(panel) = &mut self.view {
-            panel.set_pixmaps(&mut self.tree, pixmaps, now);
+        match &mut self.view {
+            View::Wallpapers(panel) => panel.set_pixmaps(&mut self.tree, pixmaps, now),
+            View::Themes(panel) => panel.set_pixmaps(&mut self.tree, pixmaps, now),
+            _ => {}
         }
     }
 
     pub fn preview_pixmap_requests(&self) -> Vec<(String, u32, u32)> {
         match &self.view {
             View::Wallpapers(panel) => panel.pixmap_requests(),
+            View::Themes(panel) => panel.pixmap_requests(),
             _ => Vec::new(),
         }
     }
@@ -884,6 +908,7 @@ impl Overlay {
             View::Launcher(panel) => panel.layout(tree, engine, cw, ch),
             View::Clipboard(panel) => panel.layout(tree, engine, cw, ch),
             View::Wallpapers(panel) => panel.layout(tree, engine, cw, ch),
+            View::Themes(panel) => panel.layout(tree, engine, cw, ch),
             View::Battery(panel) => panel.layout(tree, cw, ch),
             View::Audio(panel) => panel.layout(tree, cw, ch),
             View::Power(panel) => panel.layout(tree, cw, ch),
@@ -922,6 +947,11 @@ impl Overlay {
             View::Clipboard(panel) => running |= panel.tick(&mut self.tree, &self.input, now),
             View::Wallpapers(panel) => {
                 let (busy, more) = panel.tick(&mut self.tree, &mut self.input, engine, now);
+                running |= busy;
+                actions.extend(more);
+            }
+            View::Themes(panel) => {
+                let (busy, more) = panel.tick(&mut self.tree, &mut self.input, now);
                 running |= busy;
                 actions.extend(more);
             }
@@ -1106,14 +1136,10 @@ impl Overlay {
             View::Clipboard(panel) => {
                 actions.extend(panel.handle(&mut self.tree, engine, events, pointer, now))
             }
-            View::Wallpapers(panel) => actions.extend(panel.handle(
-                &mut self.tree,
-                &mut self.input,
-                engine,
-                events,
-                pointer,
-                now,
-            )),
+            View::Wallpapers(panel) => {
+                actions.extend(panel.handle(&mut self.tree, engine, events, pointer, now))
+            }
+            View::Themes(panel) => actions.extend(panel.handle(events, now)),
             View::Battery(panel) => actions.extend(panel.handle(&self.tree, events, pointer)),
             View::Audio(panel) => actions.extend(panel.handle(&self.tree, events, pointer)),
             View::Power(panel) => actions.extend(panel.handle(events, now)),
@@ -1177,7 +1203,8 @@ impl Overlay {
                 View::Wallpapers(panel) => {
                     panel.motion(&mut self.tree, engine, &self.input, lx, ly)
                 }
-                View::Tray(_) | View::Power(_) | View::System(_) | View::None => {}
+                View::Tray(_) | View::Power(_) | View::System(_) | View::Themes(_) | View::None => {
+                }
             }
         }
         actions.extend(self.handle_events(engine, &events, now));
@@ -1204,6 +1231,7 @@ impl Overlay {
             }
             View::Power(panel) => panel.key(event, now),
             View::Calendar(panel) => panel.key(event, now),
+            View::Themes(panel) => panel.key(event),
             _ => (false, Vec::new()),
         };
         if consumed {
@@ -1238,6 +1266,7 @@ impl Overlay {
             | View::Launcher(_)
             | View::Clipboard(_)
             | View::Wallpapers(_)
+            | View::Themes(_)
             | View::None => return None,
         };
         let transform = self.tree.device_transform(spot.node);

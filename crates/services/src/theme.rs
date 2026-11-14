@@ -52,10 +52,11 @@ pub fn next_scheme(current: &str) -> &'static str {
     SCHEMES[index]
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub mode: Mode,
     pub scheme: &'static str,
+    pub palette: Option<String>,
 }
 
 impl Default for Settings {
@@ -63,6 +64,7 @@ impl Default for Settings {
         Self {
             mode: Mode::Static,
             scheme: DEFAULT_SCHEME,
+            palette: None,
         }
     }
 }
@@ -136,6 +138,9 @@ fn parse_settings(text: &str) -> Settings {
         scheme: field("scheme")
             .and_then(parse_scheme)
             .unwrap_or(DEFAULT_SCHEME),
+        palette: field("palette")
+            .filter(|name| !name.is_empty())
+            .map(str::to_string),
     }
 }
 
@@ -151,14 +156,16 @@ fn write_atomic(path: &Path, contents: &str) -> io::Result<()> {
     std::fs::rename(&temporary, path)
 }
 
-pub fn write_settings(settings: Settings) -> io::Result<()> {
+pub fn write_settings(settings: &Settings) -> io::Result<()> {
     let path = mode_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let text = serde_json::json!({ "mode": settings.mode.name(), "scheme": settings.scheme })
-        .to_string()
-        + "\n";
+    let mut value = serde_json::json!({ "mode": settings.mode.name(), "scheme": settings.scheme });
+    if let Some(palette) = &settings.palette {
+        value["palette"] = serde_json::Value::String(palette.clone());
+    }
+    let text = value.to_string() + "\n";
     write_atomic(&path, &text)
 }
 
@@ -303,9 +310,280 @@ pub fn reload_command(mode: Mode) -> Option<Command> {
     Some(crate::session::hook_command(&hook, &[mode.name()]))
 }
 
+pub type Rgb = [u8; 3];
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StaticColors {
+    pub tokens: Vec<(&'static str, Rgb)>,
+    pub literals: Vec<(Rgb, Rgb)>,
+}
+
+impl StaticColors {
+    fn token(&self, name: &str) -> Option<Rgb> {
+        self.tokens
+            .iter()
+            .find(|(token, _)| *token == name)
+            .map(|(_, color)| *color)
+    }
+
+    fn literal(&self, color: Rgb) -> Rgb {
+        self.literals
+            .iter()
+            .find(|(from, _)| *from == color)
+            .map_or(color, |(_, to)| *to)
+    }
+}
+
+pub fn parse_rgb(value: &str) -> Option<Rgb> {
+    let digits = value.strip_prefix('#')?;
+    if digits.len() != 6 || !digits.is_ascii() {
+        return None;
+    }
+    let channel = |index: usize| u8::from_str_radix(&digits[index..index + 2], 16).ok();
+    Some([channel(0)?, channel(2)?, channel(4)?])
+}
+
+fn lighten(color: Rgb, amount: f32) -> Rgb {
+    let [r, g, b] = color.map(|channel| channel as f32 / 255.0);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let light = (max + min) / 2.0;
+    let delta = max - min;
+    let (hue, saturation) = if delta == 0.0 {
+        (0.0, 0.0)
+    } else {
+        let saturation = delta / (1.0 - (2.0 * light - 1.0).abs());
+        let hue = if max == r {
+            ((g - b) / delta).rem_euclid(6.0)
+        } else if max == g {
+            (b - r) / delta + 2.0
+        } else {
+            (r - g) / delta + 4.0
+        };
+        (hue * 60.0, saturation)
+    };
+    let light = (light + amount / 100.0).clamp(0.0, 1.0);
+    let chroma = (1.0 - (2.0 * light - 1.0).abs()) * saturation;
+    let x = chroma * (1.0 - ((hue / 60.0).rem_euclid(2.0) - 1.0).abs());
+    let (r, g, b) = match (hue / 60.0) as u32 {
+        0 => (chroma, x, 0.0),
+        1 => (x, chroma, 0.0),
+        2 => (0.0, chroma, x),
+        3 => (0.0, x, chroma),
+        4 => (x, 0.0, chroma),
+        _ => (chroma, 0.0, x),
+    };
+    let m = light - chroma / 2.0;
+    [r, g, b].map(|channel| ((channel + m) * 255.0).round().clamp(0.0, 255.0) as u8)
+}
+
+fn split_filters(expression: &str) -> Vec<&str> {
+    let bytes = expression.as_bytes();
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut quoted = false;
+    let mut start = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'"' => quoted = !quoted,
+            b'{' if !quoted && bytes.get(index + 1) == Some(&b'{') => {
+                depth += 1;
+                index += 1;
+            }
+            b'}' if !quoted && bytes.get(index + 1) == Some(&b'}') => {
+                depth = depth.saturating_sub(1);
+                index += 1;
+            }
+            b'|' if !quoted && depth == 0 => {
+                parts.push(expression[start..index].trim());
+                start = index + 1;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    parts.push(expression[start..].trim());
+    parts
+}
+
+fn evaluate(expression: &str, colors: &StaticColors) -> Result<String, String> {
+    let parts = split_filters(expression);
+    let head = parts.first().copied().unwrap_or_default();
+    let unknown = || format!("unsupported expression: {expression}");
+    let (mut color, mut property) = if let Some(literal) = head
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+    {
+        (
+            colors.literal(parse_rgb(literal).ok_or_else(unknown)?),
+            "hex",
+        )
+    } else {
+        let mut path = head.split('.');
+        let (Some("colors"), Some(name), Some("default"), Some(property), None) = (
+            path.next(),
+            path.next(),
+            path.next(),
+            path.next(),
+            path.next(),
+        ) else {
+            return Err(unknown());
+        };
+        let color = colors
+            .token(name)
+            .ok_or_else(|| format!("unknown color: {name}"))?;
+        (color, property)
+    };
+    for filter in &parts[1..] {
+        let (name, argument) = filter
+            .split_once(':')
+            .map_or((*filter, ""), |(name, argument)| {
+                (name.trim(), argument.trim())
+            });
+        match name {
+            "to_color" | "harmonize" => {}
+            "lighten" | "darken" => {
+                let amount: f32 = argument.parse().map_err(|_| unknown())?;
+                let amount = if name == "darken" { -amount } else { amount };
+                color = lighten(color, amount);
+            }
+            "format" => match argument.trim_matches('"') {
+                "hex" => property = "hex",
+                "hex_stripped" => property = "hex_stripped",
+                _ => return Err(unknown()),
+            },
+            _ => return Err(unknown()),
+        }
+    }
+    let [r, g, b] = color;
+    Ok(match property {
+        "hex" => format!("#{r:02x}{g:02x}{b:02x}"),
+        "hex_stripped" => format!("{r:02x}{g:02x}{b:02x}"),
+        "red" => r.to_string(),
+        "green" => g.to_string(),
+        "blue" => b.to_string(),
+        _ => return Err(unknown()),
+    })
+}
+
+pub fn render_template(text: &str, colors: &StaticColors) -> Result<String, String> {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("{{") {
+        out.push_str(&rest[..start]);
+        let body = &rest[start + 2..];
+        let bytes = body.as_bytes();
+        let mut depth = 1usize;
+        let mut index = 0;
+        let mut end = None;
+        while index + 1 < bytes.len() {
+            if bytes[index] == b'{' && bytes[index + 1] == b'{' {
+                depth += 1;
+                index += 2;
+            } else if bytes[index] == b'}' && bytes[index + 1] == b'}' {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(index);
+                    break;
+                }
+                index += 2;
+            } else {
+                index += 1;
+            }
+        }
+        let end = end.ok_or_else(|| "unclosed {{".to_string())?;
+        out.push_str(&evaluate(body[..end].trim(), colors)?);
+        rest = &body[end + 2..];
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+pub fn has_palette(folder: &str) -> bool {
+    palette_path(folder).is_file()
+}
+
+pub fn write_static(folder: &str, colors: &StaticColors, shell_json: &str) -> io::Result<()> {
+    let target = root().join(folder);
+    std::fs::create_dir_all(&target)?;
+    for template in user_templates(&config::templates_dir()) {
+        let Some(name) = template.file_name().map(|name| name.to_os_string()) else {
+            continue;
+        };
+        if name == SHELL_TEMPLATE || name.to_string_lossy().starts_with('.') {
+            continue;
+        }
+        let rendered = std::fs::read_to_string(&template)
+            .map_err(|err| err.to_string())
+            .and_then(|text| render_template(&text, colors));
+        match rendered {
+            Ok(text) => write_atomic(&target.join(&name), &text)?,
+            Err(err) => log::warn!("theme template {}: {err}", template.display()),
+        }
+    }
+    write_atomic(&target.join(SHELL_TEMPLATE), shell_json)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_colors() -> StaticColors {
+        StaticColors {
+            tokens: vec![
+                ("primary", [0x11, 0x22, 0x33]),
+                ("surface", [0x28, 0x28, 0x28]),
+            ],
+            literals: vec![([0xea, 0x69, 0x62], [0xff, 0x00, 0x00])],
+        }
+    }
+
+    #[test]
+    fn static_templates_render() {
+        let colors = sample_colors();
+        let text = "a {{colors.primary.default.hex}} b {{colors.primary.default.hex_stripped}} {{colors.primary.default.red}},{{colors.primary.default.blue}}";
+        assert_eq!(
+            render_template(text, &colors).as_deref(),
+            Ok("a #112233 b 112233 17,51")
+        );
+        let harmonized = r##"{{ "#ea6962" | to_color | harmonize: {{ colors.source_color.default.hex | to_color }} }}"##;
+        assert_eq!(
+            render_template(harmonized, &colors).as_deref(),
+            Ok("#ff0000")
+        );
+        let stripped = r##"rgb({{ "#d8a657" | to_color | harmonize: {{ colors.source_color.default.hex | to_color }} | format: "hex_stripped" }})"##;
+        assert_eq!(
+            render_template(stripped, &colors).as_deref(),
+            Ok("rgb(d8a657)")
+        );
+        assert_eq!(
+            render_template("{{colors.surface.default.hex | lighten: 10}}", &colors).as_deref(),
+            Ok("#424242")
+        );
+        assert!(render_template("{{colors.missing.default.hex}}", &colors).is_err());
+        assert!(render_template("{{colors.primary.default.hex | blur: 2}}", &colors).is_err());
+        assert!(render_template("x {{colors.primary", &colors).is_err());
+        assert_eq!(
+            render_template("plain }} text", &colors).as_deref(),
+            Ok("plain }} text")
+        );
+    }
+
+    #[test]
+    fn lighten_keeps_hue() {
+        assert_eq!(lighten([0x80, 0x40, 0x40], 0.0), [0x80, 0x40, 0x40]);
+        assert_eq!(lighten([0, 0, 0], 100.0), [0xff, 0xff, 0xff]);
+        assert_eq!(parse_rgb("#a9b665"), Some([0xa9, 0xb6, 0x65]));
+        assert_eq!(parse_rgb("a9b665"), None);
+    }
+
+    #[test]
+    fn palette_setting_round_trips() {
+        let saved = parse_settings(r#"{"mode": "static", "scheme": "content", "palette": "nord"}"#);
+        assert_eq!(saved.palette.as_deref(), Some("nord"));
+        assert_eq!(parse_settings(r#"{"palette": ""}"#).palette, None);
+    }
 
     #[test]
     fn mode_file_parses() {

@@ -155,7 +155,7 @@ impl App {
         scheduler: Scheduler<()>,
         events: Sender<ServiceEvent>,
     ) -> Self {
-        let theme_settings = crate::themectl::load_initial();
+        let (theme_settings, theme_palette) = crate::themectl::load_initial();
         let mut engine = TextEngine::new(&crate::theme::font_families());
         let osd = Osd::new(&mut engine);
         let mut model = BarModel::placeholder();
@@ -183,7 +183,7 @@ impl App {
             clip: crate::clipctl::Clip::default(),
             walls: crate::wallctl::Walls::default(),
             cursors: crate::cursorctl::Cursors::default(),
-            theme: crate::themectl::ThemeCtl::new(theme_settings),
+            theme: crate::themectl::ThemeCtl::new(theme_settings, theme_palette),
             profiles: services::upower::Profiles::default(),
             cpu_history: Vec::new(),
             ram_history: Vec::new(),
@@ -761,6 +761,7 @@ impl App {
             "menu" => panel(self, "control"),
             "calendar" => panel(self, "calendar"),
             "wallpapers" => panel(self, "wallpapers"),
+            "themes" => panel(self, "themes"),
             "wifi" => panel(self, "wifi"),
             "vpn" => {
                 return match self.vpn_ipc(&args[1..]) {
@@ -828,6 +829,15 @@ impl App {
                         self.set_theme_scheme(scheme);
                         return Reply::Ok(String::new());
                     }
+                    Some("palette") => {
+                        let Some(name) = args.get(2) else {
+                            return Reply::Ok(self.theme.palette.clone());
+                        };
+                        return match self.set_theme_palette(name) {
+                            Ok(()) => Reply::Ok(String::new()),
+                            Err(err) => Reply::Error(err),
+                        };
+                    }
                     Some("toggle") => match self.theme.mode {
                         services::theme::Mode::Auto => services::theme::Mode::Static,
                         services::theme::Mode::Static => services::theme::Mode::Auto,
@@ -879,6 +889,7 @@ impl App {
             "dnd": self.state.dnd,
             "theme": self.theme.mode.name(),
             "themeScheme": self.theme.scheme,
+            "themePalette": self.theme.palette,
         })
         .to_string()
     }
@@ -951,6 +962,8 @@ impl App {
             theme_auto: self.theme.mode == services::theme::Mode::Auto,
             theme_available: self.theme.available,
             theme_scheme: self.theme.scheme,
+            theme_palette: self.theme.palette.clone(),
+            theme_auto_preview: self.theme.auto_preview,
             dnd: self.state.dnd,
             notifications: self.notes.list.clone(),
             ages: self.notes.ages(),
@@ -1118,9 +1131,19 @@ impl App {
                     log::warn!("theme: {err}");
                 }
             }
-            PanelAction::ThemeScheme => {
-                let scheme = services::theme::next_scheme(self.theme.scheme);
-                self.set_theme_scheme(scheme);
+            PanelAction::ThemeScheme(scheme) => self.set_theme_scheme(scheme),
+            PanelAction::ThemeAuto => {
+                if self.theme.mode != services::theme::Mode::Auto
+                    && let Err(err) = self.set_theme_mode(services::theme::Mode::Auto)
+                {
+                    log::warn!("theme: {err}");
+                }
+                self.sync();
+            }
+            PanelAction::ThemePalette(name) => {
+                if let Err(err) = self.set_theme_palette(&name) {
+                    log::warn!("theme: {err}");
+                }
             }
             PanelAction::ToggleKeepAwake => {
                 self.set_keep_awake(!self.state.keep_awake);

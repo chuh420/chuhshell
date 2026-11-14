@@ -18,16 +18,9 @@ use super::{
     picker::{SEARCH_HEIGHT, SearchBox},
 };
 use crate::{
-    cursorctl::CursorData,
     theme::{self, FAST, NORMAL, SLOW},
     wallctl::{PreviewKey, WallData},
 };
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Mode {
-    Wallpapers,
-    Cursors,
-}
 
 const CACHE_BUFFER: f32 = 320.0;
 
@@ -40,7 +33,6 @@ enum Reset {
 
 #[derive(Clone, Debug)]
 pub struct WallView {
-    mode: Mode,
     query: String,
     current: Option<String>,
     scroll: f32,
@@ -61,12 +53,7 @@ pub fn filter<'a>(names: impl Iterator<Item = &'a str>, query: &str) -> Vec<usiz
         .collect()
 }
 
-fn placeholder(mode: Mode) -> &'static str {
-    match mode {
-        Mode::Wallpapers => "find a wallpaper…",
-        Mode::Cursors => "find a cursor theme…",
-    }
-}
+const PLACEHOLDER: &str = "find a wallpaper…";
 
 struct Tile {
     root: NodeId,
@@ -96,30 +83,15 @@ pub struct WallpapersPanel {
     search: SearchBox,
     shown: Vec<usize>,
     pending_scroll: Option<f32>,
-    mode_chip: Chip,
+    themes: Chip,
     refresh: Chip,
     close: Chip,
-    animation_label: Label,
-    animation: Chip,
-    colors_label: Label,
-    colors: Chip,
-    size_label: Label,
-    size: Chip,
-    auto_label: Label,
-    auto_chip: Chip,
-    scheme_label: Label,
-    scheme_chip: Chip,
-    scheme: &'static str,
-    theme_auto: bool,
-    theme_available: bool,
     grid: Scroller,
     tiles: Vec<Option<Tile>>,
     empty: Label,
     error: Label,
     footer: Label,
     data: Arc<WallData>,
-    cursors: Arc<CursorData>,
-    mode: Mode,
     previews: Arc<HashMap<PreviewKey, String>>,
     pixmaps: HashMap<String, Option<Arc<Pixmap>>>,
     current: usize,
@@ -128,17 +100,7 @@ pub struct WallpapersPanel {
     cell_h: f32,
     grid_h: f32,
     sent: Option<Vec<PreviewKey>>,
-    sent_pixmaps: Vec<String>,
     pending_follow: bool,
-}
-
-fn scheme_text(scheme: &str) -> String {
-    scheme.replace('-', " ")
-}
-
-fn cursor_subtitle(count: usize) -> String {
-    let noun = if count == 1 { "theme" } else { "themes" };
-    format!("{count} {noun} · Pictures/Wallpapers/cursors")
 }
 
 fn subtitle(items: &[WallItem]) -> String {
@@ -175,22 +137,13 @@ impl WallpapersPanel {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
         let title = label(tree, engine, root, "wallpapers", 26.0, theme::text());
         let subtitle = label(tree, engine, root, "", 11.0, theme::muted());
-        let search = SearchBox::new(
+        let search = SearchBox::new(tree, input, engine, root, "󰍉", PLACEHOLDER, true, now);
+        let themes = chip(
             tree,
             input,
             engine,
             root,
-            "󰍉",
-            placeholder(Mode::Wallpapers),
-            true,
-            now,
-        );
-        let mode_chip = chip(
-            tree,
-            input,
-            engine,
-            root,
-            "cursors",
+            "themes",
             theme::text(),
             false,
             None,
@@ -206,61 +159,6 @@ impl WallpapersPanel {
             None,
         );
         let close = chip(tree, input, engine, root, "×", theme::text(), false, None);
-        let animation_label = label(tree, engine, root, "cursor animation", 11.0, theme::muted());
-        let animation = chip(
-            tree,
-            input,
-            engine,
-            root,
-            "off",
-            theme::muted(),
-            false,
-            None,
-        );
-        let colors_label = label(tree, engine, root, "colors", 11.0, theme::muted());
-        let colors = chip(
-            tree,
-            input,
-            engine,
-            root,
-            "off",
-            theme::muted(),
-            false,
-            None,
-        );
-        let size_label = label(tree, engine, root, "size", 11.0, theme::muted());
-        let size = chip(
-            tree,
-            input,
-            engine,
-            root,
-            "24 px",
-            theme::text(),
-            false,
-            None,
-        );
-        let auto_label = label(tree, engine, root, "wallpaper colors", 11.0, theme::muted());
-        let auto_chip = chip(
-            tree,
-            input,
-            engine,
-            root,
-            "off",
-            theme::muted(),
-            false,
-            None,
-        );
-        let scheme_label = label(tree, engine, root, "scheme", 11.0, theme::muted());
-        let scheme_chip = chip(
-            tree,
-            input,
-            engine,
-            root,
-            &scheme_text(data.theme_scheme),
-            theme::text(),
-            false,
-            None,
-        );
         let grid = Scroller::new(tree, input, root, true);
         let empty = label(
             tree,
@@ -279,30 +177,15 @@ impl WallpapersPanel {
             search,
             shown: Vec::new(),
             pending_scroll: None,
-            mode_chip,
+            themes,
             refresh,
             close,
-            animation_label,
-            animation,
-            colors_label,
-            colors,
-            size_label,
-            size,
-            auto_label,
-            auto_chip,
-            scheme_label,
-            scheme_chip,
-            scheme: data.theme_scheme,
-            theme_auto: data.theme_auto,
-            theme_available: data.theme_available,
             grid,
             tiles: Vec::new(),
             empty,
             error,
             footer,
             data: Arc::new(WallData::default()),
-            cursors: data.cursors.clone(),
-            mode: Mode::Wallpapers,
             previews: data.previews.clone(),
             pixmaps: HashMap::new(),
             current: 0,
@@ -311,7 +194,6 @@ impl WallpapersPanel {
             cell_h: 0.0,
             grid_h: 0.0,
             sent: None,
-            sent_pixmaps: Vec::new(),
             pending_follow: false,
         };
         panel.data = data.wall.clone();
@@ -320,32 +202,16 @@ impl WallpapersPanel {
     }
 
     fn names(&self) -> Vec<&str> {
-        match self.mode {
-            Mode::Wallpapers => self
-                .data
-                .items
-                .iter()
-                .map(|item| item.name.as_str())
-                .collect(),
-            Mode::Cursors => self
-                .cursors
-                .items
-                .iter()
-                .map(|item| item.theme.name.as_str())
-                .collect(),
-        }
+        self.data
+            .items
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect()
     }
 
     fn key_of(&self, index: usize) -> Option<&str> {
         let item = *self.shown.get(index)?;
-        match self.mode {
-            Mode::Wallpapers => self.data.items.get(item).map(|item| item.path.as_str()),
-            Mode::Cursors => self
-                .cursors
-                .items
-                .get(item)
-                .map(|item| item.theme.name.as_str()),
-        }
+        self.data.items.get(item).map(|item| item.path.as_str())
     }
 
     fn keys(&self) -> Vec<String> {
@@ -358,13 +224,8 @@ impl WallpapersPanel {
         self.data.items.get(*self.shown.get(index)?)
     }
 
-    fn cursor_item(&self, index: usize) -> Option<&crate::cursorctl::CursorItem> {
-        self.cursors.items.get(*self.shown.get(index)?)
-    }
-
     pub fn view(&self) -> WallView {
         WallView {
-            mode: self.mode,
             query: self.search.text().to_string(),
             current: self.key_of(self.current).map(str::to_string),
             scroll: self.grid.value(),
@@ -378,9 +239,7 @@ impl WallpapersPanel {
         engine: &mut TextEngine,
         view: WallView,
     ) {
-        self.mode = view.mode;
         self.search.field.set_text(tree, engine, &view.query);
-        self.search.set_placeholder(engine, placeholder(self.mode));
         self.reset(tree, input, engine, Reset::Fresh);
         let keys = self.keys();
         if let Some(index) = view
@@ -395,15 +254,10 @@ impl WallpapersPanel {
 
     pub fn areas(&self) -> Vec<AreaId> {
         let mut areas = vec![
-            self.mode_chip.area,
+            self.themes.area,
             self.refresh.area,
             self.close.area,
             self.search.field.area,
-            self.animation.area,
-            self.colors.area,
-            self.size.area,
-            self.auto_chip.area,
-            self.scheme_chip.area,
         ];
         areas.extend(self.grid.areas());
         areas.extend(self.tiles.iter().flatten().map(|tile| tile.area));
@@ -427,10 +281,7 @@ impl WallpapersPanel {
                 }
             }
             Reset::Fresh => {
-                let applied = match self.mode {
-                    Mode::Wallpapers => &self.data.current,
-                    Mode::Cursors => &self.cursors.current,
-                };
+                let applied = &self.data.current;
                 self.current = keys.iter().position(|key| key == applied).unwrap_or(0);
                 self.grid.jump(0.0);
                 self.pending_scroll = None;
@@ -449,25 +300,9 @@ impl WallpapersPanel {
             }
             self.tiles = (0..count).map(|_| None).collect();
             self.sent = None;
-            self.sent_pixmaps.clear();
         }
-        let (title, text, other, empty) = match self.mode {
-            Mode::Wallpapers => (
-                "wallpapers",
-                subtitle(&self.data.items),
-                "cursors",
-                "Add images to Pictures/Wallpapers",
-            ),
-            Mode::Cursors => (
-                "cursors",
-                cursor_subtitle(self.cursors.items.len()),
-                "wallpapers",
-                "Add cursor themes to Pictures/Wallpapers/cursors",
-            ),
-        };
-        self.title.set_text(engine, title);
-        self.subtitle.set_text(engine, &text);
-        self.mode_chip.set_label(engine, other, 12.0);
+        self.subtitle.set_text(engine, &subtitle(&self.data.items));
+        let empty = "Add images to Pictures/Wallpapers";
         let empty = if self.search.text().trim().is_empty() {
             empty
         } else {
@@ -477,86 +312,27 @@ impl WallpapersPanel {
         self.update_texts(engine);
     }
 
-    fn set_mode(
-        &mut self,
-        tree: &mut Tree,
-        input: &mut Input,
-        engine: &mut TextEngine,
-        mode: Mode,
-    ) {
-        if self.mode == mode {
-            return;
-        }
-        self.mode = mode;
-        self.search.field.set_text(tree, engine, "");
-        self.search.set_placeholder(engine, placeholder(mode));
-        self.reset(tree, input, engine, Reset::Fresh);
-    }
-
     fn count(&self) -> usize {
         self.shown.len()
     }
 
     fn busy(&self) -> bool {
-        match self.mode {
-            Mode::Wallpapers => self.data.busy,
-            Mode::Cursors => self.cursors.busy,
-        }
+        self.data.busy
     }
 
     fn update_texts(&mut self, engine: &mut TextEngine) {
-        let footer = match (self.mode, self.busy()) {
-            (_, true) => "Applying…",
-            (Mode::Wallpapers, false) => {
-                "Click a preview to apply  ·  ↑ ↓ ← → navigate  ·  Esc close"
-            }
-            (Mode::Cursors, false) => {
-                "Click a theme to apply  ·  ↑ ↓ ← → navigate  ·  Tab wallpapers  ·  Esc close"
-            }
+        let footer = if self.busy() {
+            "Applying…"
+        } else {
+            "Click a preview to apply  ·  ↑ ↓ ← → navigate  ·  Tab themes  ·  Esc close"
         };
         self.footer.set_text(engine, footer);
-        let error = match self.mode {
-            Mode::Wallpapers => self.data.error.clone(),
-            Mode::Cursors => self.cursors.error.clone(),
-        };
+        let error = self.data.error.clone();
         self.error.set_text(engine, &error);
-        let on = self.cursors.animation;
-        self.animation
-            .set_label(engine, if on { "on" } else { "off" }, 12.0);
-        self.animation
-            .jump_ink(if on { theme::green() } else { theme::muted() });
-        self.animation.selected = on;
-        let colored = self.cursors.colors;
-        self.colors
-            .set_label(engine, if colored { "on" } else { "off" }, 12.0);
-        self.colors.jump_ink(if colored && self.theme_auto {
-            theme::green()
-        } else {
-            theme::muted()
-        });
-        self.colors.selected = colored && self.theme_auto;
-        let size = format!("{} px", self.cursors.size);
-        self.size.set_label(engine, &size, 12.0);
-        let auto = self.theme_auto;
-        self.auto_chip
-            .set_label(engine, if auto { "on" } else { "off" }, 12.0);
-        self.auto_chip
-            .jump_ink(if auto { theme::green() } else { theme::muted() });
-        self.auto_chip.selected = auto;
-        self.scheme_chip
-            .set_label(engine, &scheme_text(self.scheme), 12.0);
-        self.scheme_chip.jump_ink(if self.theme_auto {
-            theme::text()
-        } else {
-            theme::muted()
-        });
     }
 
     fn error_text(&self) -> &str {
-        match self.mode {
-            Mode::Wallpapers => &self.data.error,
-            Mode::Cursors => &self.cursors.error,
-        }
+        &self.data.error
     }
 
     pub fn sync(
@@ -567,21 +343,11 @@ impl WallpapersPanel {
         data: &PanelData,
     ) {
         self.previews = data.previews.clone();
-        let theme_changed = self.scheme != data.theme_scheme || self.theme_auto != data.theme_auto;
-        self.scheme = data.theme_scheme;
-        self.theme_auto = data.theme_auto;
-        if Arc::ptr_eq(&self.data, &data.wall) && Arc::ptr_eq(&self.cursors, &data.cursors) {
-            if theme_changed {
-                self.update_texts(engine);
-            }
+        if Arc::ptr_eq(&self.data, &data.wall) {
             return;
         }
-        let reset = match self.mode {
-            Mode::Wallpapers => self.data.generation != data.wall.generation,
-            Mode::Cursors => self.cursors.generation != data.cursors.generation,
-        };
+        let reset = self.data.generation != data.wall.generation;
         self.data = data.wall.clone();
-        self.cursors = data.cursors.clone();
         if reset {
             self.reset(tree, input, engine, Reset::Keep);
         } else {
@@ -637,7 +403,7 @@ impl WallpapersPanel {
     }
 
     fn preview_window(&self) -> Vec<PreviewKey> {
-        if self.cell_h <= 0.0 || self.mode == Mode::Cursors {
+        if self.cell_h <= 0.0 {
             return Vec::new();
         }
         let first = ((self.grid.value() / self.cell_h).floor().max(0.0) as usize) * 2;
@@ -724,17 +490,9 @@ impl WallpapersPanel {
             if self.tiles[index].is_some() || y + self.cell_h <= top || y >= bottom {
                 continue;
             }
-            let spec = match self.mode {
-                Mode::Wallpapers => self
-                    .wall_item(index)
-                    .map(|item| (item.name.clone(), item.live.then_some("live"))),
-                Mode::Cursors => self.cursor_item(index).map(|item| {
-                    (
-                        item.theme.name.clone(),
-                        item.theme.animated.then_some("animated"),
-                    )
-                }),
-            };
+            let spec = self
+                .wall_item(index)
+                .map(|item| (item.name.clone(), item.live.then_some("live")));
             let Some((name, badge)) = spec else {
                 continue;
             };
@@ -753,7 +511,7 @@ impl WallpapersPanel {
         let subtitle_h = self.subtitle.implicit_height().ceil();
         let column_h = title_h + 6.0 + subtitle_h;
         let header_h = column_h
-            .max(self.mode_chip.implicit_height().ceil())
+            .max(self.themes.implicit_height().ceil())
             .max(self.refresh.implicit_height().ceil())
             .max(self.close.implicit_height().ceil());
         let error_visible = !self.error_text().is_empty();
@@ -762,18 +520,7 @@ impl WallpapersPanel {
         } else {
             0.0
         };
-        let cursors = self.mode == Mode::Cursors;
-        let footer_h = if cursors {
-            self.footer
-                .implicit_height()
-                .ceil()
-                .max(self.animation.implicit_height().ceil())
-        } else {
-            self.footer
-                .implicit_height()
-                .ceil()
-                .max(self.scheme_chip.implicit_height().ceil())
-        };
+        let footer_h = self.footer.implicit_height().ceil();
         let mut cells = vec![
             Cell::implicit(header_h),
             Cell::implicit(SEARCH_HEIGHT),
@@ -794,7 +541,7 @@ impl WallpapersPanel {
                         .ceil(),
                 ),
                 Cell::fill(0.0),
-                Cell::implicit(self.mode_chip.implicit_width()),
+                Cell::implicit(self.themes.implicit_width()),
                 Cell::implicit(self.refresh.implicit_width()),
                 Cell::implicit(self.close.implicit_width()),
             ],
@@ -807,7 +554,7 @@ impl WallpapersPanel {
         let sw = self.subtitle.implicit_width();
         self.subtitle
             .place(tree, columns[0].pos, top + title_h + 6.0, sw, subtitle_h);
-        place_chip(tree, &mut self.mode_chip, columns[2].pos, header);
+        place_chip(tree, &mut self.themes, columns[2].pos, header);
         place_chip(tree, &mut self.refresh, columns[3].pos, header);
         place_chip(tree, &mut self.close, columns[4].pos, header);
         self.search.layout(tree, engine, slots[1].pos, width);
@@ -838,58 +585,6 @@ impl WallpapersPanel {
         }
         let fw = self.footer.implicit_width();
         place_label(tree, &mut self.footer, 0.0, slots[next], fw);
-        let animation_shown = cursors && services::compositor::is_hyprland();
-        tree.set_visible(self.animation_label.node, animation_shown);
-        tree.set_visible(self.animation.root, animation_shown);
-        for node in [
-            self.colors_label.node,
-            self.colors.root,
-            self.size_label.node,
-            self.size.root,
-        ] {
-            tree.set_visible(node, cursors);
-        }
-        for node in [
-            self.auto_label.node,
-            self.auto_chip.root,
-            self.scheme_label.node,
-            self.scheme_chip.root,
-        ] {
-            tree.set_visible(node, !cursors && self.theme_available);
-        }
-        if !cursors && self.theme_available {
-            let slot = slots[next];
-            let x = width - self.scheme_chip.implicit_width().ceil();
-            place_chip(tree, &mut self.scheme_chip, x, slot);
-            let lw = self.scheme_label.implicit_width();
-            let x = x - 8.0 - lw;
-            place_label(tree, &mut self.scheme_label, x, slot, lw);
-            let x = x - 18.0 - self.auto_chip.implicit_width().ceil();
-            place_chip(tree, &mut self.auto_chip, x, slot);
-            let aw = self.auto_label.implicit_width();
-            place_label(tree, &mut self.auto_label, x - 8.0 - aw, slot, aw);
-        }
-        if cursors {
-            let slot = slots[next];
-            let mut x = width + 18.0;
-            if animation_shown {
-                x = width - self.animation.implicit_width().ceil();
-                place_chip(tree, &mut self.animation, x, slot);
-                let lw = self.animation_label.implicit_width();
-                x -= 8.0 + lw;
-                place_label(tree, &mut self.animation_label, x, slot, lw);
-            }
-            x -= 18.0 + self.colors.implicit_width().ceil();
-            place_chip(tree, &mut self.colors, x, slot);
-            let cw = self.colors_label.implicit_width();
-            x -= 8.0 + cw;
-            place_label(tree, &mut self.colors_label, x, slot, cw);
-            x -= 18.0 + self.size.implicit_width().ceil();
-            place_chip(tree, &mut self.size, x, slot);
-            let sw = self.size_label.implicit_width();
-            x -= 8.0 + sw;
-            place_label(tree, &mut self.size_label, x, slot, sw);
-        }
         self.layout_tiles(tree);
     }
 
@@ -961,16 +656,7 @@ impl WallpapersPanel {
     ) -> (bool, Vec<PanelAction>) {
         let mut running = false;
         let mut actions = Vec::new();
-        for chip in [
-            &mut self.mode_chip,
-            &mut self.refresh,
-            &mut self.close,
-            &mut self.animation,
-            &mut self.colors,
-            &mut self.size,
-            &mut self.auto_chip,
-            &mut self.scheme_chip,
-        ] {
+        for chip in [&mut self.themes, &mut self.refresh, &mut self.close] {
             chip.sync(now, input);
             running |= chip.tick(tree, now);
         }
@@ -978,22 +664,14 @@ impl WallpapersPanel {
         running |= self.search.tick(tree, now);
         self.ensure_tiles(tree, input, engine, now);
         for index in 0..self.tiles.len() {
-            let state = match self.mode {
-                Mode::Wallpapers => self.wall_item(index).map(|item| {
-                    let picture = self
-                        .previews
-                        .get(&(item.path.clone(), item.revision.clone()))
-                        .cloned()
-                        .unwrap_or_default();
-                    (picture, self.data.current == item.path)
-                }),
-                Mode::Cursors => self.cursor_item(index).map(|item| {
-                    (
-                        item.picture.clone(),
-                        self.cursors.current == item.theme.name,
-                    )
-                }),
-            };
+            let state = self.wall_item(index).map(|item| {
+                let picture = self
+                    .previews
+                    .get(&(item.path.clone(), item.revision.clone()))
+                    .cloned()
+                    .unwrap_or_default();
+                (picture, self.data.current == item.path)
+            });
             let Some((picture, selected)) = state else {
                 continue;
             };
@@ -1095,45 +773,17 @@ impl WallpapersPanel {
             self.sent = Some(window.clone());
             actions.push(PanelAction::WallPreviews(window));
         }
-        if self.mode == Mode::Cursors {
-            let pending: Vec<String> = self
-                .pixmap_requests()
-                .into_iter()
-                .map(|(picture, _, _)| picture)
-                .collect();
-            if !pending.is_empty() && pending != self.sent_pixmaps {
-                actions.push(PanelAction::CursorPixmaps);
-            }
-            self.sent_pixmaps = pending;
-        }
         (running, actions)
     }
 
     fn apply_at(&self, index: usize, x: f32, y: f32) -> Option<PanelAction> {
-        match self.mode {
-            Mode::Wallpapers => {
-                let item = self.wall_item(index)?;
-                Some(PanelAction::WallApply(item.path.clone(), x, y))
-            }
-            Mode::Cursors => {
-                let item = self.cursor_item(index)?;
-                Some(PanelAction::CursorApply(item.theme.name.clone()))
-            }
-        }
-    }
-
-    fn toggle_mode(&mut self, tree: &mut Tree, input: &mut Input, engine: &mut TextEngine) {
-        let mode = match self.mode {
-            Mode::Wallpapers => Mode::Cursors,
-            Mode::Cursors => Mode::Wallpapers,
-        };
-        self.set_mode(tree, input, engine, mode);
+        let item = self.wall_item(index)?;
+        Some(PanelAction::WallApply(item.path.clone(), x, y))
     }
 
     pub fn handle(
         &mut self,
         tree: &mut Tree,
-        input: &mut Input,
         engine: &mut TextEngine,
         events: &[InputEvent],
         pointer: (f32, f32),
@@ -1153,36 +803,10 @@ impl WallpapersPanel {
                 InputEvent::Click(area, MouseButton::Left) => {
                     if area == self.close.area {
                         actions.push(PanelAction::Close);
-                    } else if area == self.mode_chip.area {
-                        self.toggle_mode(tree, input, engine);
-                        actions.push(PanelAction::CursorRefresh);
-                    } else if area == self.animation.area
-                        && self.mode == Mode::Cursors
-                        && services::compositor::is_hyprland()
-                    {
-                        actions.push(PanelAction::CursorAnimation);
-                    } else if area == self.colors.area
-                        && self.mode == Mode::Cursors
-                        && self.theme_auto
-                    {
-                        actions.push(PanelAction::CursorColors);
-                    } else if area == self.size.area && self.mode == Mode::Cursors {
-                        actions.push(PanelAction::CursorSize);
-                    } else if area == self.auto_chip.area
-                        && self.mode == Mode::Wallpapers
-                        && self.theme_available
-                    {
-                        actions.push(PanelAction::ToggleTheme);
-                    } else if area == self.scheme_chip.area
-                        && self.mode == Mode::Wallpapers
-                        && self.theme_available
-                    {
-                        actions.push(PanelAction::ThemeScheme);
+                    } else if area == self.themes.area {
+                        actions.push(PanelAction::Toggle("themes"));
                     } else if area == self.refresh.area {
-                        actions.push(match self.mode {
-                            Mode::Wallpapers => PanelAction::WallRefresh,
-                            Mode::Cursors => PanelAction::CursorRefresh,
-                        });
+                        actions.push(PanelAction::WallRefresh);
                     } else if let Some(index) = self
                         .tiles
                         .iter()
@@ -1224,10 +848,7 @@ impl WallpapersPanel {
         let mut actions = Vec::new();
         match event.keysym {
             keys::ESCAPE => actions.push(PanelAction::Close),
-            keys::TAB | keys::ISO_LEFT_TAB => {
-                self.toggle_mode(tree, input, engine);
-                actions.push(PanelAction::CursorRefresh);
-            }
+            keys::TAB | keys::ISO_LEFT_TAB => actions.push(PanelAction::Toggle("themes")),
             keys::RETURN => {
                 if let Some(tile) = self.tiles.get(self.current).and_then(Option::as_ref) {
                     let (w, h) = tree
