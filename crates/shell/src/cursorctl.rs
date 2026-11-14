@@ -3,7 +3,6 @@ use std::{path::Path, sync::Arc};
 use services::{
     cursor_colors::Recolor,
     cursors::{self, CursorTheme, PREVIEW_SHAPES, State},
-    theme::Mode,
 };
 use ui::tiny_skia::{FilterQuality, IntSize, Pixmap, PixmapPaint, Transform};
 
@@ -158,7 +157,7 @@ impl App {
     }
 
     fn cursor_palette(&self) -> Option<Recolor> {
-        (self.theme.mode == Mode::Auto).then(|| Recolor {
+        Some(Recolor {
             accent: rgb(crate::theme::green()),
             outline: rgb(crate::theme::bg()),
         })
@@ -183,7 +182,7 @@ impl App {
     fn cursor_needs_render(&self) -> bool {
         let state = &self.cursors.state;
         let effective = state.effective();
-        if self.theme.mode == Mode::Auto && state.colors_wanted() {
+        if state.colors_wanted() {
             !(cursors::is_slot(effective) && cursors::folder().join(effective).is_dir())
         } else {
             effective != state.theme
@@ -192,7 +191,7 @@ impl App {
 
     pub fn cursor_palette_changed(&mut self) {
         let state = &self.cursors.state;
-        let wanted = self.theme.mode == Mode::Auto && state.colors_wanted();
+        let wanted = state.colors_wanted();
         if wanted || state.effective() != state.theme {
             self.recolor_cursor();
         }
@@ -209,9 +208,6 @@ impl App {
     }
 
     pub fn toggle_cursor_colors(&mut self) {
-        if self.theme.mode != Mode::Auto {
-            return;
-        }
         let enabled = !self.cursors.data.colors;
         let theme = self.current_cursor_theme();
         let palette = self.cursor_palette();

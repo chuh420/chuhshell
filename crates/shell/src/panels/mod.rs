@@ -10,6 +10,7 @@ pub mod notifications;
 pub mod picker;
 pub mod power;
 pub mod system;
+pub mod themes;
 pub mod tray;
 pub mod vpn;
 pub mod wallpapers;
@@ -59,7 +60,9 @@ pub enum PanelAction {
     CursorAnimation,
     CursorColors,
     CursorSize,
-    ThemeScheme,
+    ThemeScheme(&'static str),
+    ThemeAuto,
+    ThemePalette(String),
     CursorRefresh,
     CursorPixmaps,
     SetProfile(&'static str),
@@ -149,6 +152,8 @@ pub struct PanelData {
     pub theme_auto: bool,
     pub theme_available: bool,
     pub theme_scheme: &'static str,
+    pub theme_palette: String,
+    pub theme_auto_preview: Option<crate::theme::Palette>,
     pub dnd: bool,
     pub notifications: Vec<Notification>,
     pub ages: HashMap<u32, String>,

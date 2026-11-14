@@ -197,14 +197,245 @@ pub const EVERFOREST: Palette = Palette {
     blue: Color::rgb(0x7fbbb3),
 };
 
+pub const EMBER: Palette = Palette {
+    bg: Color::rgb(0x1f1819),
+    dim: Color::rgb(0x171213),
+    surface: Color::rgb(0x2a2122),
+    elevated: Color::rgb(0x342a2b),
+    line: Color::rgb(0x4a3b3d),
+    text: Color::rgb(0xecdcdc),
+    muted: Color::rgb(0x9c8587),
+    green: Color::rgb(0xf2777a),
+    yellow: Color::rgb(0xf4b183),
+    red: Color::rgb(0xff5d6c),
+    blue: Color::rgb(0x9fb1d4),
+};
+
+pub const LAVENDER: Palette = Palette {
+    bg: Color::rgb(0x1c1a26),
+    dim: Color::rgb(0x15131e),
+    surface: Color::rgb(0x252232),
+    elevated: Color::rgb(0x2e2a3d),
+    line: Color::rgb(0x433e57),
+    text: Color::rgb(0xe4def5),
+    muted: Color::rgb(0x8b84a6),
+    green: Color::rgb(0xc0a6f7),
+    yellow: Color::rgb(0xf2cda0),
+    red: Color::rgb(0xf38ba8),
+    blue: Color::rgb(0x9ab4f8),
+};
+
+pub const GLACIER: Palette = Palette {
+    bg: Color::rgb(0x151b23),
+    dim: Color::rgb(0x10151b),
+    surface: Color::rgb(0x1c2430),
+    elevated: Color::rgb(0x242e3c),
+    line: Color::rgb(0x344255),
+    text: Color::rgb(0xd8e6f2),
+    muted: Color::rgb(0x7c8fa6),
+    green: Color::rgb(0x79c6f2),
+    yellow: Color::rgb(0xe8c98e),
+    red: Color::rgb(0xf0808f),
+    blue: Color::rgb(0x7fdbd6),
+};
+
 pub const BUILTIN: &[(&str, Palette)] = &[
     ("gruvbox", GRUVBOX),
+    ("ember", EMBER),
+    ("lavender", LAVENDER),
+    ("glacier", GLACIER),
     ("catppuccin-mocha", CATPPUCCIN_MOCHA),
     ("nord", NORD),
     ("tokyo-night", TOKYO_NIGHT),
     ("rose-pine", ROSE_PINE),
     ("everforest", EVERFOREST),
 ];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Accents {
+    pub purple: u32,
+    pub aqua: u32,
+    pub orange: u32,
+    pub tertiary: Option<u32>,
+}
+
+const ACCENTS: &[(&str, Accents)] = &[
+    (
+        "gruvbox",
+        Accents {
+            purple: 0xd3869b,
+            aqua: 0x89b482,
+            orange: 0xe78a4e,
+            tertiary: None,
+        },
+    ),
+    (
+        "ember",
+        Accents {
+            purple: 0xd49bc4,
+            aqua: 0x9cc5b8,
+            orange: 0xf59a6e,
+            tertiary: None,
+        },
+    ),
+    (
+        "lavender",
+        Accents {
+            purple: 0xe0a6f0,
+            aqua: 0x94d6d0,
+            orange: 0xf5a97f,
+            tertiary: Some(0x9ab4f8),
+        },
+    ),
+    (
+        "glacier",
+        Accents {
+            purple: 0xa9b4f5,
+            aqua: 0x8fe0c4,
+            orange: 0xf0a878,
+            tertiary: Some(0x7fdbd6),
+        },
+    ),
+    (
+        "catppuccin-mocha",
+        Accents {
+            purple: 0xcba6f7,
+            aqua: 0x94e2d5,
+            orange: 0xfab387,
+            tertiary: None,
+        },
+    ),
+    (
+        "nord",
+        Accents {
+            purple: 0xb48ead,
+            aqua: 0x8fbcbb,
+            orange: 0xd08770,
+            tertiary: None,
+        },
+    ),
+    (
+        "tokyo-night",
+        Accents {
+            purple: 0xbb9af7,
+            aqua: 0x7dcfff,
+            orange: 0xff9e64,
+            tertiary: None,
+        },
+    ),
+    (
+        "rose-pine",
+        Accents {
+            purple: 0xc4a7e7,
+            aqua: 0x9ccfd8,
+            orange: 0xebbcba,
+            tertiary: None,
+        },
+    ),
+    (
+        "everforest",
+        Accents {
+            purple: 0xd699b6,
+            aqua: 0x83c092,
+            orange: 0xe69875,
+            tertiary: None,
+        },
+    ),
+];
+
+pub fn accents(name: &str) -> Accents {
+    ACCENTS
+        .iter()
+        .find(|(builtin, _)| *builtin == name)
+        .map_or(ACCENTS[0].1, |(_, accents)| *accents)
+}
+
+pub fn display_name(name: &str) -> String {
+    match name {
+        "catppuccin-mocha" => "catppuccin".into(),
+        _ => name.replace('-', " "),
+    }
+}
+
+fn rgb(color: Color) -> [u8; 3] {
+    let [r, g, b, _] = color.to_rgba8();
+    [r, g, b]
+}
+
+fn rgb_hex(value: u32) -> [u8; 3] {
+    [(value >> 16) as u8, (value >> 8) as u8, value as u8]
+}
+
+pub fn static_colors(name: &str, palette: &Palette) -> services::theme::StaticColors {
+    let base = accents(GRUVBOX_NAME);
+    let own = accents(name);
+    let variant = palette.text.lerp(palette.muted, 0.35);
+    let tokens = vec![
+        ("surface_container_low", rgb(palette.bg)),
+        ("surface", rgb(palette.dim)),
+        ("surface_dim", rgb(palette.dim)),
+        ("surface_container_lowest", rgb(palette.dim)),
+        ("surface_container", rgb(palette.surface)),
+        ("surface_container_high", rgb(palette.elevated)),
+        ("surface_container_highest", rgb(palette.line)),
+        ("surface_bright", rgb(palette.line)),
+        ("outline_variant", rgb(palette.line)),
+        ("outline", rgb(palette.muted)),
+        ("on_surface", rgb(palette.text)),
+        ("on_surface_variant", rgb(variant)),
+        ("on_background", rgb(palette.text)),
+        ("background", rgb(palette.bg)),
+        ("primary", rgb(palette.green)),
+        ("on_primary", rgb(palette.bg)),
+        ("primary_container", rgb(palette.elevated)),
+        ("on_primary_container", rgb(palette.green)),
+        ("secondary", rgb(palette.blue)),
+        ("on_secondary", rgb(palette.bg)),
+        (
+            "tertiary",
+            own.tertiary.map_or(rgb(palette.yellow), rgb_hex),
+        ),
+        ("on_tertiary", rgb(palette.bg)),
+        ("error", rgb(palette.red)),
+        ("on_error", rgb(palette.bg)),
+        ("source_color", rgb(palette.green)),
+    ];
+    let literals = vec![
+        (rgb(GRUVBOX.red), rgb(palette.red)),
+        (rgb(GRUVBOX.green), rgb(palette.green)),
+        (rgb(GRUVBOX.yellow), rgb(palette.yellow)),
+        (rgb(GRUVBOX.blue), rgb(palette.blue)),
+        (rgb(GRUVBOX.text), rgb(palette.text)),
+        (rgb(GRUVBOX.muted), rgb(palette.muted)),
+        (rgb_hex(base.purple), rgb_hex(own.purple)),
+        (rgb_hex(base.aqua), rgb_hex(own.aqua)),
+        (rgb_hex(base.orange), rgb_hex(own.orange)),
+    ];
+    services::theme::StaticColors { tokens, literals }
+}
+
+pub fn palette_json(palette: &Palette) -> String {
+    let fields = [
+        ("bg", palette.bg),
+        ("dim", palette.dim),
+        ("surface", palette.surface),
+        ("elevated", palette.elevated),
+        ("line", palette.line),
+        ("text", palette.text),
+        ("muted", palette.muted),
+        ("green", palette.green),
+        ("yellow", palette.yellow),
+        ("red", palette.red),
+        ("blue", palette.blue),
+    ];
+    let body: Vec<String> = fields
+        .iter()
+        .map(|(key, color)| format!("\"{key}\": \"{}\"", hex(*color)))
+        .collect();
+    format!("{{{}}}\n", body.join(", "))
+}
+
+pub const GRUVBOX_NAME: &str = "gruvbox";
 
 pub fn builtin(name: &str) -> Option<Palette> {
     BUILTIN
@@ -386,7 +617,10 @@ mod tests {
         assert_eq!(builtin("gruvbox"), Some(GRUVBOX));
         assert_eq!(builtin("nord").map(|p| hex(p.bg)), Some("#2e3440".into()));
         assert_eq!(builtin("solarized"), None);
-        assert_eq!(BUILTIN.len(), 6);
+        assert_eq!(BUILTIN.len(), 9);
+        for (name, _) in BUILTIN {
+            assert!(ACCENTS.iter().any(|(accent, _)| accent == name), "{name}");
+        }
         for (name, palette) in BUILTIN {
             assert_ne!(palette.bg, palette.text, "{name}");
         }
@@ -401,6 +635,28 @@ mod tests {
         assert_eq!(palette.bg, TOKYO_NIGHT.bg);
         theme.name = "unknown".into();
         assert_eq!(Palette::configured(&theme).bg, GRUVBOX.bg);
+    }
+
+    #[test]
+    fn palette_json_round_trips() {
+        for (name, palette) in BUILTIN {
+            assert_eq!(
+                Palette::from_json(&palette_json(palette)),
+                Some(*palette),
+                "{name}"
+            );
+        }
+        assert_eq!(palette_json(&GRUVBOX).trim(), SNAPSHOT);
+    }
+
+    #[test]
+    fn static_colors_map_gruvbox_literals() {
+        let colors = static_colors("nord", &NORD);
+        let text = r##"{{colors.primary.default.hex}} {{ "#ea6962" | to_color | harmonize: {{ colors.source_color.default.hex | to_color }} }} {{ "#d3869b" | to_color }}"##;
+        assert_eq!(
+            services::theme::render_template(text, &colors).as_deref(),
+            Ok("#a3be8c #bf616a #b48ead")
+        );
     }
 
     #[test]

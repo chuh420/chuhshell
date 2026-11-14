@@ -81,6 +81,33 @@ fn panel_data() -> PanelData {
         ram_history: (0..60)
             .map(|i| 35.0 + (i as f64 * 0.2).cos() * 4.0)
             .collect(),
+        theme_available: true,
+        theme_scheme: "tonal-spot",
+        theme_palette: "gruvbox".into(),
+        cursors: std::sync::Arc::new(crate::cursorctl::CursorData {
+            items: [
+                "Bibata-Modern-Classic",
+                "Capitaine Cursors",
+                "Hu Tao",
+                "Phinger",
+            ]
+            .iter()
+            .map(|name| crate::cursorctl::CursorItem {
+                theme: services::cursors::CursorTheme {
+                    name: name.to_string(),
+                    path: String::new(),
+                    revision: String::new(),
+                    animated: *name == "Hu Tao",
+                },
+                picture: String::new(),
+            })
+            .collect(),
+            current: "Capitaine Cursors".into(),
+            size: 24,
+            colors: true,
+            animation: true,
+            ..Default::default()
+        }),
         ..PanelData::default()
     }
 }

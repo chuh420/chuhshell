@@ -28,8 +28,8 @@ chuhshell is in beta. I built it for my own desktop and then moved every persona
 - **battery**: UPower details, level and power history, power profiles.
 - **clipboard**: cliphist history with image thumbnails.
 - **wallpapers**: a gallery with search, live wallpapers through mpvpaper, a circle reveal on apply and an optional palette from the wallpaper through matugen.
-- **themes**: six built-in palettes and per-color overrides.
-- **cursors**: a cursor theme picker that can recolor themes to the current palette.
+- **themes**: a panel with nine built-in palettes (including the shell's own ember, lavender and glacier), wallpaper colors and their matugen scheme, per-color overrides, and app color files rendered from your matugen templates for static palettes too.
+- **cursors**: a cursor theme picker in the themes panel that can recolor themes to the current palette.
 - **calendar**, **power menu** and a **system** panel with cores, temperatures, disk, load and top processes.
 - **motion**: panels grow out of their bar chip, content and lists cascade in, clicks send a ripple from the pointer. the curves are the Material 3 expressive set.
 
@@ -148,7 +148,7 @@ pinned = ["kitty", "firefox"]      # matched against desktop file ids, shown fir
 "English (US)" = "US"              # layout name fragment = label
 
 [theme]
-name = "nord"                      # gruvbox, catppuccin-mocha, nord, tokyo-night, rose-pine, everforest
+name = "nord"                      # gruvbox, ember, lavender, glacier, catppuccin-mocha, nord, tokyo-night, rose-pine, everforest
 auto = false                       # colors from the wallpaper through matugen
 scheme = "tonal-spot"              # tonal-spot, content, fidelity, vibrant, rainbow, neutral
 templates = "~/.config/matugen/templates"
@@ -181,7 +181,7 @@ commands and hooks run through `sh -c`.
 | `~/.local/state/chuhshell/theme/` | matugen output in `auto/`, your static snapshots, and `current` linking to one of them |
 | `~/.cache/chuhshell/` | previews, posters, clipboard thumbnails |
 
-in auto mode the shell renders its own color template plus every file in `theme.templates` into `theme/auto/`. point your apps at `~/.local/state/chuhshell/theme/current/` and reload them from the `theme_changed` hook.
+in auto mode the shell renders its own color template plus every file in `theme.templates` into `theme/auto/`. for a static palette it fills the same templates with that palette's colors into `theme/<name>/`. a palette picked in the themes panel is remembered and wins over `theme.name` at startup. point your apps at `~/.local/state/chuhshell/theme/current/` and reload them from the `theme_changed` hook.
 
 ## usage
 
@@ -191,7 +191,7 @@ running `chuhshell` with no arguments starts the shell. a second instance exits 
 
 | command | action |
 | --- | --- |
-| `launcher`, `menu`, `calendar`, `wallpapers`, `clipboard`, `power` | open a centered panel |
+| `launcher`, `menu`, `calendar`, `wallpapers`, `themes`, `clipboard`, `power` | open a centered panel |
 | `wifi`, `vpn`, `bluetooth`, `audio`, `battery`, `system`, `notifications` | open an anchored panel |
 | `vpn toggle`, `vpn connect [COUNTRY]`, `vpn disconnect` | switch the VPN; `connect` without a country code picks the fastest |
 | `vpn status` | print the VPN state as JSON |
@@ -205,6 +205,7 @@ running `chuhshell` with no arguments starts the shell. a second instance exits 
 | `tray ID` | open a tray item menu |
 | `theme [auto\|static\|toggle]` | wallpaper colors on or off |
 | `theme scheme [NAME\|next]` | pick the matugen scheme |
+| `theme palette [NAME]` | pick a static palette, or print the current one |
 | `inspect` | print the shell state as JSON |
 
 ```lua
@@ -216,7 +217,7 @@ bind("Print", hl.dsp.exec_cmd("chuhshell msg screenshot"))
 
 in the bar, a click on the track pauses or resumes the player and a right click skips to the next track. a right click on the volume chip mutes, on the bell it toggles do not disturb, on the VPN chip it connects or disconnects.
 
-in the launcher, `Ctrl + P` or a right click pins the selected app to the top or unpins it, `Ctrl + H` hides it and `Ctrl + Shift + H` shows hidden ones. pinned apps carry a pin icon. the wallpaper gallery reads your wallpapers folder and its `live wallpapers` subfolder; cursor themes go in `cursors` inside it. live wallpapers pause while the active workspace has windows or the screen is locked.
+in the launcher, `Ctrl + P` or a right click pins the selected app to the top or unpins it, `Ctrl + H` hides it and `Ctrl + Shift + H` shows hidden ones. pinned apps carry a pin icon. the wallpaper gallery reads your wallpapers folder and its `live wallpapers` subfolder; cursor themes go in `cursors` inside it and are picked in the themes panel (`Tab` switches between wallpapers and themes). live wallpapers pause while the active workspace has windows or the screen is locked.
 
 ## how it works
 
