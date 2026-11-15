@@ -339,6 +339,14 @@ impl Chip {
         self.measure(engine);
     }
 
+    pub fn set_family(&mut self, engine: &mut TextEngine, family: &'static str) {
+        if self.family == family {
+            return;
+        }
+        self.family = family;
+        self.measure(engine);
+    }
+
     pub fn set_font_size(&mut self, engine: &mut TextEngine, font_size: f32, icon_size: f32) {
         if self.font_size == font_size && self.icon_size == icon_size {
             return;

@@ -5,6 +5,7 @@ mod card;
 mod clipctl;
 mod configctl;
 mod cursorctl;
+mod decor;
 mod history;
 mod icons;
 mod ipc;

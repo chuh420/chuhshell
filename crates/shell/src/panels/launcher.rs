@@ -102,7 +102,7 @@ impl LauncherPanel {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
         let card = tree.add(root, Node::rect(0.0, 0.0, 0.0, 0.0, island_paint()));
         let inner = tree.add(root, Node::new(0.0, 0.0, 0.0, 0.0));
-        let eyebrow = eyebrow(tree, engine, inner, "workspace / launch");
+        let eyebrow = eyebrow(tree, engine, inner, crate::decor::LAUNCH, "launch");
         let title = label(tree, engine, inner, "applications", 26.0, theme::text());
         let close = chip(tree, input, engine, inner, "×", theme::text(), false, None);
         let search = SearchBox::new(

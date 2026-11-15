@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
 use platform::Damage;
-use ui::{Canvas, TextEngine};
+use ui::Canvas;
 
-use crate::{bar::Bar, model::BarModel, overlay::Overlay, panels::PanelData, theme::font_families};
+use crate::{bar::Bar, model::BarModel, overlay::Overlay, panels::PanelData};
 
 const BACKDROP: [u8; 3] = [0x5a, 0x55, 0x4c];
 
@@ -115,7 +115,7 @@ fn panel_data() -> PanelData {
 #[test]
 #[ignore]
 fn frame_cost() {
-    let mut engine = TextEngine::new(&font_families());
+    let mut engine = crate::theme::text_engine();
     let data = panel_data();
     let mut total = std::time::Duration::ZERO;
     for panel in [
@@ -148,7 +148,7 @@ fn dump() {
         return;
     };
     crate::theme::apply_config(&config::current());
-    let mut engine = TextEngine::new(&font_families());
+    let mut engine = crate::theme::text_engine();
     let scale = crate::theme::scale();
     let (width, height) = (1896u32, (28.0 * scale).ceil() as u32);
     let mut bar = Bar::new(&mut engine, width, height, &bar_model(), 0.0);

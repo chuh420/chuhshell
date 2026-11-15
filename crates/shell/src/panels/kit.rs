@@ -40,23 +40,21 @@ pub fn title(
     parent: NodeId,
     glyph: &str,
     text: &str,
+    kanji: &str,
 ) -> Label {
     let mut icon = ui::Span::new(glyph, crate::theme::icons(), 17.0);
     icon.color = Some(theme::green());
     let mut name = ui::Span::new(format!("  {text}"), crate::theme::font(), 18.0);
     name.weight = ui::Weight::Medium;
-    Label::new(
-        tree,
-        engine,
-        parent,
-        TextSpec {
-            spans: vec![icon, name],
-            color: theme::text(),
-            elide_width: None,
-            wrap_width: None,
-            max_lines: None,
-        },
-    )
+    let mut spec = TextSpec {
+        spans: vec![icon, name],
+        color: theme::text(),
+        elide_width: None,
+        wrap_width: None,
+        max_lines: None,
+    };
+    crate::decor::suffix(&mut spec, kanji);
+    Label::new(tree, engine, parent, spec)
 }
 
 pub fn plate(tree: &mut Tree, parent: NodeId) -> NodeId {

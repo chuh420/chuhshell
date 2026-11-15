@@ -156,7 +156,7 @@ impl App {
         events: Sender<ServiceEvent>,
     ) -> Self {
         let (theme_settings, theme_palette) = crate::themectl::load_initial();
-        let mut engine = TextEngine::new(&crate::theme::font_families());
+        let mut engine = crate::theme::text_engine();
         let osd = Osd::new(&mut engine);
         let mut model = BarModel::placeholder();
         model.clock = format_clock(&clock::now());

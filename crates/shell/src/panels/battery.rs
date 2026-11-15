@@ -166,7 +166,7 @@ impl BatteryPanel {
         now: Millis,
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
-        let title = super::kit::title(tree, engine, root, "󰁹", "battery");
+        let title = super::kit::title(tree, engine, root, "󰁹", "battery", crate::decor::BATTERY);
         let plate = super::kit::plate(tree, root);
         let state = label(tree, engine, root, "", 12.0, theme::green());
         let mut level_spec = TextSpec::plain("", crate::theme::font(), 42.0, theme::text());

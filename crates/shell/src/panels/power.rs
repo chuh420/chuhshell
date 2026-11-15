@@ -100,7 +100,7 @@ impl PowerPanel {
         parent: NodeId,
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
-        let eyebrow = eyebrow(tree, engine, root, "session / power");
+        let eyebrow = eyebrow(tree, engine, root, crate::decor::POWER, "power");
         let title = label(tree, engine, root, "power", 22.0, theme::text());
         let close = chip(tree, input, engine, root, "×", theme::text(), false, None);
         let tiles = ACTIONS

@@ -148,6 +148,12 @@ impl TextEngine {
         }
     }
 
+    pub fn add_font(&mut self, data: &'static [u8]) {
+        self.fonts
+            .db_mut()
+            .load_font_source(fontdb::Source::Binary(std::sync::Arc::new(data)));
+    }
+
     fn shape(&mut self, spec: &TextSpec, scale: f32, elide: Option<f32>) -> Buffer {
         let max_size = spec.spans.iter().map(|span| span.size).fold(1.0, f32::max) * scale;
         let mut buffer = Buffer::new(&mut self.fonts, Metrics::new(max_size, max_size));

@@ -1011,15 +1011,8 @@ impl ControlPanel {
         data: &PanelData,
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
-        let mut header_spec = text(
-            "desktop / control",
-            crate::theme::icons(),
-            9.0,
-            theme::green(),
-        );
-        if let Some(span) = header_spec.spans.first_mut() {
-            span.letter_spacing = 1.0;
-        }
+        let header_spec =
+            crate::decor::eyebrow(crate::decor::CONTROL, "control", crate::theme::icons());
         let header = label(tree, engine, root, header_spec);
         let mut time_spec = text("", crate::theme::font(), 40.0, theme::text());
         if let Some(span) = time_spec.spans.first_mut() {
