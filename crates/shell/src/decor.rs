@@ -19,7 +19,6 @@ pub const WALLPAPERS: &str = "壁紙";
 pub const THEMES: &str = "彩";
 pub const QUIET: &str = "静";
 pub const SILENT: &str = "黙";
-pub const STILL: &str = "静寂";
 pub const WEEKDAYS: [&str; 7] = ["月", "火", "水", "木", "金", "土", "日"];
 
 const NUMERALS: [&str; 10] = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十"];
@@ -34,22 +33,6 @@ pub fn span(kanji: &str, size: f32, color: Color) -> Span {
     let mut span = Span::new(kanji, FAMILY, size);
     span.color = Some(color);
     span
-}
-
-pub fn still_title() -> String {
-    format!("{STILL}  |  still")
-}
-
-pub fn title_spans(text: &str, family: &'static str, size: f32) -> Vec<Span> {
-    match text.strip_prefix(STILL) {
-        Some(rest) if text == still_title() => {
-            vec![
-                Span::new(STILL, FAMILY, size),
-                Span::new(rest, family, size),
-            ]
-        }
-        _ => vec![Span::new(text, family, size)],
-    }
 }
 
 pub fn separator(size: f32) -> Span {
@@ -100,7 +83,6 @@ pub fn all_text() -> String {
         THEMES,
         QUIET,
         SILENT,
-        STILL,
     ]
     .concat();
     text.push_str(&WEEKDAYS.concat());
@@ -111,19 +93,6 @@ pub fn all_text() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn title_spans_use_decor_only_for_the_fallback() {
-        let spans = title_spans(&still_title(), "ui", 10.0);
-        assert_eq!(spans.len(), 2);
-        assert_eq!(spans[0].text, STILL);
-        assert_eq!(spans[0].family, FAMILY);
-        assert_eq!(spans[1].text, "  |  still");
-        assert_eq!(spans[1].family, "ui");
-        let spans = title_spans("静寂 notes", "ui", 10.0);
-        assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].family, "ui");
-    }
 
     #[test]
     fn numerals_cover_one_to_ten() {

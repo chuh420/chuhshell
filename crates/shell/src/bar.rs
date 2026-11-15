@@ -743,16 +743,18 @@ impl MediaChip {
         9.0 + 14.0 + 6.0 + self.label.implicit_width().ceil() + 10.0
     }
 
-    fn tick(&mut self, tree: &mut Tree, now: Millis, x: f32, y: f32) -> bool {
+    fn visible(&self) -> bool {
+        self.opacity.value() > 0.0
+    }
+
+    fn tick(&mut self, tree: &mut Tree, now: Millis) -> bool {
         let mut running = self.rect.tick(tree, now);
         running |= self.opacity.tick(now);
         running |= self.ink.tick(now);
         running |= self.label.advance(now);
         let width = self.width();
-        let visible = self.opacity.value() > 0.0;
-        tree.set_visible(self.rect.root, visible);
+        tree.set_visible(self.rect.root, self.visible());
         tree.set_opacity(self.rect.root, self.opacity.value());
-        tree.set_pos(self.rect.root, x, y);
         tree.set_size(self.rect.root, width, 22.0);
         tree.set_text(self.icon, media_icon(self.playing, self.ink.value()));
         let height = self.label.implicit_height().ceil();
@@ -885,7 +887,6 @@ pub struct Bar {
     launcher: Chip,
     left_separator: NodeId,
     workspaces: Workspaces,
-    title: SwapText,
     clock: Clock,
     media: MediaChip,
     right_row: NodeId,
@@ -964,20 +965,6 @@ impl Bar {
         );
         let left_separator = separator(&mut tree, left_row);
         let workspaces = Workspaces::new(&mut tree, left_row);
-        let max_width = 70.0f32.max(body_width * 0.16);
-        let title_text = title_text(model);
-        let mut title = SwapText::new(
-            &mut tree,
-            engine,
-            left_row,
-            &title_text,
-            "none",
-            crate::theme::font(),
-            10.0,
-            theme::muted(),
-            max_width,
-        );
-        title.set_split(engine, crate::decor::title_spans);
         let clock = Clock::new(&mut tree, &mut input, engine, body, &model.clock);
         let media = MediaChip::new(&mut tree, &mut input, engine, body);
         let right_row = tree.add(body, Node::new(0.0, 0.0, 0.0, 22.0));
@@ -1104,7 +1091,6 @@ impl Bar {
             launcher,
             left_separator,
             workspaces,
-            title,
             clock,
             media,
             right_row,
@@ -1177,8 +1163,6 @@ impl Bar {
             model.occupied.clone(),
             now,
         );
-        self.title.set(&title_text(model), &model.title_key);
-        self.title.flush(engine, now);
         self.clock.label.set(&model.clock, "");
         self.clock.label.flush(engine, now);
         self.media.apply(engine, &model.media, now);
@@ -1558,11 +1542,15 @@ impl Bar {
                 tree.set_size(node, 1.0, MARK);
             }
         };
-        let title_width = self.title.implicit_width();
+        let media_width = if self.media.visible() {
+            self.media.width()
+        } else {
+            0.0
+        };
         let left_items = [
             Item::new(self.launcher.implicit_width(), 22.0),
             Item::new(self.workspaces.implicit_width(), 22.0).margins(PAD + GROUP, 0.0),
-            Item::preferred(title_width, 16.0).margins(PAD + GROUP + 11.0, 0.0),
+            Item::new(media_width, 22.0).margins(PAD + GROUP, 0.0),
         ];
         let left = row_layout(&left_items, 2.0);
         tree.set_pos(self.left_row, EDGE + PAD, center(height, left.height));
@@ -1574,7 +1562,8 @@ impl Bar {
         tree.set_pos(self.workspaces.root, p[1].0, p[1].1);
         tree.set_size(self.workspaces.root, left_items[1].layout_width(), 22.0);
         tree.set_size(self.workspaces.row, left_items[1].layout_width(), 22.0);
-        self.title.place(tree, p[2].0, p[2].1, title_width, 16.0);
+        let left_y = center(height, left.height);
+        tree.set_pos(self.media.rect.root, EDGE + PAD + p[2].0, left_y + p[2].1);
         let launcher_end = EDGE + PAD + p[0].0 + left_items[0].layout_width();
         mark(
             tree,
@@ -1585,17 +1574,13 @@ impl Bar {
         mark(
             tree,
             self.islands[1],
-            (title_width > 0.0).then_some((workspaces_end + EDGE + PAD + p[2].0) / 2.0),
+            (media_width > 0.0).then_some((workspaces_end + EDGE + PAD + p[2].0) / 2.0),
         );
 
         let clock_width = self.clock.width();
         let clock_x = center(self.width, clock_width).round();
         self.clock.place(tree, clock_x, center(height, 22.0));
-        mark(
-            tree,
-            self.islands[2],
-            Some(clock_x + clock_width + PAD + GROUP / 2.0),
-        );
+        mark(tree, self.islands[2], None);
         mark(tree, self.islands[3], None);
 
         enum Slot {
@@ -1697,16 +1682,10 @@ impl Bar {
             }],
         );
         running |= self.workspaces.tick(&mut self.tree, now);
-        running |= self.title.advance(now);
         running |= self.resources.tick(&mut self.tree, now);
         running |= self.clock.rect.tick(&mut self.tree, now);
         running |= self.clock.label.advance(now);
-        let media_x = (center(self.width, self.clock.width()) + self.clock.width()).round()
-            + PAD * 2.0
-            + GROUP;
-        running |= self
-            .media
-            .tick(&mut self.tree, now, media_x, center(self.height, 22.0));
+        running |= self.media.tick(&mut self.tree, now);
         running |= self.keyboard.rect.tick(&mut self.tree, now);
         for icon in &mut self.tray {
             running |= icon.tick(&mut self.tree, now);
@@ -1729,7 +1708,6 @@ impl Bar {
             origin_y: 3.0,
         }];
         self.layout();
-        self.title.apply(&mut self.tree);
         let tree = &mut self.tree;
         for chip in [
             &mut self.launcher,
@@ -1746,14 +1724,6 @@ impl Bar {
         }
         running
     }
-}
-
-fn title_text(model: &BarModel) -> String {
-    model
-        .title
-        .clone()
-        .filter(|title| !title.is_empty())
-        .unwrap_or_else(crate::decor::still_title)
 }
 
 fn keyboard_icon() -> String {

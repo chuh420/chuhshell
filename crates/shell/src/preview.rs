@@ -30,8 +30,6 @@ fn save(dir: &std::path::Path, name: &str, data: &[u8], width: u32, height: u32)
 
 fn bar_model() -> BarModel {
     BarModel {
-        title: Some("chuhshell — visual pass".into()),
-        title_key: "kitty".into(),
         workspaces: vec![1, 2, 3, 4, 5],
         occupied: vec![1, 3],
         active_workspace: 1,

@@ -11,12 +11,12 @@ on one 1920x1080 output it idles at about 32 MB RSS and under 0.1% CPU.
 chuhshell is in beta. I built it for my own desktop and then moved every personal path and tool into a config file. expect bugs.
 
 - Hyprland is my daily driver and the best tested.
-- niri and sway were only checked in a nested session: the shell starts, picks the compositor, draws the bar and follows workspaces and window titles. I have not used them for real work.
+- niri and sway were only checked in a nested session: the shell starts, picks the compositor, draws the bar and follows workspaces. I have not used them for real work.
 - I tested the NetworkManager backend against real NetworkManager 1.58 on virtual radios (see [development](#development)): open, WPA2, WPA3, mixed WPA2/WPA3 and hidden networks, wrong passwords, daemon restarts. I have not used it on real hardware yet.
 
 ## features
 
-- **bar**: one body split into groups by thin separators, with workspaces (kanji numerals for 1 to 10), the active window title, clock, the playing track, CPU and RAM rings, keyboard layout, Wi-Fi, VPN, Bluetooth, volume, battery and tray.
+- **bar**: one body split into groups by thin separators, with workspaces (kanji numerals for 1 to 10), the playing track, clock, CPU and RAM rings, keyboard layout, Wi-Fi, VPN, Bluetooth, volume, battery and tray.
 - **control center**: CPU, RAM and battery rings, network and Bluetooth tiles, switches for keep awake, do not disturb, the microphone and wallpaper colors, volume and brightness sliders, a media card, shortcuts to notifications, clipboard, screenshots, wallpapers, lock and the power menu.
 - **media**: any MPRIS player shows up in the bar and the control center with cover art, play, pause, next and previous.
 - **launcher**: a search box and a result list that slide down from the top of the screen, Unicode search over desktop entries, pinned and hidden apps, terminal entries in your terminal, every app in its own `app.slice` scope.
@@ -61,7 +61,7 @@ chuhshell is in beta. I built it for my own desktop and then moved every persona
 | compositor | Hyprland, niri, sway | `HYPRLAND_INSTANCE_SIGNATURE`, `NIRI_SOCKET` or `SWAYSOCK` |
 | Wi-Fi | iwd, NetworkManager (open, WEP, WPA2, WPA3, OWE, saved enterprise profiles) | the service that owns its name on the system bus; NetworkManager wins when both run |
 
-Hyprland shows a fixed number of workspaces plus any busy ones above it. niri and sway show their real workspace list. under another compositor the bar runs without workspaces and window titles.
+Hyprland shows a fixed number of workspaces plus any busy ones above it. niri and sway show their real workspace list. under another compositor the bar runs without workspaces.
 
 chuhshell hides a chip or panel when its service is missing: no UPower battery, no BlueZ adapter, no Wi-Fi service, no backlight or `brightnessctl`, no `cliphist`, no power-profiles-daemon, no matugen, no `protonvpn`. each missing tool gets one line in the log.
 

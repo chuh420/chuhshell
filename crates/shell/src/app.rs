@@ -444,11 +444,6 @@ impl App {
                     .map(|w| w.id)
                     .collect();
                 self.model.active_workspace = state.active_workspace.unwrap_or(1);
-                self.model.title = state.active_window.as_ref().map(|w| w.title.clone());
-                self.model.title_key = state
-                    .active_window
-                    .as_ref()
-                    .map_or_else(|| "none".to_string(), |w| w.address.clone());
                 self.state.focused_monitor = state.focused_output;
                 self.update_live_pause();
             }

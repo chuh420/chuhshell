@@ -37,8 +37,6 @@ impl Availability {
 
 pub struct BarModel {
     pub panel: String,
-    pub title: Option<String>,
-    pub title_key: String,
     pub workspaces: Vec<i32>,
     pub occupied: Vec<i32>,
     pub active_workspace: i32,
@@ -71,8 +69,6 @@ impl Default for BarModel {
     fn default() -> Self {
         Self {
             panel: String::new(),
-            title: None,
-            title_key: "none".into(),
             workspaces: Vec::new(),
             occupied: Vec::new(),
             active_workspace: 1,
