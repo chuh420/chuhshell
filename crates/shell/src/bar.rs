@@ -27,7 +27,7 @@ const SLOT: f32 = 25.0;
 const PAD: f32 = 3.0;
 const GROUP: f32 = 5.0;
 const EDGE: f32 = 3.0;
-const WELL: f32 = 22.0;
+const MARK: f32 = 14.0;
 const GAP: f32 = 3.0;
 const ICON: f32 = 13.0;
 const BIG_ICON: f32 = 15.0;
@@ -904,7 +904,7 @@ impl Bar {
             0.0,
             body_width,
             body_height,
-            RectPaint::solid(theme::bg(), 10.0).bordered(theme::line(), 1.0),
+            RectPaint::solid(theme::bg(), 10.0),
         );
         body.scale = crate::theme::scale();
         body.origin = Some((0.0, 0.0));
@@ -917,9 +917,12 @@ impl Bar {
                 Node::rect(
                     0.0,
                     0.0,
-                    0.0,
-                    body_height,
-                    RectPaint::solid(theme::dim(), 8.0),
+                    1.0,
+                    MARK,
+                    RectPaint {
+                        color: theme::line(),
+                        ..RectPaint::default()
+                    },
                 ),
             )
         });
@@ -1504,15 +1507,17 @@ impl Bar {
     fn layout(&mut self) {
         let tree = &mut self.tree;
         let height = self.height;
-        let island = |tree: &mut Tree, node: NodeId, from: f32, to: f32| {
-            tree.set_visible(node, to > from);
-            tree.set_pos(node, from.round(), center(height, WELL));
-            tree.set_size(node, (to - from).round().max(0.0), WELL);
+        let mark = |tree: &mut Tree, node: NodeId, x: Option<f32>| {
+            tree.set_visible(node, x.is_some());
+            if let Some(x) = x {
+                tree.set_pos(node, x.round(), center(height, MARK));
+                tree.set_size(node, 1.0, MARK);
+            }
         };
         let title_width = self.title.implicit_width();
         let left_items = [
             Item::new(self.launcher.implicit_width(), 22.0),
-            Item::new(self.workspaces.implicit_width(), 22.0).margins(2.0, 0.0),
+            Item::new(self.workspaces.implicit_width(), 22.0).margins(PAD + GROUP, 0.0),
             Item::preferred(title_width, 16.0).margins(PAD + GROUP + 11.0, 0.0),
         ];
         let left = row_layout(&left_items, 2.0);
@@ -1526,24 +1531,28 @@ impl Bar {
         tree.set_size(self.workspaces.root, left_items[1].layout_width(), 22.0);
         tree.set_size(self.workspaces.row, left_items[1].layout_width(), 22.0);
         self.title.place(tree, p[2].0, p[2].1, title_width, 16.0);
+        let launcher_end = EDGE + PAD + p[0].0 + left_items[0].layout_width();
+        mark(
+            tree,
+            self.islands[0],
+            Some((launcher_end + EDGE + PAD + p[1].0) / 2.0),
+        );
         let workspaces_end = EDGE + PAD + p[1].0 + left_items[1].layout_width();
-        island(tree, self.islands[0], EDGE, workspaces_end + PAD);
-        island(
+        mark(
             tree,
             self.islands[1],
-            EDGE + PAD + p[2].0 - 11.0,
-            EDGE + PAD + p[2].0 + title_width + 11.0,
+            (title_width > 0.0).then_some((workspaces_end + EDGE + PAD + p[2].0) / 2.0),
         );
 
         let clock_width = self.clock.width();
         let clock_x = center(self.width, clock_width).round();
         self.clock.place(tree, clock_x, center(height, 22.0));
-        island(
+        mark(
             tree,
             self.islands[2],
-            clock_x - PAD,
-            clock_x + clock_width + PAD,
+            Some(clock_x + clock_width + PAD + GROUP / 2.0),
         );
+        mark(tree, self.islands[3], None);
 
         enum Slot {
             Tray(usize),
@@ -1619,13 +1628,15 @@ impl Bar {
                 Slot::Control => self.control.place(tree, x, y, width),
             }
         }
-        for (index, (from, to)) in groups.into_iter().enumerate() {
-            island(
+        let mut seen = false;
+        for (index, (from, _)) in groups.into_iter().enumerate() {
+            let present = from < f32::MAX;
+            mark(
                 tree,
                 self.islands[4 + index],
-                right_x + from - PAD,
-                right_x + to + PAD,
+                (present && seen).then_some(right_x + from - PAD - GROUP / 2.0),
             );
+            seen |= present;
         }
     }
 
@@ -1652,16 +1663,6 @@ impl Bar {
         running |= self
             .media
             .tick(&mut self.tree, now, media_x, center(self.height, 22.0));
-        let media_width = self.media.width();
-        let media_island = self.islands[3];
-        self.tree
-            .set_visible(media_island, self.media.opacity.value() > 0.0);
-        self.tree
-            .set_opacity(media_island, self.media.opacity.value());
-        self.tree
-            .set_pos(media_island, media_x - PAD, center(self.height, WELL));
-        self.tree
-            .set_size(media_island, media_width + PAD * 2.0, WELL);
         running |= self.keyboard.rect.tick(&mut self.tree, now);
         for icon in &mut self.tray {
             running |= icon.tick(&mut self.tree, now);

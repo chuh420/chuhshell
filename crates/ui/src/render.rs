@@ -13,6 +13,27 @@ use crate::{
 
 const MARGIN: i32 = 40;
 const FLAT: f32 = 1.0 / 4096.0;
+const CORNER_FLOOR: f32 = 4.0;
+
+static CORNERS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(f32::to_bits(1.0));
+
+pub fn set_corners(factor: f32) {
+    CORNERS.store(
+        factor.clamp(0.0, 1.0).to_bits(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+pub fn corners() -> f32 {
+    f32::from_bits(CORNERS.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+pub fn corner(radius: f32) -> f32 {
+    if radius <= CORNER_FLOOR {
+        return radius;
+    }
+    CORNER_FLOOR + (radius - CORNER_FLOOR) * corners()
+}
 
 pub struct Canvas {
     pixmap: Pixmap,
@@ -355,7 +376,7 @@ fn draw_ripple(
     if ripple.radius <= 0.0 || ripple.color.is_transparent() {
         return;
     }
-    let Some(shape) = rounded_rect(0.0, 0.0, width, height, ripple.corner) else {
+    let Some(shape) = rounded_rect(0.0, 0.0, width, height, corner(ripple.corner)) else {
         return;
     };
     let Some(mut mask) = blank_mask(pool, pixmap.width(), pixmap.height()) else {
@@ -667,6 +688,10 @@ fn draw_rect(
     opacity: f32,
     mask: Option<&Mask>,
 ) {
+    let rect = &RectPaint {
+        radius: corner(rect.radius),
+        ..*rect
+    };
     if let Some(shadow) = rect.shadow
         && !shadows.draw(
             pixmap, rect, shadow, width, height, transform, opacity, mask,

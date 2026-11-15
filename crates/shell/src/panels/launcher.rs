@@ -19,6 +19,9 @@ use super::{
 use crate::theme::{self, NORMAL};
 
 const ROW_HEIGHT: f32 = 56.0;
+const ISLAND_GAP: f32 = 12.0;
+const INSET: f32 = 26.0;
+const ISLAND_RADIUS: f32 = 22.0;
 const CACHE_BUFFER: f32 = 320.0;
 
 struct Row {
@@ -38,6 +41,8 @@ struct Row {
 
 pub struct LauncherPanel {
     pub root: NodeId,
+    card: NodeId,
+    inner: NodeId,
     eyebrow: Label,
     title: Label,
     close: Chip,
@@ -53,6 +58,12 @@ pub struct LauncherPanel {
     show_hidden: bool,
     restore: Option<(String, i32)>,
     icons: HashMap<String, AppIcon>,
+}
+
+fn island_paint() -> ui::RectPaint {
+    ui::RectPaint::solid(theme::bg(), ISLAND_RADIUS)
+        .bordered(theme::line(), 1.0)
+        .shadowed(theme::shadow(0.55), 30.0, 10.0)
 }
 
 fn private_use(c: char) -> bool {
@@ -89,9 +100,11 @@ impl LauncherPanel {
         now: Millis,
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
-        let eyebrow = eyebrow(tree, engine, root, "workspace / launch");
-        let title = label(tree, engine, root, "applications", 26.0, theme::text());
-        let close = chip(tree, input, engine, root, "×", theme::text(), false, None);
+        let card = tree.add(root, Node::rect(0.0, 0.0, 0.0, 0.0, island_paint()));
+        let inner = tree.add(root, Node::new(0.0, 0.0, 0.0, 0.0));
+        let eyebrow = eyebrow(tree, engine, inner, "workspace / launch");
+        let title = label(tree, engine, inner, "applications", 26.0, theme::text());
+        let close = chip(tree, input, engine, inner, "×", theme::text(), false, None);
         let search = SearchBox::new(
             tree,
             input,
@@ -102,13 +115,16 @@ impl LauncherPanel {
             true,
             now,
         );
+        tree.set_fill(search.rect, theme::bg());
+        tree.set_radius(search.rect, ISLAND_RADIUS);
+        tree.set_shadow(search.rect, island_paint().shadow);
         let style = PickStyle {
             resize: 0.0,
             intro_easing: Easing::OutCubic,
             scrollbar: false,
             hit_right_margin: 0.0,
         };
-        let list = PickList::new(tree, input, root, style, now);
+        let list = PickList::new(tree, input, inner, style, now);
         let empty = label(
             tree,
             engine,
@@ -117,9 +133,11 @@ impl LauncherPanel {
             12.0,
             theme::muted(),
         );
-        let footer = label(tree, engine, root, "", 10.0, theme::muted());
+        let footer = label(tree, engine, inner, "", 10.0, theme::muted());
         let mut panel = Self {
             root,
+            card,
+            inner,
             eyebrow,
             title,
             close,
@@ -306,6 +324,15 @@ impl LauncherPanel {
     }
 
     pub fn layout(&mut self, tree: &mut Tree, engine: &mut TextEngine, width: f32, height: f32) {
+        self.search.layout(tree, engine, 0.0, width);
+        let card_y = SEARCH_HEIGHT + ISLAND_GAP;
+        let card_h = (height - card_y).max(0.0);
+        tree.set_pos(self.card, 0.0, card_y);
+        tree.set_size(self.card, width, card_h);
+        let width = (width - INSET * 2.0).max(0.0);
+        let height = (card_h - INSET * 2.0).max(0.0);
+        tree.set_pos(self.inner, INSET, card_y + INSET);
+        tree.set_size(self.inner, width, height);
         let eyebrow_h = self.eyebrow.implicit_height().ceil();
         let header_h = self
             .title
@@ -317,7 +344,6 @@ impl LauncherPanel {
             &[
                 Cell::implicit(eyebrow_h),
                 Cell::implicit(header_h),
-                Cell::layout(SEARCH_HEIGHT),
                 Cell::fill(0.0),
                 Cell::implicit(footer_h),
             ],
@@ -342,15 +368,14 @@ impl LauncherPanel {
             columns[0].size,
         );
         place_chip(tree, &mut self.close, columns[1].pos, slots[1]);
-        self.search.layout(tree, engine, slots[2].pos, width);
-        let list = slots[3];
+        let list = slots[2];
         self.list.layout(tree, list.pos, width, list.size);
         let ew = self.empty.implicit_width();
         let eh = self.empty.implicit_height().ceil();
         self.empty
             .place(tree, (width - ew) / 2.0, (list.size - eh) / 2.0, ew, eh);
         let fw = self.footer.implicit_width();
-        place_label(tree, &mut self.footer, 0.0, slots[4], fw);
+        place_label(tree, &mut self.footer, 0.0, slots[3], fw);
         self.layout_rows(tree);
     }
 

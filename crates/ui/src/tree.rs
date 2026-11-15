@@ -472,6 +472,16 @@ impl Tree {
         });
     }
 
+    pub fn set_shadow(&mut self, id: NodeId, shadow: Option<Shadow>) {
+        self.update(id, |node| match &mut node.paint {
+            Paint::Rect(rect) if rect.shadow != shadow => {
+                rect.shadow = shadow;
+                true
+            }
+            _ => false,
+        });
+    }
+
     pub fn set_radius(&mut self, id: NodeId, radius: f32) {
         self.update(id, |node| match &mut node.paint {
             Paint::Rect(rect) if rect.radius != radius => {
