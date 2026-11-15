@@ -3,6 +3,8 @@
 
 [general]
 scale = 1.22
+# corner rounding: 1.0 keeps the full radius, 0.0 leaves 4 px corners
+corners = 0.35
 # terminal = "kitty"
 clock_format = "%a, %-d %b  ·  %H:%M"
 # wallpapers_dir = "~/Pictures/Wallpapers"

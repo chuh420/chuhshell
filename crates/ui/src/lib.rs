@@ -14,7 +14,7 @@ pub mod widgets;
 
 pub use color::Color;
 pub use image::render_svg_into;
-pub use render::{Canvas, rounded_rect};
+pub use render::{Canvas, corner, corners, rounded_rect, set_corners};
 pub use resvg::usvg::Tree as SvgTree;
 pub use text::{Span, TextEngine, TextMetrics, TextSpec, Weight};
 pub use tiny_skia;

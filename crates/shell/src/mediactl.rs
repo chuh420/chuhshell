@@ -64,7 +64,7 @@ impl App {
             if let Some(path) = track.as_ref().and_then(Track::art_path) {
                 let sender = self.events.clone();
                 let size = (ART * crate::theme::scale()).round() as u32;
-                let radius = 11.0 * crate::theme::scale();
+                let radius = ui::corner(11.0) * crate::theme::scale();
                 std::thread::spawn(move || {
                     let art = icons::load_cover(&path, size, size)
                         .and_then(|cover| icons::rounded(&cover, radius));

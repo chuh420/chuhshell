@@ -147,6 +147,7 @@ fn dump() {
     let Some(dir) = target() else {
         return;
     };
+    crate::theme::apply_config(&config::current());
     let mut engine = TextEngine::new(&font_families());
     let scale = crate::theme::scale();
     let (width, height) = (1896u32, (28.0 * scale).ceil() as u32);

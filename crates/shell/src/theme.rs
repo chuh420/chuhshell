@@ -82,6 +82,7 @@ pub fn apply_config(config: &config::Config) -> Changes {
     if scale_changed {
         ui::widgets::set_ui_scale(scale);
     }
+    ui::set_corners(config.general.corners);
     let current = fonts();
     let next = Fonts {
         ui: intern(&config.fonts.ui, current.ui),

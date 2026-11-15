@@ -22,6 +22,7 @@ pub struct Config {
 #[serde(default, deny_unknown_fields)]
 pub struct General {
     pub scale: f32,
+    pub corners: f32,
     pub terminal: Option<String>,
     pub clock_format: String,
     pub wallpapers_dir: Option<PathBuf>,
@@ -31,6 +32,7 @@ impl Default for General {
     fn default() -> Self {
         Self {
             scale: 1.22,
+            corners: 0.35,
             terminal: None,
             clock_format: DEFAULT_CLOCK.into(),
             wallpapers_dir: None,
@@ -205,6 +207,10 @@ impl Config {
         let scale = self.general.scale;
         if !(0.5..=4.0).contains(&scale) {
             errors.push(format!("general.scale: {scale} is outside 0.5..4"));
+        }
+        let corners = self.general.corners;
+        if !(0.0..=1.0).contains(&corners) {
+            errors.push(format!("general.corners: {corners} is outside 0..1"));
         }
         if self.general.clock_format.trim().is_empty() {
             errors.push("general.clock_format: empty".into());

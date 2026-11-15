@@ -43,6 +43,8 @@ const MODULE: [&str; 8] = [
     "notifications",
 ];
 
+const SPLIT: [&str; 1] = ["launcher"];
+const DROP_MS: Millis = 420.0;
 const MARGIN: f32 = 60.0;
 const MEDIA_EXTRA: f64 = 100.0;
 const SEED: f32 = 56.0;
@@ -56,6 +58,14 @@ const DIM_DEFAULT: Color = Color {
     a: 0x60 as f32 / 255.0,
     ..DIM_ANCHORED
 };
+
+fn card_shadow() -> ui::Shadow {
+    ui::Shadow {
+        color: theme::shadow(0.55),
+        blur: 30.0,
+        offset: 10.0,
+    }
+}
 
 pub fn panel_width(p: &str, available: f64) -> f64 {
     match p {
@@ -236,9 +246,10 @@ impl Overlay {
             0.0,
             0.0,
             0.0,
-            RectPaint::solid(theme::bg(), 22.0)
-                .bordered(theme::line(), 1.0)
-                .shadowed(theme::shadow(0.55), 30.0, 10.0),
+            RectPaint {
+                shadow: Some(card_shadow()),
+                ..RectPaint::solid(theme::bg(), 22.0).bordered(theme::line(), 1.0)
+            },
         );
         card_node.scale = crate::theme::scale();
         card_node.origin = Some((0.0, 0.0));
@@ -360,6 +371,11 @@ impl Overlay {
             }
             self.displayed = panel.to_string();
             let from = self.reveal;
+            self.open = if SPLIT.contains(&panel) {
+                Tween::new(from, DROP_MS, Easing::OutQuint)
+            } else {
+                Tween::new(from, 520.0, Easing::SPATIAL)
+            };
             self.open.start(now, from, 1.0);
             self.phase = Reveal::Opening;
         } else {
@@ -830,8 +846,20 @@ impl Overlay {
         let scale = crate::theme::scale();
         let anchored = ANCHORED.contains(&kind.as_str()) && self.anchor > 0.0;
         let centered = CENTERED.contains(&kind.as_str());
+        let split = SPLIT.contains(&kind.as_str());
         let settled = (r - 1.0).abs() < 0.0005;
-        let (gx, gy, gw, gh, transforms) = if centered {
+        let (gx, gy, gw, gh, transforms) = if split {
+            (
+                x,
+                y,
+                w,
+                h,
+                vec![TransformOp::Translate {
+                    x: 0.0,
+                    y: -(y / scale + h + 16.0) * (1.0 - r),
+                }],
+            )
+        } else if centered {
             let zoom = 0.88 + 0.12 * r;
             (
                 x,
@@ -869,9 +897,20 @@ impl Overlay {
         tree.set_opacity(self.card, (r * 3.0).clamp(0.0, 1.0));
         tree.set_transforms(self.card, &transforms);
         tree.set_radius(self.card, self.radius.value());
+        if split {
+            tree.set_fill(self.card, Color::TRANSPARENT);
+            tree.set_border(self.card, Color::TRANSPARENT, 0.0);
+            tree.set_shadow(self.card, None);
+        } else {
+            tree.set_fill(self.card, theme::bg());
+            tree.set_border(self.card, theme::line(), 1.0);
+            tree.set_shadow(self.card, Some(card_shadow()));
+        }
         let shift = (gx - x) / scale;
         let module = MODULE.contains(&self.content_panel.as_str());
-        let margin = if module {
+        let margin = if split {
+            0.0
+        } else if module {
             24.0
         } else if self.content_panel == "launcher" || self.content_panel == "clipboard" {
             32.0
