@@ -5,7 +5,7 @@ pkgrel=1
 pkgdesc='A Wayland desktop shell for Hyprland, niri and sway'
 arch=('x86_64' 'aarch64')
 url='https://github.com/chuh420/chuhshell'
-license=('MIT OR Apache-2.0')
+license=('MIT OR Apache-2.0' 'OFL-1.1')
 depends=('gcc-libs' 'glibc' 'libpipewire' 'libxkbcommon' 'ttf-font' 'wireplumber')
 makedepends=('cargo' 'clang' 'git')
 optdepends=(
@@ -69,5 +69,6 @@ package() {
     install -Dm644 /dev/stdin "$pkgdir/usr/lib/systemd/user/chuhshell.service"
   install -Dm644 LICENSE-MIT "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
   install -Dm644 LICENSE-APACHE "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+  install -Dm644 crates/shell/assets/decor-font-license.txt "$pkgdir/usr/share/licenses/$pkgname/OFL-1.1"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
 }

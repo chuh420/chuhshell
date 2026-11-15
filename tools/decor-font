@@ -4,9 +4,10 @@ set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 source=${1:-/usr/share/fonts/noto-cjk/NotoSansCJK-Medium.ttc}
 out=$root/crates/shell/assets/decor.otf
-text=$(command grep -oP '[\x{3000}-\x{30ff}\x{3400}-\x{9fff}]' "$root/crates/shell/src/decor.rs" | sort -u | tr -d '\n')
+text=$(sed -n '/#\[cfg(test)\]/q;p' "$root/crates/shell/src/decor.rs" | command grep -oP '[^\x00-\x7f]' | sort -u | tr -d '\n')
 
 [ -n "$text" ] || { echo "no kanji found in decor.rs" >&2; exit 1; }
+[ -f "$source" ] || { echo "source font $source missing: pacman -S noto-fonts-cjk or pass a font path as the first argument" >&2; exit 1; }
 command -v pyftsubset >/dev/null || { echo "pyftsubset missing: pacman -S python-fonttools" >&2; exit 1; }
 
 tmp=$(mktemp -d)
@@ -15,11 +16,14 @@ trap 'rm -rf "$tmp"' EXIT
 pyftsubset "$source" --font-number=0 --text="$text" --no-hinting --desubroutinize \
     --layout-features='' --name-IDs='0,13,14' --output-file="$tmp/subset.otf"
 
-python -I - "$tmp/subset.otf" "$out" <<'EOF'
+python -I - "$tmp/subset.otf" "$out" "$text" <<'EOF'
 import sys
 from fontTools.ttLib import TTFont
 
 font = TTFont(sys.argv[1])
+missing = "".join(c for c in sys.argv[3] if ord(c) not in font.getBestCmap())
+if missing:
+    sys.exit(f"the source font has no glyphs for: {missing}")
 names = font["name"]
 for record in list(names.names):
     if record.nameID in (16, 17):

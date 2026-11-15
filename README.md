@@ -16,7 +16,7 @@ chuhshell is in beta. I built it for my own desktop and then moved every persona
 
 ## features
 
-- **bar**: one body split into groups by thin separators, with workspaces as kanji numerals, the active window title, clock, the playing track, CPU and RAM rings, keyboard layout, Wi-Fi, VPN, Bluetooth, volume, battery and tray.
+- **bar**: one body split into groups by thin separators, with workspaces (kanji numerals for 1 to 10), the active window title, clock, the playing track, CPU and RAM rings, keyboard layout, Wi-Fi, VPN, Bluetooth, volume, battery and tray.
 - **control center**: CPU, RAM and battery rings, network and Bluetooth tiles, switches for keep awake, do not disturb, the microphone and wallpaper colors, volume and brightness sliders, a media card, shortcuts to notifications, clipboard, screenshots, wallpapers, lock and the power menu.
 - **media**: any MPRIS player shows up in the bar and the control center with cover art, play, pause, next and previous.
 - **launcher**: a search box and a result list that slide down from the top of the screen, Unicode search over desktop entries, pinned and hidden apps, terminal entries in your terminal, every app in its own `app.slice` scope.
@@ -133,7 +133,7 @@ chuhshell config path      # print where the shell looks
 ```toml
 [general]
 scale = 1.22                       # ui scale, 0.5 to 4
-corners = 0.35                     # corner rounding, 0 (4 px corners) to 1 (full radius)
+corners = 0.35                     # corner rounding, 0 (radii above 4 px shrink to 4 px) to 1 (full radius)
 terminal = "foot"                  # default: $TERMINAL, xdg-terminal-exec, then kitty, foot, alacritty, wezterm, ghostty
 clock_format = "%a, %-d %b  ·  %H:%M"
 wallpapers_dir = "~/Pictures/Wallpapers"   # default: XDG_PICTURES_DIR/Wallpapers
@@ -254,7 +254,7 @@ CHUHSHELL_PREVIEW_DIR=/tmp/preview cargo test -p shell dump -- --ignored
 
 `CHUHSHELL_PREVIEW_PANELS=control,calendar` picks the panels and `CHUHSHELL_PREVIEW_UNTIL=200` stops the clock at 200 ms to catch a frame of the open animation.
 
-the kanji decor font is a subset of Noto Sans CJK JP in `crates/shell/assets/decor.otf`. after adding a word to `crates/shell/src/decor.rs`, rebuild the subset with `tools/decor-font` (needs `pyftsubset` from python-fonttools).
+the kanji decor font is a subset of Noto Sans CJK JP in `crates/shell/assets/decor.otf`. after adding a word to `crates/shell/src/decor.rs`, rebuild the subset with `tools/decor-font`. it needs python-fonttools and reads `NotoSansCJK-Medium.ttc` from noto-fonts-cjk; pass another source font as the first argument. the script takes every non-ASCII character outside the tests in `decor.rs` and stops when the source font lacks one. add the new word to `all_text()` too, so `cargo test` checks the embedded font.
 
 `tools/netlab` builds a Wi-Fi lab out of `mac80211_hwsim` radios: hostapd serves `lab-open`, `lab-wpa2`, `lab-sae`, `lab-mixed`, `lab-hidden` and `lab-hidden-open` in one network namespace, and NetworkManager or iwd runs in another with its own system bus. your own Wi-Fi keeps working, and only the user who started the lab can reach its bus. it needs root, `hostapd`, `dnsmasq`, `networkmanager` and `iwd`.
 

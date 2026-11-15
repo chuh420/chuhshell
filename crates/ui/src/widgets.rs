@@ -891,6 +891,7 @@ pub struct SwapText {
     family: &'static str,
     pixel_size: f32,
     color: Color,
+    split: SpanSplit,
     pub max_width: f32,
     distance: f32,
     text: String,
@@ -909,6 +910,28 @@ pub struct SwapText {
     current_offset: Tween<f32>,
     width: f32,
     height: f32,
+}
+
+pub type SpanSplit = fn(&str, &'static str, f32) -> Vec<Span>;
+
+pub fn plain_spans(text: &str, family: &'static str, size: f32) -> Vec<Span> {
+    vec![Span::new(text, family, size)]
+}
+
+fn swap_spec(
+    split: SpanSplit,
+    text: &str,
+    family: &'static str,
+    size: f32,
+    color: Color,
+) -> TextSpec {
+    TextSpec {
+        spans: split(text, family, size),
+        color,
+        elide_width: None,
+        wrap_width: None,
+        max_lines: None,
+    }
 }
 
 impl SwapText {
@@ -953,6 +976,7 @@ impl SwapText {
             family,
             pixel_size,
             color,
+            split: plain_spans,
             max_width,
             distance: 7.0,
             text: text.to_string(),
@@ -986,6 +1010,26 @@ impl SwapText {
         self.distance = distance;
     }
 
+    pub fn set_split(&mut self, engine: &mut TextEngine, split: SpanSplit) {
+        self.split = split;
+        self.current_metrics = engine.measure(
+            &swap_spec(split, &self.shown, self.family, self.pixel_size, self.color),
+            1.0,
+        );
+        self.previous_metrics = engine.measure(
+            &swap_spec(
+                split,
+                &self.previous_text,
+                self.family,
+                self.pixel_size,
+                self.color,
+            ),
+            1.0,
+        );
+        let target = self.max_width.min(self.current_metrics.width);
+        self.implicit_width.jump(target);
+    }
+
     pub fn set_font(&mut self, engine: &mut TextEngine, family: &'static str, pixel_size: f32) {
         if self.family == family && self.pixel_size == pixel_size {
             return;
@@ -993,7 +1037,10 @@ impl SwapText {
         self.family = family;
         self.pixel_size = pixel_size;
         let measure = |engine: &mut TextEngine, text: &str| {
-            engine.measure(&TextSpec::plain(text, family, pixel_size, self.color), 1.0)
+            engine.measure(
+                &swap_spec(self.split, text, family, pixel_size, self.color),
+                1.0,
+            )
         };
         self.current_metrics = measure(engine, &self.shown);
         self.previous_metrics = measure(engine, &self.previous_text);
@@ -1035,7 +1082,7 @@ impl SwapText {
         }
         let measure = |engine: &mut TextEngine, text: &str| {
             engine.measure(
-                &TextSpec::plain(text, self.family, self.pixel_size, self.color),
+                &swap_spec(self.split, text, self.family, self.pixel_size, self.color),
                 1.0,
             )
         };
@@ -1076,7 +1123,7 @@ impl SwapText {
     pub fn apply(&self, tree: &mut Tree) {
         let width = self.width;
         let spec = |text: &str| TextSpec {
-            spans: vec![Span::new(text, self.family, self.pixel_size)],
+            spans: (self.split)(text, self.family, self.pixel_size),
             color: self.color,
             elide_width: Some(width),
             wrap_width: None,

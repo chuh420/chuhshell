@@ -966,7 +966,7 @@ impl Bar {
         let workspaces = Workspaces::new(&mut tree, left_row);
         let max_width = 70.0f32.max(body_width * 0.16);
         let title_text = title_text(model);
-        let title = SwapText::new(
+        let mut title = SwapText::new(
             &mut tree,
             engine,
             left_row,
@@ -977,6 +977,7 @@ impl Bar {
             theme::muted(),
             max_width,
         );
+        title.set_split(engine, crate::decor::title_spans);
         let clock = Clock::new(&mut tree, &mut input, engine, body, &model.clock);
         let media = MediaChip::new(&mut tree, &mut input, engine, body);
         let right_row = tree.add(body, Node::new(0.0, 0.0, 0.0, 22.0));
@@ -1752,7 +1753,7 @@ fn title_text(model: &BarModel) -> String {
         .title
         .clone()
         .filter(|title| !title.is_empty())
-        .unwrap_or_else(|| format!("{}  |  still", crate::decor::STILL))
+        .unwrap_or_else(crate::decor::still_title)
 }
 
 fn keyboard_icon() -> String {
