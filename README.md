@@ -16,10 +16,10 @@ chuhshell is in beta. I built it for my own desktop and then moved every persona
 
 ## features
 
-- **bar**: workspaces, active window title, clock, the playing track, CPU and RAM rings, keyboard layout, Wi-Fi, VPN, Bluetooth, volume, battery and tray.
+- **bar**: one body split into groups by thin separators, with workspaces as kanji numerals, the active window title, clock, the playing track, CPU and RAM rings, keyboard layout, Wi-Fi, VPN, Bluetooth, volume, battery and tray.
 - **control center**: CPU, RAM and battery rings, network and Bluetooth tiles, switches for keep awake, do not disturb, the microphone and wallpaper colors, volume and brightness sliders, a media card, shortcuts to notifications, clipboard, screenshots, wallpapers, lock and the power menu.
 - **media**: any MPRIS player shows up in the bar and the control center with cover art, play, pause, next and previous.
-- **launcher**: Unicode search over desktop entries, pinned and hidden apps, terminal entries in your terminal, every app in its own `app.slice` scope.
+- **launcher**: a search box and a result list that slide down from the top of the screen, Unicode search over desktop entries, pinned and hidden apps, terminal entries in your terminal, every app in its own `app.slice` scope.
 - **notifications**: a full `org.freedesktop.Notifications` server with actions, images, markup, history and do not disturb.
 - **tray**: StatusNotifierItem host with dbusmenu submenus.
 - **Wi-Fi and Bluetooth**: iwd or NetworkManager, and BlueZ, with scan, connect, forget, a password agent and pairing prompts.
@@ -31,6 +31,7 @@ chuhshell is in beta. I built it for my own desktop and then moved every persona
 - **themes**: a panel with nine built-in palettes (including the shell's own ember, lavender and glacier), wallpaper colors and their matugen scheme, per-color overrides, and app color files rendered from your matugen templates for static palettes too.
 - **cursors**: a cursor theme picker in the themes panel that can recolor themes to the current palette.
 - **calendar**, **power menu** and a **system** panel with cores, temperatures, disk, load and top processes.
+- **look**: thin corners by default (`general.corners`) and Japanese words next to the panel titles and calendar weekdays as decoration. the kanji come from an embedded Noto Sans CJK JP subset, so no CJK font is needed.
 - **motion**: panels grow out of their bar chip, content and lists cascade in, clicks send a ripple from the pointer. the curves are the Material 3 expressive set.
 
 ## screenshots
@@ -39,6 +40,9 @@ chuhshell is in beta. I built it for my own desktop and then moved every persona
   <tr>
     <td><img src="docs/screenshots/launcher.webp" alt="launcher"></td>
     <td><img src="docs/screenshots/wallpapers.webp" alt="wallpapers"></td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="docs/screenshots/themes.webp" alt="themes"></td>
   </tr>
   <tr>
     <td><img src="docs/screenshots/calendar.webp" alt="calendar"></td>
@@ -129,6 +133,7 @@ chuhshell config path      # print where the shell looks
 ```toml
 [general]
 scale = 1.22                       # ui scale, 0.5 to 4
+corners = 0.35                     # corner rounding, 0 (4 px corners) to 1 (full radius)
 terminal = "foot"                  # default: $TERMINAL, xdg-terminal-exec, then kitty, foot, alacritty, wezterm, ghostty
 clock_format = "%a, %-d %b  ·  %H:%M"
 wallpapers_dir = "~/Pictures/Wallpapers"   # default: XDG_PICTURES_DIR/Wallpapers
@@ -249,6 +254,8 @@ CHUHSHELL_PREVIEW_DIR=/tmp/preview cargo test -p shell dump -- --ignored
 
 `CHUHSHELL_PREVIEW_PANELS=control,calendar` picks the panels and `CHUHSHELL_PREVIEW_UNTIL=200` stops the clock at 200 ms to catch a frame of the open animation.
 
+the kanji decor font is a subset of Noto Sans CJK JP in `crates/shell/assets/decor.otf`. after adding a word to `crates/shell/src/decor.rs`, rebuild the subset with `tools/decor-font` (needs `pyftsubset` from python-fonttools).
+
 `tools/netlab` builds a Wi-Fi lab out of `mac80211_hwsim` radios: hostapd serves `lab-open`, `lab-wpa2`, `lab-sae`, `lab-mixed`, `lab-hidden` and `lab-hidden-open` in one network namespace, and NetworkManager or iwd runs in another with its own system bus. your own Wi-Fi keeps working, and only the user who started the lab can reach its bus. it needs root, `hostapd`, `dnsmasq`, `networkmanager` and `iwd`.
 
 ```sh
@@ -264,3 +271,5 @@ to see the lab in the shell, start it with `CHUHSHELL_NETWORK_BUS=unix:path=/run
 ## license
 
 licensed under either of [Apache License 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT) at your option.
+
+the embedded decor font is a subset of Noto Sans CJK JP under the SIL Open Font License 1.1, see [decor-font-license.txt](crates/shell/assets/decor-font-license.txt).
