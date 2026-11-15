@@ -11,11 +11,30 @@ pub fn is_icon(c: char) -> bool {
     (0xe000..=0xffff).contains(&(c as u32))
 }
 
+pub fn is_any_icon(c: char) -> bool {
+    is_icon(c) || (0xf0000..=0x10ffff).contains(&(c as u32))
+}
+
 pub fn chip_spans(label: &str, family: &str, font_size: f32, icon_size: f32) -> Vec<Span> {
+    icon_spans(label, family, font_size, icon_size, false)
+}
+
+pub fn icon_spans(
+    label: &str,
+    family: &str,
+    font_size: f32,
+    icon_size: f32,
+    supplementary: bool,
+) -> Vec<Span> {
     let text = collapse_whitespace(label);
     let mut spans: Vec<Span> = Vec::new();
     for c in text.chars() {
-        let size = if is_icon(c) { icon_size } else { font_size };
+        let icon = if supplementary {
+            is_any_icon(c)
+        } else {
+            is_icon(c)
+        };
+        let size = if icon { icon_size } else { font_size };
         match spans.last_mut() {
             Some(span) if span.size == size => span.text.push(c),
             _ => spans.push(Span::new(c.to_string(), family, size)),
@@ -226,6 +245,16 @@ mod tests {
         let spans = chip_spans("\u{f0079} 100%", "Mono", 11.0, 13.0);
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].size, 11.0);
+    }
+
+    #[test]
+    fn supplementary_icons_get_icon_size_when_asked() {
+        let spans = icon_spans("\u{f0079} 100%", "Mono", 11.0, 16.0, true);
+        let sizes: Vec<(String, f32)> = spans.into_iter().map(|s| (s.text, s.size)).collect();
+        assert_eq!(
+            sizes,
+            vec![("\u{f0079}".to_string(), 16.0), (" 100%".to_string(), 11.0)]
+        );
     }
 
     #[test]

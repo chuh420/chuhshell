@@ -3,7 +3,7 @@ use crate::{
     anim::{Easing, Millis, Tween},
     input::{AreaId, Buttons, Input, MouseArea},
     layout::center,
-    rich::chip_spans,
+    rich::{icon_spans, is_any_icon, is_icon},
     text::{Span, TextMetrics},
 };
 
@@ -118,6 +118,8 @@ pub struct ChipStyle {
     pub rest: Color,
 }
 
+const LEAD_GAP: f32 = 5.0;
+
 pub struct Chip {
     pub root: NodeId,
     text: NodeId,
@@ -129,6 +131,10 @@ pub struct Chip {
     pub compact: bool,
     font_size: f32,
     icon_size: f32,
+    supplementary: bool,
+    nudge: f32,
+    lead: Option<NodeId>,
+    lead_metrics: TextMetrics,
     fixed_width: Option<f32>,
     metrics: TextMetrics,
     width: f32,
@@ -178,7 +184,7 @@ impl Chip {
             ),
         );
         let spec = TextSpec {
-            spans: chip_spans(label, style.family, font_size, icon_size),
+            spans: icon_spans(label, style.family, font_size, icon_size, false),
             color: ink,
             elide_width: None,
             wrap_width: None,
@@ -206,6 +212,10 @@ impl Chip {
             compact,
             font_size,
             icon_size,
+            supplementary: false,
+            nudge: 0.0,
+            lead: None,
+            lead_metrics: TextMetrics::default(),
             fixed_width: None,
             metrics,
             width: 0.0,
@@ -229,8 +239,9 @@ impl Chip {
     }
 
     pub fn implicit_width(&self) -> f32 {
-        self.fixed_width
-            .unwrap_or(self.metrics.width + if self.compact { 16.0 } else { 24.0 })
+        self.fixed_width.unwrap_or(
+            self.metrics.width + self.lead_width() + if self.compact { 16.0 } else { 24.0 },
+        )
     }
 
     pub fn implicit_height(&self) -> f32 {
@@ -245,9 +256,72 @@ impl Chip {
         self.fixed_width = width;
     }
 
+    fn lead_width(&self) -> f32 {
+        if self.lead.is_some() && self.lead_metrics.width > 0.0 {
+            self.lead_metrics.width + LEAD_GAP
+        } else {
+            0.0
+        }
+    }
+
+    fn parts(&self) -> (&str, &str) {
+        if self.lead.is_none() {
+            return ("", &self.label);
+        }
+        let label = self.label.trim_start();
+        let end = label
+            .char_indices()
+            .find(|&(_, c)| {
+                if self.supplementary {
+                    !is_any_icon(c)
+                } else {
+                    !is_icon(c)
+                }
+            })
+            .map_or(label.len(), |(index, _)| index);
+        (&label[..end], label[end..].trim_start())
+    }
+
     fn spec(&self) -> TextSpec {
+        self.spec_for(self.parts().1)
+    }
+
+    fn lead_spec(&self) -> TextSpec {
+        self.spec_for(self.parts().0)
+    }
+
+    fn measure(&mut self, engine: &mut TextEngine) {
+        self.metrics = engine.measure(&self.spec(), 1.0);
+        self.lead_metrics = if self.lead.is_some() {
+            engine.measure(&self.lead_spec(), 1.0)
+        } else {
+            TextMetrics::default()
+        };
+    }
+
+    pub fn split_icon(&mut self, tree: &mut Tree, engine: &mut TextEngine) {
+        if self.lead.is_some() {
+            return;
+        }
+        self.lead = Some(tree.add(self.root, Node::new(0.0, 0.0, 0.0, 0.0)));
+        self.measure(engine);
+        if let Some(lead) = self.lead
+            && let Some(node) = tree.get_mut(lead)
+        {
+            node.paint = Paint::Text(TextPaint::new(self.lead_spec()));
+        }
+        self.width = self.implicit_width();
+    }
+
+    fn spec_for(&self, text: &str) -> TextSpec {
         TextSpec {
-            spans: chip_spans(&self.label, self.family, self.font_size, self.icon_size),
+            spans: icon_spans(
+                text,
+                self.family,
+                self.font_size,
+                self.icon_size,
+                self.supplementary,
+            ),
             color: self.ink.value(),
             elide_width: None,
             wrap_width: None,
@@ -262,7 +336,7 @@ impl Chip {
         self.pending_pop = self.pop_on_change && self.placed && self.label != label;
         self.label = label.to_string();
         self.font_size = font_size;
-        self.metrics = engine.measure(&self.spec(), 1.0);
+        self.measure(engine);
     }
 
     pub fn set_font_size(&mut self, engine: &mut TextEngine, font_size: f32, icon_size: f32) {
@@ -271,7 +345,24 @@ impl Chip {
         }
         self.font_size = font_size;
         self.icon_size = icon_size;
-        self.metrics = engine.measure(&self.spec(), 1.0);
+        self.measure(engine);
+        self.width = self.implicit_width();
+    }
+
+    pub fn set_icon_style(
+        &mut self,
+        engine: &mut TextEngine,
+        icon_size: f32,
+        supplementary: bool,
+        nudge: f32,
+    ) {
+        self.nudge = nudge;
+        if self.icon_size == icon_size && self.supplementary == supplementary {
+            return;
+        }
+        self.icon_size = icon_size;
+        self.supplementary = supplementary;
+        self.measure(engine);
         self.width = self.implicit_width();
     }
 
@@ -292,10 +383,21 @@ impl Chip {
         self.width = width;
         tree.set_pos(self.root, x, y);
         tree.set_size(self.root, width, self.height);
+        let lead_width = self.lead_width();
+        let left = center(width, lead_width + self.metrics.width);
+        if let Some(lead) = self.lead {
+            tree.set_pos(
+                lead,
+                left,
+                center(self.height, self.lead_metrics.height) + self.nudge,
+            );
+            tree.set_size(lead, self.lead_metrics.width, self.lead_metrics.height);
+        }
+        let nudge = if self.lead.is_some() { 0.0 } else { self.nudge };
         tree.set_pos(
             self.text,
-            center(width, self.metrics.width),
-            center(self.height, self.metrics.height),
+            left + lead_width,
+            center(self.height, self.metrics.height) + nudge,
         );
         tree.set_size(self.text, self.metrics.width, self.metrics.height);
     }
@@ -347,6 +449,10 @@ impl Chip {
         tree.set_scale(self.text, self.pop.value());
         tree.set_transforms(self.root, &self.extra);
         tree.set_text(self.text, self.spec());
+        if let Some(lead) = self.lead {
+            tree.set_scale(lead, self.pop.value());
+            tree.set_text(lead, self.lead_spec());
+        }
         running
     }
 }

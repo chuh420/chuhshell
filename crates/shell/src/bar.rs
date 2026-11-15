@@ -29,8 +29,21 @@ const GROUP: f32 = 5.0;
 const EDGE: f32 = 3.0;
 const MARK: f32 = 14.0;
 const GAP: f32 = 3.0;
-const ICON: f32 = 13.0;
-const BIG_ICON: f32 = 15.0;
+const ICONS: [(f32, f32); 8] = [
+    (22.0, 1.0),
+    (21.0, 0.7),
+    (18.5, 1.5),
+    (14.0, 0.0),
+    (19.5, 0.7),
+    (22.0, 1.2),
+    (19.5, 0.7),
+    (22.0, 0.7),
+];
+const BATTERY_ICON: (f32, f32) = (14.0, 0.0);
+const CHARGING_ICON: (f32, f32) = (22.0, 0.8);
+const MEDIA_ICON: (f32, f32) = (19.0, 1.5);
+const KEYS_WIDTH: f32 = 17.0;
+const KEYS_HEIGHT: f32 = 12.75;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum BarAction {
@@ -71,20 +84,6 @@ fn chip(
     ink: Color,
     shortcut: &str,
 ) -> Chip {
-    sized_chip(tree, input, engine, parent, label, ink, shortcut, ICON)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn sized_chip(
-    tree: &mut Tree,
-    input: &mut Input,
-    engine: &mut TextEngine,
-    parent: NodeId,
-    label: &str,
-    ink: Color,
-    shortcut: &str,
-    icon_size: f32,
-) -> Chip {
     let mut chip = Chip::new(
         tree,
         input,
@@ -94,7 +93,7 @@ fn sized_chip(
         label,
         ink,
         true,
-        Some(icon_size),
+        Some(13.0),
     );
     chip.shortcut = shortcut.to_string();
     chip
@@ -661,7 +660,7 @@ fn media_icon(playing: bool, color: Color) -> TextSpec {
     TextSpec::plain(
         if playing { "󰎈" } else { "󰏤" },
         crate::theme::icons(),
-        13.0,
+        MEDIA_ICON.0,
         color,
     )
 }
@@ -679,7 +678,7 @@ impl MediaChip {
             rect.root,
             Node::new(
                 9.0,
-                center(22.0, metrics.height),
+                center(22.0, metrics.height) + MEDIA_ICON.1,
                 metrics.width,
                 metrics.height,
             )
@@ -815,7 +814,10 @@ impl Keyboard {
         label: &str,
     ) -> Self {
         let rect = HoverRect::new(tree, input, parent, 49.0, 0.94);
-        let layout = plain_row(&[Item::new(16.0, 12.0), Item::new(16.0, 14.0)], 5.0);
+        let layout = plain_row(
+            &[Item::new(KEYS_WIDTH, KEYS_HEIGHT), Item::new(16.0, 14.0)],
+            5.0,
+        );
         let row = tree.add(
             rect.root,
             Node::new(
@@ -828,8 +830,13 @@ impl Keyboard {
         if let Some(icon) = icon {
             tree.add(
                 row,
-                Node::new(0.0, center(layout.height, 12.0), 16.0, 12.0)
-                    .with_paint(Paint::Svg(SvgPaint::new(icon))),
+                Node::new(
+                    0.0,
+                    center(layout.height, KEYS_HEIGHT),
+                    KEYS_WIDTH,
+                    KEYS_HEIGHT,
+                )
+                .with_paint(Paint::Svg(SvgPaint::new(icon))),
             );
         }
         let mut label = SwapText::new(
@@ -843,7 +850,13 @@ impl Keyboard {
             theme::text(),
             100000.0,
         );
-        label.place(tree, 21.0, center(layout.height, 14.0), 16.0, 14.0);
+        label.place(
+            tree,
+            KEYS_WIDTH + 5.0,
+            center(layout.height, 14.0),
+            16.0,
+            14.0,
+        );
         Self { rect, label }
     }
 }
@@ -927,7 +940,7 @@ impl Bar {
             )
         });
         let left_row = tree.add(body, Node::new(5.0, 0.0, 0.0, 22.0));
-        let launcher = sized_chip(
+        let launcher = chip(
             &mut tree,
             &mut input,
             engine,
@@ -935,7 +948,6 @@ impl Bar {
             "󰣇",
             theme::green(),
             "Super + D",
-            BIG_ICON,
         );
         let left_separator = separator(&mut tree, left_row);
         let workspaces = Workspaces::new(&mut tree, left_row);
@@ -964,7 +976,7 @@ impl Bar {
             ui::image::svg_from_data(keyboard_icon().as_bytes(), "keyboard-bar.svg"),
             &model.keyboard_label,
         );
-        let network = sized_chip(
+        let network = chip(
             &mut tree,
             &mut input,
             engine,
@@ -972,9 +984,8 @@ impl Bar {
             network_icon(model),
             theme::green(),
             "",
-            BIG_ICON,
         );
-        let vpn = sized_chip(
+        let vpn = chip(
             &mut tree,
             &mut input,
             engine,
@@ -982,7 +993,6 @@ impl Bar {
             "󰒙",
             theme::muted(),
             "",
-            BIG_ICON,
         );
         let bluetooth = chip(
             &mut tree,
@@ -993,7 +1003,7 @@ impl Bar {
             theme::green(),
             "",
         );
-        let audio = sized_chip(
+        let audio = chip(
             &mut tree,
             &mut input,
             engine,
@@ -1001,9 +1011,8 @@ impl Bar {
             "󰕾",
             theme::text(),
             "XF86AudioRaiseVolume / XF86AudioLowerVolume / XF86AudioMute",
-            BIG_ICON,
         );
-        let battery = chip(
+        let mut battery = chip(
             &mut tree,
             &mut input,
             engine,
@@ -1012,6 +1021,7 @@ impl Bar {
             theme::text(),
             "",
         );
+        battery.split_icon(&mut tree, engine);
         let right_separator = separator(&mut tree, right_row);
         let paused = chip(
             &mut tree,
@@ -1022,7 +1032,7 @@ impl Bar {
             theme::yellow(),
             "hotkeys paused · Super + Escape",
         );
-        let bell = sized_chip(
+        let bell = chip(
             &mut tree,
             &mut input,
             engine,
@@ -1030,9 +1040,8 @@ impl Bar {
             "󰂚",
             theme::yellow(),
             "Super + N",
-            BIG_ICON,
         );
-        let control = sized_chip(
+        let control = chip(
             &mut tree,
             &mut input,
             engine,
@@ -1040,10 +1049,25 @@ impl Bar {
             "󰒓",
             theme::green(),
             "Super + Space",
-            BIG_ICON,
         );
         let (mut network, mut vpn, mut bluetooth, mut audio, mut bell) =
             (network, vpn, bluetooth, audio, bell);
+        let (mut launcher, mut paused, mut control) = (launcher, paused, control);
+        for (chip, (size, nudge)) in [
+            &mut launcher,
+            &mut network,
+            &mut vpn,
+            &mut bluetooth,
+            &mut audio,
+            &mut paused,
+            &mut bell,
+            &mut control,
+        ]
+        .into_iter()
+        .zip(ICONS)
+        {
+            chip.set_icon_style(engine, size, true, nudge);
+        }
         for chip in [
             &mut network,
             &mut vpn,
@@ -1225,6 +1249,12 @@ impl Bar {
         } else {
             theme::text()
         };
+        let (size, nudge) = if model.battery_plugged {
+            CHARGING_ICON
+        } else {
+            BATTERY_ICON
+        };
+        self.battery.set_icon_style(engine, size, true, nudge);
         set(&mut self.battery, engine, &battery_label, battery_ink);
         self.battery_visible = model.battery_present;
         self.network_visible = model.available.wifi || model.network_connected;
@@ -1766,7 +1796,7 @@ mod tests {
                 target.anchor.anchor_width,
                 target.anchor.anchor_height
             ),
-            (7, 3, 23, 22)
+            (7, 3, 30, 22)
         );
     }
 
