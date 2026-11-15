@@ -62,7 +62,7 @@ impl AudioPanel {
         now: Millis,
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
-        let title = super::kit::title(tree, engine, root, "󰕾", "sound");
+        let title = super::kit::title(tree, engine, root, "󰕾", "sound", crate::decor::SOUND);
         let plates = [super::kit::plate(tree, root), super::kit::plate(tree, root)];
         let mut mute = chip(tree, input, engine, root, "󰕾", theme::green(), false, None);
         mute.shortcut = "XF86AudioMute".into();

@@ -20,7 +20,6 @@ const BASE: i32 = 600;
 const COUNT: i32 = 1201;
 const MOVE: Millis = 320.0;
 const MIN_FLICK: f32 = 75.0;
-const DAYS: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 
 struct Cell7 {
     date: Date,
@@ -100,15 +99,8 @@ impl CalendarPanel {
         data: &PanelData,
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
-        let mut eyebrow_spec = TextSpec::plain(
-            "time / calendar",
-            crate::theme::icons(),
-            9.0,
-            theme::green(),
-        );
-        if let Some(span) = eyebrow_spec.spans.first_mut() {
-            span.letter_spacing = 1.0;
-        }
+        let eyebrow_spec =
+            crate::decor::eyebrow(crate::decor::CALENDAR, "calendar", crate::theme::icons());
         let eyebrow = Label::new(tree, engine, root, eyebrow_spec);
         let mut time_spec = TextSpec::plain(&data.time, crate::theme::font(), 40.0, theme::text());
         if let Some(span) = time_spec.spans.first_mut() {
@@ -140,22 +132,21 @@ impl CalendarPanel {
         );
         let prev = chip(tree, input, engine, root, "‹", theme::text(), true, None);
         let next = chip(tree, input, engine, root, "›", theme::text(), true, None);
-        let weekdays = DAYS
+        let weekdays = crate::decor::WEEKDAYS
             .iter()
             .enumerate()
             .map(|(index, day)| {
                 let weekend = index > 4;
-                let label = label(
+                let color = if weekend {
+                    theme::yellow()
+                } else {
+                    theme::muted()
+                };
+                let label = Label::new(
                     tree,
                     engine,
                     root,
-                    day,
-                    10.0,
-                    if weekend {
-                        theme::yellow()
-                    } else {
-                        theme::muted()
-                    },
+                    TextSpec::plain(*day, crate::decor::FAMILY, 11.0, color),
                 );
                 if weekend {
                     tree.set_opacity(label.node, 0.8);

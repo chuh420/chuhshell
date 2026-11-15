@@ -1,5 +1,5 @@
 use ui::{
-    Color, Node, NodeId, RectPaint, TextEngine, TextSpec, TransformOp, Tree,
+    Color, Node, NodeId, RectPaint, TextEngine, TransformOp, Tree,
     anim::{Easing, Flick, Millis, Tween},
     input::{AreaId, Input, MouseArea},
     textfield::TextField,
@@ -15,11 +15,14 @@ const INTRO: Millis = 420.0;
 const MOVE: Millis = 280.0;
 const SCROLLBAR: Color = Color::rgb(0xb8b8b8);
 
-pub fn eyebrow(tree: &mut Tree, engine: &mut TextEngine, parent: NodeId, text: &str) -> Label {
-    let mut spec = TextSpec::plain(text, crate::theme::font(), 9.0, theme::green());
-    if let Some(span) = spec.spans.first_mut() {
-        span.letter_spacing = 1.0;
-    }
+pub fn eyebrow(
+    tree: &mut Tree,
+    engine: &mut TextEngine,
+    parent: NodeId,
+    kanji: &str,
+    text: &str,
+) -> Label {
+    let spec = crate::decor::eyebrow(kanji, text, crate::theme::font());
     Label::new(tree, engine, parent, spec)
 }
 

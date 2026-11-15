@@ -63,12 +63,10 @@ impl NotificationsPanel {
         now: Millis,
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
-        let title = Label::new(
-            tree,
-            engine,
-            root,
-            TextSpec::plain("notifications", crate::theme::font(), 18.0, theme::text()),
-        );
+        let mut title_spec =
+            TextSpec::plain("notifications", crate::theme::font(), 18.0, theme::text());
+        crate::decor::suffix(&mut title_spec, crate::decor::NOTIFICATIONS);
+        let title = Label::new(tree, engine, root, title_spec);
         let mut dnd = Chip::new(
             tree,
             input,
@@ -110,7 +108,12 @@ impl NotificationsPanel {
             tree,
             engine,
             empty,
-            TextSpec::plain("󰂚", crate::theme::icons(), 46.0, theme::line()),
+            TextSpec::plain(
+                crate::decor::QUIET,
+                crate::decor::FAMILY,
+                46.0,
+                theme::line(),
+            ),
         );
         let empty_label = Label::new(
             tree,
@@ -269,8 +272,14 @@ impl NotificationsPanel {
                 )
             },
         );
-        self.empty_icon
-            .set_text(engine, if data.dnd { "󰂛" } else { "󰂚" });
+        self.empty_icon.set_text(
+            engine,
+            if data.dnd {
+                crate::decor::SILENT
+            } else {
+                crate::decor::QUIET
+            },
+        );
         self.empty_opacity
             .set_target(now, if count == 0 { 1.0 } else { 0.0 });
     }

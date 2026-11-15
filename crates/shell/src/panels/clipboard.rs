@@ -72,7 +72,7 @@ impl ClipboardPanel {
         now: Millis,
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
-        let eyebrow = eyebrow(tree, engine, root, "desktop / clipboard");
+        let eyebrow = eyebrow(tree, engine, root, crate::decor::CLIPBOARD, "clipboard");
         let title = label(tree, engine, root, "clipboard", 26.0, theme::text());
         let clear = chip(
             tree,

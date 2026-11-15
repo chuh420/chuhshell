@@ -1,0 +1,33 @@
+#!/bin/sh
+set -eu
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+source=${1:-/usr/share/fonts/noto-cjk/NotoSansCJK-Medium.ttc}
+out=$root/crates/shell/assets/decor.otf
+text=$(command grep -oP '[\x{3000}-\x{30ff}\x{3400}-\x{9fff}]' "$root/crates/shell/src/decor.rs" | sort -u | tr -d '\n')
+
+[ -n "$text" ] || { echo "no kanji found in decor.rs" >&2; exit 1; }
+command -v pyftsubset >/dev/null || { echo "pyftsubset missing: pacman -S python-fonttools" >&2; exit 1; }
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+pyftsubset "$source" --font-number=0 --text="$text" --no-hinting --desubroutinize \
+    --layout-features='' --name-IDs='0,13,14' --output-file="$tmp/subset.otf"
+
+python -I - "$tmp/subset.otf" "$out" <<'EOF'
+import sys
+from fontTools.ttLib import TTFont
+
+font = TTFont(sys.argv[1])
+names = font["name"]
+for record in list(names.names):
+    if record.nameID in (16, 17):
+        names.removeNames(nameID=record.nameID)
+for name_id, value in ((1, "chuhshell decor"), (2, "Regular"), (4, "chuhshell decor"), (6, "chuhshell-decor")):
+    names.setName(value, name_id, 3, 1, 0x409)
+font["OS/2"].usWeightClass = 400
+font.save(sys.argv[2])
+EOF
+
+printf '%s glyphs, %s bytes: %s\n' "$(printf '%s' "$text" | wc -m)" "$(stat -c %s "$out")" "$out"

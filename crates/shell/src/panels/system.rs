@@ -110,7 +110,7 @@ impl SystemPanel {
         now: Millis,
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
-        let title = super::kit::title(tree, engine, root, "󰍛", "system");
+        let title = super::kit::title(tree, engine, root, "󰍛", "system", crate::decor::SYSTEM);
         let plate = super::kit::plate(tree, root);
         let uptime = label(tree, engine, root, "", 12.0, theme::green());
         let card = |tree: &mut Tree, engine: &mut TextEngine, cpu: bool| {

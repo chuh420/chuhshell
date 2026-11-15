@@ -224,6 +224,16 @@ impl Workspaces {
     fn label(&self, id: i32) -> (String, f32, Color) {
         let active = id == self.active_id;
         let occupied = self.occupied.contains(&id);
+        if let Some(kanji) = crate::decor::numeral(id) {
+            let (size, ink) = if active {
+                (15.0, theme::dim())
+            } else if occupied {
+                (15.0, theme::text())
+            } else {
+                (13.0, theme::muted())
+            };
+            return (kanji.to_string(), size, ink);
+        }
         let label = if active {
             format!("{id:02}")
         } else if occupied {
@@ -276,6 +286,9 @@ impl Workspaces {
                 if !kept.iter().any(|chip| chip.id == id) {
                     let (label, font_size, ink) = self.label(id);
                     let mut chip = chip(tree, input, engine, self.row, &label, ink, "");
+                    if crate::decor::numeral(id).is_some() {
+                        chip.set_family(engine, crate::decor::FAMILY);
+                    }
                     chip.set_label(engine, &label, font_size);
                     chip.shortcut = format!("Super + {id}");
                     chip.set_fixed_width(Some(SLOT));
@@ -1739,7 +1752,7 @@ fn title_text(model: &BarModel) -> String {
         .title
         .clone()
         .filter(|title| !title.is_empty())
-        .unwrap_or_else(|| "still / material".into())
+        .unwrap_or_else(|| format!("{}  |  still", crate::decor::STILL))
 }
 
 fn keyboard_icon() -> String {
@@ -1777,11 +1790,10 @@ fn workspace_ids(kind: Option<services::compositor::Kind>, model: &BarModel) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::font_families;
 
     #[test]
     fn launcher_tooltip_anchor_matches_qt_positioner() {
-        let mut engine = TextEngine::new(&font_families());
+        let mut engine = crate::theme::text_engine();
         let model = BarModel::placeholder();
         let mut bar = Bar::new(&mut engine, 1896, 35, &model, 0.0);
         bar.tick(1000.0);
@@ -1802,7 +1814,7 @@ mod tests {
 
     #[test]
     fn clock_has_no_tooltip() {
-        let mut engine = TextEngine::new(&font_families());
+        let mut engine = crate::theme::text_engine();
         let model = BarModel::placeholder();
         let mut bar = Bar::new(&mut engine, 1896, 35, &model, 0.0);
         bar.tick(1000.0);

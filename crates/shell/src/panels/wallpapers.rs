@@ -135,7 +135,10 @@ impl WallpapersPanel {
         now: Millis,
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
-        let title = label(tree, engine, root, "wallpapers", 26.0, theme::text());
+        let mut title_spec =
+            ui::TextSpec::plain("wallpapers", crate::theme::font(), 26.0, theme::text());
+        crate::decor::suffix(&mut title_spec, crate::decor::WALLPAPERS);
+        let title = Label::new(tree, engine, root, title_spec);
         let subtitle = label(tree, engine, root, "", 11.0, theme::muted());
         let search = SearchBox::new(tree, input, engine, root, "󰍉", PLACEHOLDER, true, now);
         let themes = chip(

@@ -7,7 +7,6 @@ use calloop::{
 };
 use config::Config;
 use services::{config_watch::Watcher, notifications::Urgency};
-use ui::TextEngine;
 
 use crate::{app::App, model::format_clock_with};
 
@@ -172,7 +171,7 @@ impl App {
             self.queue_app_reload();
         }
         if changes.fonts {
-            self.engine = TextEngine::new(&crate::theme::font_families());
+            self.engine = crate::theme::text_engine();
         }
         self.refresh_config_values();
         if changes.scale || changes.fonts {

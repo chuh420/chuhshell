@@ -328,7 +328,10 @@ impl ThemesPanel {
         now: Millis,
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
-        let title = label(tree, engine, root, "themes", 26.0, theme::text());
+        let mut title_spec =
+            ui::TextSpec::plain("themes", crate::theme::font(), 26.0, theme::text());
+        crate::decor::suffix(&mut title_spec, crate::decor::THEMES);
+        let title = Label::new(tree, engine, root, title_spec);
         let subtitle = label(
             tree,
             engine,

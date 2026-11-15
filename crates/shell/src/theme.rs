@@ -10,7 +10,7 @@ const EXTRA_FAMILIES: &[&str] = &[
     "Noto Sans",
     "Noto Sans Symbols",
     "Noto Sans Symbols 2",
-    "Noto Sans CJK JP",
+    "Noto Sans CJK JP:weight=80",
     "Noto Color Emoji",
 ];
 
@@ -57,6 +57,12 @@ pub fn icons() -> &'static str {
 
 pub fn icon_fallback() -> &'static str {
     fonts().icon_fallback
+}
+
+pub fn text_engine() -> ui::TextEngine {
+    let mut engine = ui::TextEngine::new(&font_families());
+    engine.add_font(crate::decor::FONT);
+    engine
 }
 
 pub fn font_families() -> Vec<String> {

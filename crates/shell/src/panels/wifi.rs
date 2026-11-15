@@ -199,7 +199,7 @@ impl WifiPanel {
         now: Millis,
     ) -> Self {
         let root = tree.add(parent, Node::new(0.0, 0.0, 0.0, 0.0));
-        let title = super::kit::title(tree, engine, root, "󰤨", "Wi-Fi");
+        let title = super::kit::title(tree, engine, root, "󰤨", "Wi-Fi", crate::decor::WIFI);
         let mut airplane = chip(tree, input, engine, root, "󰀝", theme::muted(), false, None);
         airplane.set_font_size(engine, 15.0, 15.0);
         let power = chip(
