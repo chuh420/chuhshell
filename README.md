@@ -100,13 +100,13 @@ suspend, reboot and power off go through logind.
 
 ## install
 
-on Arch, build the package from `dist/PKGBUILD`:
+on Arch, install from the AUR: `chuhshell` builds the latest release, `chuhshell-git` builds `main`.
 
 ```sh
-cd dist && makepkg -si
+paru -S chuhshell
 ```
 
-the package installs the binary to `/usr/bin` and the unit to `/usr/lib/systemd/user`. by hand:
+the package installs the binary to `/usr/bin` and the unit to `/usr/lib/systemd/user`. the PKGBUILDs live in `dist/aur`. every [release](https://github.com/chuh420/chuhshell/releases) also has a prebuilt x86_64 binary with the unit and licenses. by hand:
 
 ```sh
 cargo build --release

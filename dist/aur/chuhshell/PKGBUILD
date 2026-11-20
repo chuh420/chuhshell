@@ -1,13 +1,12 @@
-pkgname=chuhshell-git
-_name=chuhshell
-pkgver=0.1.0.r0.g0000000
+pkgname=chuhshell
+pkgver=0.1.0
 pkgrel=1
 pkgdesc='A Wayland desktop shell for Hyprland, niri and sway'
 arch=('x86_64' 'aarch64')
 url='https://github.com/chuh420/chuhshell'
 license=('MIT OR Apache-2.0' 'OFL-1.1')
 depends=('gcc-libs' 'glibc' 'libpipewire' 'libxkbcommon' 'ttf-font' 'wireplumber')
-makedepends=('cargo' 'clang' 'git')
+makedepends=('cargo' 'clang')
 optdepends=(
   'upower: battery chip and panel'
   'power-profiles-daemon: power profiles'
@@ -29,41 +28,31 @@ optdepends=(
   'ttf-jetbrains-mono-nerd: default icon font'
   'adwaita-fonts: default interface font'
 )
-provides=("$_name")
-conflicts=("$_name")
 options=('!lto' '!debug')
-source=("$_name::git+$url.git")
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 
-pkgver() {
-  cd "$_name"
-  printf '%s.r%s.g%s' \
-    "$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)" \
-    "$(git rev-list --count HEAD)" \
-    "$(git rev-parse --short=7 HEAD)"
-}
-
 prepare() {
-  cd "$_name"
+  cd "$pkgname-$pkgver"
   export RUSTUP_TOOLCHAIN=stable
   cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
 }
 
 build() {
-  cd "$_name"
+  cd "$pkgname-$pkgver"
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR=target
   cargo build --frozen --release
 }
 
 check() {
-  cd "$_name"
+  cd "$pkgname-$pkgver"
   export RUSTUP_TOOLCHAIN=stable
   cargo test --frozen --workspace
 }
 
 package() {
-  cd "$_name"
+  cd "$pkgname-$pkgver"
   install -Dm755 target/release/chuhshell "$pkgdir/usr/bin/chuhshell"
   sed 's|%h/.local/bin/chuhshell|/usr/bin/chuhshell|' dist/chuhshell.service |
     install -Dm644 /dev/stdin "$pkgdir/usr/lib/systemd/user/chuhshell.service"
@@ -71,4 +60,5 @@ package() {
   install -Dm644 LICENSE-APACHE "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
   install -Dm644 crates/shell/assets/decor-font-license.txt "$pkgdir/usr/share/licenses/$pkgname/OFL-1.1"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 CHANGELOG.md "$pkgdir/usr/share/doc/$pkgname/CHANGELOG.md"
 }

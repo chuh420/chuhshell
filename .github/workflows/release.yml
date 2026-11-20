@@ -1,0 +1,42 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: install packages
+        run: pacman -Syu --noconfirm --needed rust clang pipewire libxkbcommon pkgconf git github-cli
+      - uses: actions/checkout@v5
+      - name: build
+        run: cargo build --release --locked
+      - name: package
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          dir="chuhshell-$version-x86_64-linux"
+          mkdir "$dir"
+          install -m755 target/release/chuhshell "$dir/chuhshell"
+          cp dist/chuhshell.service README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE "$dir/"
+          cp crates/shell/assets/decor-font-license.txt "$dir/OFL-1.1"
+          tar -czf "$dir.tar.gz" "$dir"
+          sha256sum "$dir.tar.gz" > "$dir.tar.gz.sha256"
+          awk -v v="$version" '$0 ~ "^## \\[" v "\\]" {on=1; next} /^## \[/ {on=0} /^\[[^]]+\]: / {on=0} on' CHANGELOG.md > notes.md
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "chuhshell $version" \
+            --notes-file notes.md \
+            "chuhshell-$version-x86_64-linux.tar.gz" \
+            "chuhshell-$version-x86_64-linux.tar.gz.sha256"
