@@ -30,7 +30,7 @@ optdepends=(
 )
 options=('!lto' '!debug')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('3680233834b461cb1718944858e1f7e5366b6f50e28398780e28dcaf050953d6')
 
 prepare() {
   cd "$pkgname-$pkgver"

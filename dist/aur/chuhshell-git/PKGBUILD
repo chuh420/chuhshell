@@ -1,6 +1,6 @@
 pkgname=chuhshell-git
 _name=chuhshell
-pkgver=0.1.0.r0.g0000000
+pkgver=0.1.0.r0.g5686a8f
 pkgrel=1
 pkgdesc='A Wayland desktop shell for Hyprland, niri and sway'
 arch=('x86_64' 'aarch64')
